@@ -144,9 +144,13 @@ func (p *MapPage) treemap(a *live.Analysis, sc scope) h.H {
 	if len(tiles) == 0 {
 		return h.P(h.Class("empty"), h.Str("No code here."))
 	}
+	// The scale comes from the tiles that get coloured: a framed tile's kids,
+	// else the tile itself.
 	top := 0.0
 	for _, t := range tiles {
-		top = math.Max(top, t.value)
+		if len(t.kids) == 0 {
+			top = math.Max(top, t.value)
+		}
 		for _, k := range t.kids {
 			top = math.Max(top, k.value)
 		}
@@ -255,6 +259,14 @@ func (p *MapPage) pkgTile(fi findingIndex, pkg *code.Package, label string) tile
 		}
 	}
 	t.value = p.value(fi.pkg[pkg.Path], t.lines, cx, churn)
+	if p.lens == "hotspot" {
+		// A package is as hot as its hottest file; the product of the most
+		// churned and the most complex file would rate files that differ.
+		t.value = 0
+		for _, k := range t.kids {
+			t.value = math.Max(t.value, k.value)
+		}
+	}
 	t.tip = fmt.Sprintf("%s · %d lines · max complexity %d · %s", pkg.Path, t.lines, cx, plural(len(fi.pkg[pkg.Path]), "smell"))
 	return t
 }

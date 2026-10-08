@@ -176,3 +176,23 @@ func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {
 	assert.Contains(t, body, "1 package did not type-check")
 	assert.Contains(t, body, "undefined: undefined")
 }
+
+func TestMap_givesTheHottestFileTheHottestColour(t *testing.T) {
+	t.Parallel()
+	e := serveRepo(t, map[string]string{
+		"go.mod":  "module example.com/hot\n\ngo 1.27\n",
+		"p/a.go":  "package p\n\nfunc A(x int) int {\n\tif x > 0 {\n\t\treturn 1\n\t}\n\treturn 0\n}\n",
+		"p/b.go":  "package p\n\nfunc B() int { return 2 }\n",
+		"main.go": "package main\n\nimport \"example.com/hot/p\"\n\nfunc main() { println(p.A(1), p.B()) }\n",
+	}, nil)
+	// b.go churns, a.go is complex: no single file is both.
+	dir := e.src.Dir
+	for i := range 3 {
+		require.NoError(t, testrepo.Write(dir, map[string]string{"p/b.go": fmt.Sprintf("package p\n\nfunc B() int { return %d }\n", i)}))
+		require.NoError(t, testrepo.Git(dir, "commit", "-qam", "churn"))
+	}
+	e.src.Refresh()
+
+	_, body := e.app.Get("/?lens=hotspot")
+	assert.Contains(t, body, `class="cell heat5"`, "the hottest file sets the scale")
+}
