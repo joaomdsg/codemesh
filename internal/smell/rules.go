@@ -143,7 +143,7 @@ func unstableDeps(s *code.Snapshot) []Finding {
 				continue
 			}
 			out = append(out, Finding{
-				Rule: UnstableDep, Severity: Warn, Package: p.Path, Subject: p.Path, Target: q.Path,
+				Rule: UnstableDep, Severity: Warn, Package: p.Path, Subject: p.Rel, Target: q.Path,
 				Measure: percent(iq), Limit: percent(ip),
 				Detail: fmt.Sprintf("imports %s (I=%.2f) from I=%.2f", q.Rel, iq, ip),
 			})

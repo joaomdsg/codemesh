@@ -102,7 +102,7 @@ func (p *MapPage) href(in, decl string) string {
 func (p *MapPage) crumbs(a *live.Analysis, sc scope) h.H {
 	parts := []h.H{h.A(h.Href(p.href("", "")), h.Str(path.Base(a.Snap.Module)))}
 	if sc.pkg != nil {
-		parts = append(parts, h.Span(h.Class("sep"), h.Str("/")), h.A(h.Href(p.href(sc.pkg.Path, "")), h.Str(sc.pkg.Rel)))
+		parts = append(parts, h.Span(h.Class("sep"), h.Str("/")), h.A(h.Href(p.href(sc.pkg.Path, "")), h.Str(pkgName(a, sc.pkg))))
 	}
 	if sc.file != nil {
 		parts = append(parts, h.Span(h.Class("sep"), h.Str("/")), h.A(h.Href(p.href(sc.file.Path, "")), h.Str(path.Base(sc.file.Path))))
@@ -138,55 +138,89 @@ func (p *MapPage) lensHelp() string {
 	return ""
 }
 
-// tile is one treemap cell before layout.
+// tile is one treemap cell before layout. A tile with kids is drawn as a
+// frame holding them, one level deep, so the module view shows each
+// package's files and a package view each file's declarations.
 type tile struct {
 	id, label, href, tip string
 	lines                int
 	value                float64
 	selected             bool
+	kids                 []tile
 }
 
-const mapW, mapH = 1000.0, 620.0
+const (
+	mapW, mapH = 1000.0, 620.0
+	frameHead  = 18.0 // label strip of a frame
+)
 
 func (p *MapPage) treemap(a *live.Analysis, sc scope) h.H {
 	tiles := p.tiles(a, sc)
 	if len(tiles) == 0 {
 		return h.P(h.Class("empty"), h.Str("No code here."))
 	}
+	top := 0.0
+	for _, t := range tiles {
+		top = math.Max(top, t.value)
+		for _, k := range t.kids {
+			top = math.Max(top, k.value)
+		}
+	}
+	cells := p.layout(tiles, treemap.Rect{W: mapW, H: mapH}, top, true)
+	return h.El("svg", append([]h.H{
+		h.Class("treemap"), h.RawAttr("viewBox", fmt.Sprintf("0 0 %g %g", mapW, mapH)), h.Role("img"),
+		h.Aria("label", "Treemap of the current scope"),
+	}, cells...)...)
+}
+
+func (p *MapPage) layout(tiles []tile, area treemap.Rect, top float64, nest bool) []h.H {
 	byID := map[string]tile{}
 	var items []treemap.Item
 	for _, t := range tiles {
 		byID[t.id] = t
 		items = append(items, treemap.Item{ID: t.id, Weight: float64(max(t.lines, 1))})
 	}
-	top := 0.0
-	for _, t := range tiles {
-		top = math.Max(top, t.value)
-	}
-	var cells []h.H
-	for _, lt := range treemap.Layout(items, treemap.Rect{W: mapW, H: mapH}) {
+	var out []h.H
+	for _, lt := range treemap.Layout(items, area) {
 		t := byID[lt.ID]
 		r := lt.Rect.Inset(1)
-		cls := "cell heat" + fmt.Sprint(p.heat(t.value, top))
-		if t.selected {
-			cls += " sel"
+		if nest && len(t.kids) > 0 && r.W > 60 && r.H > 2*frameHead {
+			out = append(out, p.frameCell(t, r, top)...)
+			continue
 		}
-		kids := []h.H{
-			h.El("title", h.Str(t.tip)),
-			h.El("rect", h.Class(cls), num("x", r.X), num("y", r.Y), num("width", r.W), num("height", r.H), h.RawAttr("rx", "2")),
-		}
-		if r.W > 46 && r.H > 18 {
-			kids = append(kids, h.El("text", h.Class("cell-label"), num("x", r.X+6), num("y", r.Y+15), h.Str(fit(t.label, r.W-12))))
-		}
-		if r.W > 46 && r.H > 34 {
-			kids = append(kids, h.El("text", h.Class("cell-sub"), num("x", r.X+6), num("y", r.Y+30), h.Str(fit(fmt.Sprintf("%d lines", t.lines), r.W-12))))
-		}
-		cells = append(cells, h.El("a", append([]h.H{h.Href(t.href)}, kids...)...))
+		out = append(out, p.cell(t, r, top))
 	}
-	return h.El("svg", append([]h.H{
-		h.Class("treemap"), h.RawAttr("viewBox", fmt.Sprintf("0 0 %g %g", mapW, mapH)), h.Role("img"),
-		h.Aria("label", "Treemap of the current scope"),
-	}, cells...)...)
+	return out
+}
+
+// frameCell draws a container: a labelled frame, its kids inside.
+func (p *MapPage) frameCell(t tile, r treemap.Rect, top float64) []h.H {
+	head := h.El("a", h.Href(t.href),
+		h.El("title", h.Str(t.tip)),
+		h.El("rect", h.Class("frame"), num("x", r.X), num("y", r.Y), num("width", r.W), num("height", r.H), h.RawAttr("rx", "3")),
+		h.El("text", h.Class("frame-label"), num("x", r.X+6), num("y", r.Y+13), h.Str(fit(t.label, r.W-12))),
+	)
+	inner := treemap.Rect{X: r.X + 2, Y: r.Y + frameHead, W: r.W - 4, H: r.H - frameHead - 2}
+	return append([]h.H{head}, p.layout(t.kids, inner, top, false)...)
+}
+
+func (p *MapPage) cell(t tile, r treemap.Rect, top float64) h.H {
+	cls := "cell heat" + fmt.Sprint(p.heat(t.value, top))
+	if t.selected {
+		cls += " sel"
+	}
+	kids := []h.H{
+		h.Href(t.href),
+		h.El("title", h.Str(t.tip)),
+		h.El("rect", h.Class(cls), num("x", r.X), num("y", r.Y), num("width", r.W), num("height", r.H), h.RawAttr("rx", "2")),
+	}
+	if r.W > 40 && r.H > 17 {
+		kids = append(kids, h.El("text", h.Class("cell-label"), num("x", r.X+5), num("y", r.Y+14), h.Str(fit(t.label, r.W-10))))
+	}
+	if r.W > 40 && r.H > 32 {
+		kids = append(kids, h.El("text", h.Class("cell-sub"), num("x", r.X+5), num("y", r.Y+28), h.Str(fit(fmt.Sprintf("%d lines", t.lines), r.W-10))))
+	}
+	return h.El("a", kids...)
 }
 
 func (p *MapPage) tiles(a *live.Analysis, sc scope) []tile {
@@ -195,42 +229,58 @@ func (p *MapPage) tiles(a *live.Analysis, sc scope) []tile {
 	switch {
 	case sc.file != nil:
 		for _, d := range sc.file.Decls {
-			out = append(out, tile{
-				id: d.ID, label: d.Name, href: p.href(sc.file.Path, d.ID), lines: d.Lines,
-				value:    p.value(fi.decl[d.ID], d.Lines, d.Complexity, sc.file.Churn),
-				tip:      fmt.Sprintf("%s %s · %d lines · complexity %d · %s", d.Kind, d.Name, d.Lines, d.Complexity, plural(len(fi.decl[d.ID]), "finding")),
-				selected: d.ID == p.decl,
-			})
+			out = append(out, p.declTile(fi, sc.file, d))
 		}
 	case sc.pkg != nil:
 		for _, f := range sc.pkg.Files {
-			if f.Test {
-				continue
+			if !f.Test {
+				out = append(out, p.fileTile(fi, f, true))
 			}
-			cx := maxComplexity(f.Decls)
-			out = append(out, tile{
-				id: f.Path, label: path.Base(f.Path), href: p.href(f.Path, ""), lines: f.Lines,
-				value: p.value(fi.file[f.Path], f.Lines, cx, f.Churn),
-				tip:   fmt.Sprintf("%s · %d lines · max complexity %d · %d commits · %s", f.Path, f.Lines, cx, f.Churn, plural(len(fi.file[f.Path]), "finding")),
-			})
 		}
 	default:
 		for _, pkg := range a.Snap.Packages {
-			var cx, churn int
-			for _, f := range pkg.Files {
-				if !f.Test {
-					cx, churn = max(cx, maxComplexity(f.Decls)), max(churn, f.Churn)
-				}
-			}
-			n := pkg.Lines()
-			out = append(out, tile{
-				id: pkg.Path, label: pkg.Rel, href: p.href(pkg.Path, ""), lines: n,
-				value: p.value(fi.pkg[pkg.Path], n, cx, churn),
-				tip:   fmt.Sprintf("%s · %d lines · max complexity %d · %s", pkg.Path, n, cx, plural(len(fi.pkg[pkg.Path]), "finding")),
-			})
+			out = append(out, p.pkgTile(fi, pkg, pkgName(a, pkg)))
 		}
 	}
 	return out
+}
+
+func (p *MapPage) pkgTile(fi findingIndex, pkg *code.Package, label string) tile {
+	t := tile{id: pkg.Path, label: label, href: p.href(pkg.Path, ""), lines: pkg.Lines()}
+	var cx, churn int
+	for _, f := range pkg.Files {
+		if !f.Test {
+			t.kids = append(t.kids, p.fileTile(fi, f, false))
+			cx, churn = max(cx, maxComplexity(f.Decls)), max(churn, f.Churn)
+		}
+	}
+	t.value = p.value(fi.pkg[pkg.Path], t.lines, cx, churn)
+	t.tip = fmt.Sprintf("%s · %d lines · max complexity %d · %s", pkg.Path, t.lines, cx, plural(len(fi.pkg[pkg.Path]), "finding"))
+	return t
+}
+
+func (p *MapPage) fileTile(fi findingIndex, f *code.File, withDecls bool) tile {
+	cx := maxComplexity(f.Decls)
+	t := tile{
+		id: f.Path, label: path.Base(f.Path), href: p.href(f.Path, ""), lines: f.Lines,
+		value: p.value(fi.file[f.Path], f.Lines, cx, f.Churn),
+		tip:   fmt.Sprintf("%s · %d lines · max complexity %d · %d commits · %s", f.Path, f.Lines, cx, f.Churn, plural(len(fi.file[f.Path]), "finding")),
+	}
+	if withDecls {
+		for _, d := range f.Decls {
+			t.kids = append(t.kids, p.declTile(fi, f, d))
+		}
+	}
+	return t
+}
+
+func (p *MapPage) declTile(fi findingIndex, f *code.File, d *code.Decl) tile {
+	return tile{
+		id: d.ID, label: d.Name, href: p.href(f.Path, d.ID), lines: d.Lines,
+		value:    p.value(fi.decl[d.ID], d.Lines, d.Complexity, f.Churn),
+		tip:      fmt.Sprintf("%s %s · %d lines · complexity %d · %s", d.Kind, d.Name, d.Lines, d.Complexity, plural(len(fi.decl[d.ID]), "finding")),
+		selected: d.ID == p.decl,
+	}
 }
 
 func (p *MapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
@@ -249,22 +299,26 @@ func (p *MapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
 	return 100 * float64(w) / float64(max(lines, 1))
 }
 
-// heat buckets a value into 0 (cold) to 5. Complexity uses absolute bands,
-// since a complexity of 10 is a problem in any codebase; the other lenses are
-// relative to the hottest tile in view.
+// heat buckets a value into 0 (cold) to 5. Smells and complexity use fixed
+// bands, so the same code reads the same in any scope or codebase; churn and
+// hotspot have no natural scale and are relative to the hottest tile in view.
 func (p *MapPage) heat(v, top float64) int {
 	if v <= 0 {
 		return 0
 	}
-	if p.lens == "complexity" {
-		for i, limit := range []float64{5, 10, 15, 20} {
-			if v <= limit {
-				return i + 1
-			}
-		}
-		return 5
+	bands := map[string][]float64{
+		"smells":     {1, 3, 6, 12},
+		"complexity": {5, 10, 15, 20},
+	}[p.lens]
+	if bands == nil {
+		return min(5, 1+int(4.999*v/top))
 	}
-	return min(5, 1+int(4.999*v/top))
+	for i, limit := range bands {
+		if v <= limit {
+			return i + 1
+		}
+	}
+	return 5
 }
 
 func weight(s smell.Severity) int {

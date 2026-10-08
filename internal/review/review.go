@@ -68,7 +68,8 @@ type Unit struct {
 	Lane     Lane
 	Risk     int
 	Reasons  []string
-	Callers  []string // decl IDs calling the head version
+	Callers  []string        // decl IDs calling the head version
+	Smells   []smell.Finding // smells this change introduces here
 	Lines    []Line
 	Added    int
 	Deleted  int
@@ -150,6 +151,7 @@ func Build(in Input) *Review {
 		return cmp.Or(cmp.Compare(a.Lane, b.Lane), cmp.Compare(b.Risk, a.Risk), cmp.Compare(a.File, b.File), cmp.Compare(a.Name, b.Name))
 	})
 	rev.Introduced, rev.Fixed = delta(in.BaseFindings, in.HeadFindings)
+	attach(rev)
 	return rev
 }
 
@@ -221,58 +223,77 @@ func (b *builder) declUnit(old, new *code.Decl) *Unit {
 
 func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	resigned := old != nil && new != nil && old.Signature != new.Signature
-	switch {
-	case cmp.Or(new, old).Test:
-		u.Lane = Tests
-	case u.Exported && (u.Change != Modified || resigned):
-		u.Lane = Contract
-	default:
-		u.Lane = Logic
+	u.Lane = laneOf(u, cmp.Or(new, old), resigned)
+	u.Risk = min(u.Added+u.Deleted, 40) / 4
+	add := func(reason string, points int) {
+		if reason != "" {
+			u.Reasons = append(u.Reasons, reason)
+		}
+		u.Risk += points
 	}
-	risk := min(u.Added+u.Deleted, 40) / 4
 	if resigned {
-		u.Reasons = append(u.Reasons, "signature changed")
-		risk += 6
+		add("signature changed", 6)
 	}
 	if u.Change == Removed {
-		risk += 4
+		add("", 4)
 	}
 	if new != nil {
 		u.Callers = new.Callers
-		if n := len(new.Callers); n > 0 {
-			u.Reasons = append(u.Reasons, plural(n, "caller"))
-			risk += 3 * min(n, 10)
+		prod, tests := b.callers(new)
+		if prod > 0 {
+			add(plural(prod, "caller"), 3*min(prod, 10))
+		}
+		if tests > 0 {
+			add(plural(tests, "test caller"), 0)
 		}
 	}
 	if u.Exported {
-		u.Reasons = append(u.Reasons, "exported")
-		risk += 4
+		add("exported", 4)
 	}
-	if new != nil && (new.Kind == code.Func || new.Kind == code.Method) {
-		was := 0
-		if old != nil {
-			was = old.Complexity
-		}
-		if d := new.Complexity - was; old != nil && d != 0 {
-			u.Reasons = append(u.Reasons, fmt.Sprintf("complexity %d (%+d)", new.Complexity, d))
-			risk += 2 * max(d, 0)
-		} else if new.Complexity > 10 {
-			u.Reasons = append(u.Reasons, fmt.Sprintf("complexity %d", new.Complexity))
-		}
-		risk += new.Complexity / 2
-		if !new.Test && !b.testedDirectly(new) {
-			u.Reasons = append(u.Reasons, "no direct test")
-			risk += 5
-		}
+	if new == nil || new.Kind != code.Func && new.Kind != code.Method {
+		return
 	}
-	u.Risk = risk
+	add(complexityReason(old, new))
+	if _, tests := b.callers(new); !new.Test && tests == 0 {
+		add("no direct test", 5)
+	}
 }
 
-func (b *builder) testedDirectly(d *code.Decl) bool {
-	return slices.ContainsFunc(d.Callers, func(id string) bool {
-		c := b.in.Head.Decl(id)
-		return c != nil && c.Test
-	})
+func laneOf(u *Unit, d *code.Decl, resigned bool) Lane {
+	switch {
+	case d.Test:
+		return Tests
+	case u.Exported && (u.Change != Modified || resigned):
+		return Contract
+	}
+	return Logic
+}
+
+// complexityReason names a complexity worth a reviewer's notice: one that
+// changed, or one past the smell limit. Rising complexity scores double.
+func complexityReason(old, new *code.Decl) (string, int) {
+	c := new.Complexity
+	if old != nil && c != old.Complexity {
+		d := c - old.Complexity
+		return fmt.Sprintf("complexity %d (%+d)", c, d), c/2 + 2*max(d, 0)
+	}
+	if c > smell.ComplexFuncLimit {
+		return fmt.Sprintf("complexity %d", c), c / 2
+	}
+	return "", c / 2
+}
+
+// callers splits a decl's callers into production and test code. Only
+// production callers widen the blast radius.
+func (b *builder) callers(d *code.Decl) (prod, tests int) {
+	for _, id := range d.Callers {
+		if c := b.in.Head.Decl(id); c != nil && c.Test {
+			tests++
+		} else {
+			prod++
+		}
+	}
+	return prod, tests
 }
 
 // fileUnit covers a non-Go or generated file as one unit.
@@ -304,9 +325,12 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	case path.Base(p) == "go.sum":
 		u.Lane = Noise
 		u.Reasons = append(u.Reasons, "checksums")
-	case path.Base(p) == "go.mod":
+	case path.Base(p) == "go.mod" && !isFixture(p):
 		u.Lane = Contract
 		u.Reasons = append(u.Reasons, "dependencies")
+	case isFixture(p):
+		u.Lane = Tests
+		u.Reasons = append(u.Reasons, "test fixture")
 	}
 	u.Risk = min(u.Added+u.Deleted, 40) / 4
 	u.Key = key(u.ID, strings.Join(newText, "\n")+"\x00"+strings.Join(oldText, "\n"))
@@ -436,6 +460,27 @@ func delta(base, head []smell.Finding) (introduced, fixed []smell.Finding) {
 	return introduced, fixed
 }
 
+// attach puts each introduced smell on the unit it is about: its decl, or
+// failing that the first unit of its file.
+func attach(rev *Review) {
+	byID, byFile := map[string]*Unit{}, map[string]*Unit{}
+	for _, u := range rev.Units {
+		byID[u.ID] = u
+		if _, ok := byFile[u.File]; !ok {
+			byFile[u.File] = u
+		}
+	}
+	for _, f := range rev.Introduced {
+		u := byID[f.Decl]
+		if u == nil && f.Decl == "" {
+			u = byFile[f.File]
+		}
+		if u != nil && f.File != "" {
+			u.Smells = append(u.Smells, f)
+		}
+	}
+}
+
 type span struct{ start, n int }
 
 // hits reports whether a hunk side touches lines [start, end]. With -U0 a
@@ -453,6 +498,10 @@ func hits(start, end int, spans []span) bool {
 		}
 	}
 	return false
+}
+
+func isFixture(p string) bool {
+	return strings.HasPrefix(p, "testdata/") || strings.Contains(p, "/testdata/")
 }
 
 func inDecl(f *code.File, line int) bool {

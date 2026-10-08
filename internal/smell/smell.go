@@ -83,7 +83,7 @@ type Finding struct {
 	File     string // module-relative; "" for package-level findings
 	Line     int    // 0 when the finding has no line
 	Decl     string // decl ID, "" when the finding is not about one decl
-	Subject  string // display name: decl name, file path or package path
+	Subject  string // display name: decl name, file path or package directory
 	Target   string // the other package, for envious-func and unstable-dep
 	// Measure and Limit are in the rule's unit. For envious-func they are the
 	// references to the other package and to the own package. For unstable-dep
@@ -102,7 +102,7 @@ func Find(s *code.Snapshot) []Finding {
 		if p.Name != "main" && !p.HasTests() {
 			out = append(out, Finding{
 				Rule: UntestedPackage, Severity: Info, Package: p.Path,
-				Subject: p.Path, Detail: "no test files",
+				Subject: p.Rel, Detail: "no test files",
 			})
 		}
 		for _, f := range p.Files {

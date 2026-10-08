@@ -1,9 +1,7 @@
 package review_test
 
 import (
-	"os"
-	"os/exec"
-	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,87 +10,10 @@ import (
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/smell"
+	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-var baseFiles = map[string]string{
-	"go.mod": "module example.com/calc\n\ngo 1.27\n",
-	"main.go": `package main
-
-import "example.com/calc/calc"
-
-func main() { println(calc.Add(1, 2), calc.Scale(2, 3), calc.Moved()) }
-`,
-	"calc/calc.go": `package calc
-
-// Add adds.
-func Add(a, b int) int { return a + b }
-
-// Scale multiplies.
-func Scale(x, k int) int {
-	return helper(x) * k
-}
-
-func helper(x int) int { return x + 1 }
-
-// Old is removed in head.
-func Old() {}
-
-// Moved moves to util.go unchanged.
-func Moved() int { return 7 }
-`,
-	"calc/calc_test.go": `package calc_test
-
-import (
-	"testing"
-
-	"example.com/calc/calc"
-)
-
-func TestAdd(t *testing.T) {
-	if calc.Add(1, 2) != 3 {
-		t.Fatal("sum")
-	}
-}
-`,
-}
-
-var headFiles = map[string]string{
-	"calc/calc.go": `package calc
-
-// Add returns a plus b.
-func Add(a, b int) int {
-	return a + b
-}
-
-// Scale multiplies, never below zero.
-func Scale(x, k int) int {
-	if k < 0 {
-		return 0
-	}
-	return helper(x, 1) * k
-}
-
-func helper(x, d int) int { return x + d }
-
-// Clamp bounds x to [lo, hi].
-func Clamp(x, lo, hi int) int { return min(max(x, lo), hi) }
-`,
-	"calc/util.go": `package calc
-
-// Moved moves to util.go unchanged.
-func Moved() int { return 7 }
-`,
-	"calc/calc_test.go": baseFiles["calc/calc_test.go"] + `
-func TestClamp(t *testing.T) {
-	if calc.Clamp(5, 0, 3) != 3 {
-		t.Fatal("clamp")
-	}
-}
-`,
-	"README.md": "# calc\n",
-}
 
 type fixture struct {
 	rev  *review.Review
@@ -100,30 +21,10 @@ type fixture struct {
 }
 
 var calc = sync.OnceValues(func() (fixture, error) {
-	dir, err := os.MkdirTemp("", "review-test-")
+	dir, err := testrepo.Make(testrepo.CalcBase, testrepo.CalcHead)
 	if err != nil {
 		return fixture{}, err
 	}
-	write := func(files map[string]string) {
-		for name, body := range files {
-			p := filepath.Join(dir, name)
-			_ = os.MkdirAll(filepath.Dir(p), 0o755)
-			_ = os.WriteFile(p, []byte(body), 0o644)
-		}
-	}
-	git := func(args ...string) error {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
-		return cmd.Run()
-	}
-	write(baseFiles)
-	for _, args := range [][]string{{"init", "-q"}, {"add", "-A"}, {"commit", "-qm", "base"}} {
-		if err := git(args...); err != nil {
-			return fixture{}, err
-		}
-	}
-	write(headFiles)
-
 	repo, err := gitx.Open(dir)
 	if err != nil {
 		return fixture{}, err
@@ -176,14 +77,15 @@ func TestBuild_triagesUnitsIntoLanes(t *testing.T) {
 		lanes[u.Name] = u.Lane
 	}
 	assert.Equal(t, map[string]review.Lane{
-		"Clamp":     review.Contract,
-		"Old":       review.Contract,
-		"Scale":     review.Logic,
-		"helper":    review.Logic,
-		"TestClamp": review.Tests,
-		"README.md": review.Other,
-		"Add":       review.Noise,
-		"Moved":     review.Noise,
+		"Clamp":                review.Contract,
+		"Old":                  review.Contract,
+		"Scale":                review.Logic,
+		"helper":               review.Logic,
+		"TestClamp":            review.Tests,
+		"README.md":            review.Other,
+		"calc/testdata/in.txt": review.Tests,
+		"Add":                  review.Noise,
+		"Moved":                review.Noise,
 	}, lanes)
 }
 
@@ -222,6 +124,8 @@ func TestBuild_explainsRiskWithReasons(t *testing.T) {
 	assert.Equal(t, review.Removed, unit(t, rev, "Old").Change)
 	assert.Equal(t, review.Added, unit(t, rev, "Clamp").Change)
 	assert.NotContains(t, unit(t, rev, "Clamp").Reasons, "no direct test", "TestClamp calls it")
+	assert.Contains(t, unit(t, rev, "Clamp").Reasons, "1 test caller")
+	assert.NotContains(t, unit(t, rev, "Clamp").Reasons, "1 caller", "a test caller is no blast radius")
 }
 
 func TestBuild_diffsWithinTheUnit(t *testing.T) {
@@ -267,4 +171,18 @@ func TestBuild_keysUnitsBySource(t *testing.T) {
 		assert.False(t, keys[u.Key], "duplicate key %s", u.Key)
 		keys[u.Key] = true
 	}
+}
+
+func TestBuild_putsNewSmellsOnTheirUnits(t *testing.T) {
+	t.Parallel()
+	rev := load(t).rev
+
+	var rules []smell.Rule
+	for _, f := range unit(t, rev, "Clamp").Smells {
+		rules = append(rules, f.Rule)
+	}
+	assert.Equal(t, []smell.Rule{smell.UnusedExport}, rules, "only a test calls Clamp")
+	assert.True(t, slices.ContainsFunc(rev.Fixed, func(f smell.Finding) bool {
+		return f.Rule == smell.UnusedExport && f.Subject == "Old"
+	}), "removing Old removes its smell")
 }

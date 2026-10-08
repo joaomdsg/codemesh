@@ -28,7 +28,27 @@ func (p *DepsPage) View() h.H {
 	if a == nil || a.Snap == nil {
 		return p.frame(tabDeps, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
 	}
-	return p.frame(tabDeps, a, matrix(a))
+	return p.frame(tabDeps, a, h.Div(h.Class("map-layout"), matrix(a), h.Aside(h.Class("side"), structureFindings(a))))
+}
+
+// structureFindings lists the smells about how packages relate, the ones a
+// matrix makes you look for.
+func structureFindings(a *live.Analysis) h.H {
+	var rows []h.H
+	for _, f := range a.Findings {
+		switch f.Rule {
+		case smell.UnstableDep, smell.EnviousFunc, smell.UntestedPackage:
+			rows = append(rows, (&MapPage{lens: "smells"}).findingRow(f))
+		}
+	}
+	if len(rows) == 0 {
+		return group([]h.H{h.H2(h.Str("Structure")), h.P(h.Class("ok"), h.Str("✓ No structural findings."))})
+	}
+	return group([]h.H{
+		h.H2(h.Str(fmt.Sprintf("Structure · %d", len(rows)))),
+		h.P(h.Class("hint"), h.Str("Unstable dependencies, functions that lean on another package, packages without tests.")),
+		h.Ul(append([]h.H{h.Class("findings")}, rows...)...),
+	})
 }
 
 type depRow struct {
@@ -59,7 +79,7 @@ func matrix(a *live.Analysis) h.H {
 	var body []h.H
 	for i, r := range rows {
 		cells := []h.H{
-			h.Th(h.Class("dsm-name"), h.A(h.Href("/?in="+urlEscape(r.pkg.Path)), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(r.pkg.Rel))),
+			h.Th(h.Class("dsm-name"), h.A(h.Href("/?in="+urlEscape(r.pkg.Path)), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(a, r.pkg)))),
 			h.Td(h.Class("num"), h.Str(fmt.Sprintf("%.2f", r.unstable))),
 			h.Td(h.Class("num"), h.Str(r.ca)),
 			h.Td(h.Class("num"), h.Str(r.ce)),
@@ -74,7 +94,7 @@ func matrix(a *live.Analysis) h.H {
 				continue
 			}
 			n := refs[[2]string{r.pkg.Path, c.pkg.Path}]
-			cls, tip := "dsm-dep", fmt.Sprintf("%s → %s: %s", r.pkg.Rel, c.pkg.Rel, plural(n, "reference"))
+			cls, tip := "dsm-dep", fmt.Sprintf("%s → %s: %s", pkgName(a, r.pkg), pkgName(a, c.pkg), plural(n, "reference"))
 			if f, ok := bad[[2]string{r.pkg.Path, c.pkg.Path}]; ok {
 				cls, tip = "dsm-dep dsm-bad", tip+". "+f.Detail
 			}

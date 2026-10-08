@@ -230,7 +230,33 @@ kbd {
 .dsm-bad { background: color-mix(in srgb, var(--bad) 20%, transparent); color: var(--bad); outline: 1px solid var(--bad); outline-offset: -1px; }
 
 /* Review */
-.review { max-width: 1200px; margin: 0 auto; display: flex; flex-direction: column; gap: var(--sp4); }
+.review-layout { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: var(--sp4); align-items: start; }
+@media (max-width: 1000px) {
+  .review-layout { grid-template-columns: minmax(0, 1fr); }
+  .outline { display: none; }
+}
+.review { display: flex; flex-direction: column; gap: var(--sp4); min-width: 0; }
+.outline {
+  position: sticky;
+  top: var(--sp4);
+  max-height: calc(100vh - 90px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--sp2) var(--sp3);
+  font-size: 13px;
+}
+.outline h3 { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin: var(--sp3) 0 var(--sp1); }
+.outline h3:first-child { margin-top: var(--sp1); }
+.outline ul { list-style: none; margin: 0; padding: 0; }
+.ol-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: var(--sp2); padding: 1px 0; color: var(--ink); }
+.ol-row:hover { text-decoration: none; color: var(--accent); }
+.ol-row.done { color: var(--muted); }
+.ol-row.done .ol-mark { color: var(--ok); }
+.ol-mark { color: var(--muted); text-align: center; }
+.ol-name { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol-delta { font: 11px var(--mono); color: var(--muted); }
 .review-head {
   display: flex;
   justify-content: space-between;
@@ -319,3 +345,9 @@ kbd {
   .main { padding: var(--sp2); }
   .stamp { margin-left: 0; width: 100%; }
 }
+
+.frame { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
+.treemap a:hover .frame { stroke: var(--ink); }
+.frame-label { font: 600 12px var(--mono); fill: var(--ink); pointer-events: none; }
+.chip-smell { color: var(--bad); border-color: var(--bad); }
+.cut { margin: 0; padding: var(--sp1) var(--sp3); color: var(--muted); font: 12px var(--sans); }

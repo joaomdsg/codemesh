@@ -7,10 +7,12 @@ import (
 	_ "embed"
 	"fmt"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/go-via/via"
 	"github.com/go-via/via/h"
+	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/review"
 )
@@ -35,10 +37,10 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 		}),
 		via.WithTrustedOrigin(origin),
 	)
-	shell := shell{src: src}
+	shell := shell{src: src, state: state}
 	via.Mount(r, "/", MapPage{shell: shell})
 	via.Mount(r, "/deps", DepsPage{shell: shell})
-	via.Mount(r, "/review", ReviewPage{shell: shell, state: state})
+	via.Mount(r, "/review", ReviewPage{shell: shell})
 	return r
 }
 
@@ -46,6 +48,7 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 // subscription that re-renders the page on a new analysis.
 type shell struct {
 	src   *live.Source
+	state *review.State
 	Stamp via.State[string]
 }
 
@@ -87,10 +90,8 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 		return h.A(h.Class(cls), h.Href(href), h.Str(label), extra)
 	}
 	var pending h.H
-	if a != nil && a.Review != nil {
-		if n := len(a.Review.Units); n > 0 {
-			pending = h.Span(h.Class("count"), h.Str(n))
-		}
+	if n := s.open(a); n > 0 {
+		pending = h.Span(h.Class("count"), h.Title("units not yet reviewed"), h.Str(n))
 	}
 	var failure h.H
 	if a != nil && a.Err != nil {
@@ -110,6 +111,29 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 		failure,
 		h.Main(append([]h.H{h.Class("main")}, main...)...),
 	)
+}
+
+// open counts the units not yet marked reviewed.
+func (s *shell) open(a *live.Analysis) int {
+	if a == nil || a.Review == nil {
+		return 0
+	}
+	n := 0
+	for _, u := range a.Review.Units {
+		if !s.state.Reviewed(u.Key) {
+			n++
+		}
+	}
+	return n
+}
+
+// pkgName is a package's directory, or the module's last element for the
+// root package, whose directory "." says nothing.
+func pkgName(a *live.Analysis, p *code.Package) string {
+	if p.Rel == "." {
+		return path.Base(a.Snap.Module)
+	}
+	return p.Rel
 }
 
 func group(kids []h.H) h.H { return via.Each(kids, func(k h.H) h.H { return k }) }

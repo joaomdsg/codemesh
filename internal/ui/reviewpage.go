@@ -17,8 +17,7 @@ import (
 // first, with reviewed units folded away.
 type ReviewPage struct {
 	shell
-	state *review.State
-	err   string
+	err string
 }
 
 func (p *ReviewPage) OnInit(ctx *via.Ctx) error {
@@ -67,12 +66,7 @@ func (p *ReviewPage) View() h.H {
 		return p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("Nothing to review: "+a.Note+".")))
 	}
 	rev := a.Review
-	done := 0
-	for _, u := range rev.Units {
-		if p.state.Reviewed(u.Key) {
-			done++
-		}
-	}
+	done := len(rev.Units) - p.open(a)
 	var lanes []h.H
 	for _, l := range review.Lanes {
 		if units := rev.Lane(l); len(units) > 0 {
@@ -88,7 +82,10 @@ func (p *ReviewPage) View() h.H {
 	}
 	body = append(body, p.smellDelta(rev))
 	body = append(body, lanes...)
-	return p.frame(tabReview, a, h.Div(append([]h.H{h.Class("review")}, body...)...))
+	return p.frame(tabReview, a, h.Div(h.Class("review-layout"),
+		p.outline(rev),
+		h.Div(append([]h.H{h.Class("review")}, body...)...),
+	))
 }
 
 func (p *ReviewPage) summary(a *live.Analysis, done int) h.H {
@@ -134,10 +131,36 @@ func (p *ReviewPage) smellDelta(rev *review.Review) h.H {
 		rows = append(rows, row(f, "gone"))
 	}
 	title := fmt.Sprintf("Smells: %d new, %d fixed", len(rev.Introduced), len(rev.Fixed))
-	return h.Details(h.Class("delta"), h.Open(len(rev.Introduced) > 0),
+	return h.Details(h.Class("delta"),
 		h.Summary(h.Str(title)),
 		h.Ul(append([]h.H{h.Class("findings")}, rows...)...),
 	)
+}
+
+// outline is the whole change at a glance: every unit by lane, with its
+// mark, linking to its card.
+func (p *ReviewPage) outline(rev *review.Review) h.H {
+	var kids []h.H
+	for _, l := range review.Lanes {
+		units := rev.Lane(l)
+		if len(units) == 0 {
+			continue
+		}
+		var rows []h.H
+		for _, u := range units {
+			cls, glyph := "ol-row", "○"
+			if p.state.Reviewed(u.Key) {
+				cls, glyph = "ol-row done", "✓"
+			}
+			rows = append(rows, h.Li(h.A(h.Class(cls), h.Href("#"+unitID(u.Key)),
+				h.Span(h.Class("ol-mark"), h.Str(glyph)),
+				h.Span(h.Class("ol-name"), h.Str(u.Name)),
+				h.Span(h.Class("ol-delta"), h.Str(fmt.Sprintf("+%d −%d", u.Added, u.Deleted))),
+			)))
+		}
+		kids = append(kids, h.H3(h.Str(l.String())), h.Ul(rows...))
+	}
+	return h.Nav(append([]h.H{h.Class("outline"), h.Aria("label", "Units")}, kids...)...)
 }
 
 var laneHelp = map[review.Lane]string{
@@ -181,6 +204,9 @@ func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, folded bool) h.H {
 		label, glyph = "Reviewed. Click to reopen", "✓"
 	}
 	var chips []h.H
+	for _, f := range u.Smells {
+		chips = append(chips, h.Span(h.Class("chip chip-smell"), h.Title(f.Detail+". "+f.Rule.Why()), h.Str("new: "+strings.ToLower(ruleLabel(f.Rule)))))
+	}
 	for _, r := range u.Reasons {
 		chips = append(chips, h.Span(h.Class("chip"), h.Str(r)))
 	}
@@ -210,9 +236,17 @@ func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, folded bool) h.H {
 // fold.
 const contextRun = 3
 
+// maxDiffLines caps one unit's rendered diff; a fixture or a vendored file
+// can run to thousands of lines nobody reads in a review.
+const maxDiffLines = 400
+
 func diffView(u *review.Unit) h.H {
 	if len(u.Lines) == 0 {
 		return nil
+	}
+	lines, cut := u.Lines, 0
+	if len(lines) > maxDiffLines {
+		lines, cut = lines[:maxDiffLines], len(lines)-maxDiffLines
 	}
 	var rows []h.H
 	var run []review.Line
@@ -244,7 +278,7 @@ func diffView(u *review.Unit) h.H {
 		}
 		run = nil
 	}
-	for _, l := range u.Lines {
+	for _, l := range lines {
 		if l.Op == ' ' {
 			run = append(run, l)
 			continue
@@ -253,7 +287,10 @@ func diffView(u *review.Unit) h.H {
 		rows = append(rows, diffRow(l))
 	}
 	flush(true)
-	return h.Div(h.Class("diff"), h.Role("table"), group(rows))
+	if cut > 0 {
+		rows = append(rows, h.P(h.Class("cut"), h.Str(fmt.Sprintf("%d more lines not shown. Open %s to read them.", cut, u.File))))
+	}
+	return h.Div(h.Class("diff"), group(rows))
 }
 
 func diffRow(l review.Line) h.H {

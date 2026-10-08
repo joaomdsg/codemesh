@@ -261,7 +261,7 @@ func TestFind_flagsImportsOfLessStablePackages(t *testing.T) {
 	// more stable package.
 	require.Equal(t, map[string]smell.Severity{"core": smell.Warn}, of(fs, smell.UnstableDep))
 	f := one(t, fs, smell.UnstableDep, "core")
-	assert.Equal(t, prefix+"core", f.Subject)
+	assert.Equal(t, "core", f.Subject)
 	assert.Equal(t, prefix+"flaky", f.Target)
 	assert.Empty(t, f.File)
 	assert.Zero(t, f.Line)
@@ -296,7 +296,7 @@ func TestFind_flagsPackagesWithoutTests(t *testing.T) {
 		"chainb": smell.Info,
 	}, of(fs, smell.UntestedPackage), "not size or core (tested), nor cmd/app (main)")
 	f := one(t, fs, smell.UntestedPackage, "hub")
-	assert.Equal(t, prefix+"hub", f.Subject)
+	assert.Equal(t, "hub", f.Subject)
 	assert.Equal(t, "no test files", f.Detail)
 }
 
