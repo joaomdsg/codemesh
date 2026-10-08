@@ -18,6 +18,7 @@ type atlas struct {
 	At    int64       `json:"at"` // analysis time, so the island redraws only on a new layout
 	W     float64     `json:"w"`
 	H     float64     `json:"h"`
+	Lens  string      `json:"lens,omitempty"` // map only: the lens the heats were taken with
 	Tiles []atlasTile `json:"tiles"`
 }
 
@@ -25,21 +26,27 @@ type atlasTile struct {
 	K          string // "p" package, "f" file, "d" declaration
 	X, Y, W, H float64
 	Name       string
-	Unit       string // card id of the review unit for this declaration
+	Unit       string // review: card id of the unit for this declaration
+	Heat       int    // map: lens bucket, 0 to 5
+	ID         string // map: package path, file path or decl ID
 }
 
-// MarshalJSON writes a tile as [k, x, y, w, h, name, unit]: a large module
-// has thousands of tiles, and Datastar posts every signal back on each action.
+// MarshalJSON writes a tile as [k, x, y, w, h, name, unit, heat, id]: a
+// large module has thousands of tiles, and Datastar posts every signal back
+// on each action.
 func (t atlasTile) MarshalJSON() ([]byte, error) {
-	return json.Marshal([]any{t.K, t.X, t.Y, t.W, t.H, t.Name, t.Unit})
+	return json.Marshal([]any{t.K, t.X, t.Y, t.W, t.H, t.Name, t.Unit, t.Heat, t.ID})
 }
 
-const atlasW, atlasH = 900.0, 600.0
-
-// atlasOf lays the module out. units maps decl IDs to the card id of their
-// review unit, so the island can light and link the touched declarations.
-func atlasOf(a *live.Analysis, units map[string]string) atlas {
-	out := atlas{At: a.At.UnixMilli(), W: atlasW, H: atlasH, Tiles: []atlasTile{}}
+// atlasOf lays the module out in a w × h space and lets mark fill in each
+// tile's page-specific fields; exactly one of pkg, f, d is the tile's own
+// level, the others are its parents.
+func atlasOf(a *live.Analysis, w, h float64, mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)) atlas {
+	out := atlas{At: a.At.UnixMilli(), W: w, H: h, Tiles: []atlasTile{}}
+	add := func(t atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
+		mark(len(out.Tiles), &t, pkg, f, d)
+		out.Tiles = append(out.Tiles, t)
+	}
 	var pkgs []treemap.Item
 	byPath := map[string]*code.Package{}
 	for _, p := range a.Snap.Packages {
@@ -48,9 +55,9 @@ func atlasOf(a *live.Analysis, units map[string]string) atlas {
 			byPath[p.Path] = p
 		}
 	}
-	for _, pt := range treemap.Layout(pkgs, treemap.Rect{W: atlasW, H: atlasH}) {
+	for _, pt := range treemap.Layout(pkgs, treemap.Rect{W: w, H: h}) {
 		p := byPath[pt.ID]
-		out.Tiles = append(out.Tiles, tileAt("p", pkgName(a, p), "", pt.Rect))
+		add(tileAt("p", pkgName(a, p), pt.Rect), p, nil, nil)
 		var files []treemap.Item
 		byFile := map[string]*code.File{}
 		for _, f := range p.Files {
@@ -59,27 +66,46 @@ func atlasOf(a *live.Analysis, units map[string]string) atlas {
 				byFile[f.Path] = f
 			}
 		}
-		for _, ft := range treemap.Layout(files, pt.Rect.Inset(2)) {
+		for _, ft := range treemap.Layout(files, belowLabel(pt.Rect.Inset(2), 14)) {
 			f := byFile[ft.ID]
-			out.Tiles = append(out.Tiles, tileAt("f", path.Base(f.Path), "", ft.Rect))
+			add(tileAt("f", path.Base(f.Path), ft.Rect), p, f, nil)
 			var decls []treemap.Item
 			byDecl := map[string]*code.Decl{}
 			for _, d := range f.Decls {
 				decls = append(decls, treemap.Item{ID: d.ID, Weight: float64(max(d.Lines, 1))})
 				byDecl[d.ID] = d
 			}
-			for _, dt := range treemap.Layout(decls, ft.Rect.Inset(1)) {
+			for _, dt := range treemap.Layout(decls, belowLabel(ft.Rect.Inset(1), 12)) {
 				d := byDecl[dt.ID]
-				out.Tiles = append(out.Tiles, tileAt("d", d.Name, units[d.ID], dt.Rect))
+				add(tileAt("d", d.Name, dt.Rect), p, f, d)
 			}
 		}
 	}
 	return out
 }
 
-func tileAt(kind, name, unit string, r treemap.Rect) atlasTile {
+// belowLabel keeps a strip at the top of a frame for its label, when the
+// frame is tall enough to spare it, so a frame's name never sits on its kids'.
+func belowLabel(r treemap.Rect, strip float64) treemap.Rect {
+	if r.H < 3*strip {
+		return r
+	}
+	return treemap.Rect{X: r.X, Y: r.Y + strip, W: r.W, H: r.H - strip}
+}
+
+func tileAt(kind, name string, r treemap.Rect) atlasTile {
 	round := func(v float64) float64 { return math.Round(v*10) / 10 }
-	return atlasTile{K: kind, X: round(r.X), Y: round(r.Y), W: round(r.W), H: round(r.H), Name: name, Unit: unit}
+	return atlasTile{K: kind, X: round(r.X), Y: round(r.Y), W: round(r.W), H: round(r.H), Name: name}
+}
+
+// reviewAtlas lights each declaration that has a review unit with its card id.
+func reviewAtlas(a *live.Analysis) atlas {
+	units := unitCards(a.Review)
+	return atlasOf(a, 900, 600, func(_ int, t *atlasTile, _ *code.Package, _ *code.File, d *code.Decl) {
+		if d != nil {
+			t.Unit = units[d.ID]
+		}
+	})
 }
 
 // unitCards maps each declaration unit's decl ID to its card id.

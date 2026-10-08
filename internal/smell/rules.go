@@ -59,7 +59,9 @@ func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl)
 			out = append(out, f)
 		}
 	}
-	if d.Exported && !main && d.Kind != code.Method && !usedOutside(s, d) {
+	// An importable package's exports are API for other modules, which this
+	// module cannot see; only a closed package's unused export is dead weight.
+	if d.Exported && !s.Importable(p.Path) && !main && d.Kind != code.Method && !usedOutside(s, d) {
 		out = append(out, at(UnusedExport, Info, 0, 0, "no use outside its package"))
 	}
 	if len(d.Callers) == 0 && deadCandidate(d, main) {

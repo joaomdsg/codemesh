@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"math"
 	"os"
@@ -10,20 +11,25 @@ import (
 	"strings"
 
 	"github.com/go-via/via"
+	"github.com/go-via/via/expr"
 	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/smell"
-	"github.com/joaomdsg/codemesh/internal/treemap"
 )
 
-// MapPage is the treemap: packages, then a package's files, then a file's
-// declarations, coloured by a lens, beside the findings for that scope.
+// MapPage is the atlas of the module, coloured by a lens, beside the smells
+// of the scope in view.
 type MapPage struct {
 	shell
 	in   string // scope: "" for the module, a package path or a file path
 	lens string
 	decl string // selected decl ID
+
+	// The atlas island's inputs, both sent by the server: the layout with a
+	// heat per declaration, and the tile to fly to.
+	Atlas    via.Signal[atlas]
+	Selected via.Signal[string]
 }
 
 type lens struct {
@@ -32,8 +38,8 @@ type lens struct {
 
 var lenses = []lens{
 	{"smells", "Smells", "smells per 100 lines, weighted by severity"},
-	{"complexity", "Complexity", "highest cyclomatic complexity inside"},
-	{"churn", "Churn", "commits in the last 90 days"},
+	{"complexity", "Complexity", "each declaration's cyclomatic complexity"},
+	{"churn", "Churn", "commits to the declaration's file in the last 90 days"},
 	{"hotspot", "Hotspot", "churn × complexity: hard code that keeps changing"},
 }
 
@@ -44,7 +50,20 @@ func (p *MapPage) OnInit(ctx *via.Ctx) error {
 		p.lens = "smells"
 	}
 	p.start(ctx)
+	p.sendAtlas()
+	ctx.Listen(p.src.Updates, p.onAnalysis)
 	return nil
+}
+
+func (p *MapPage) onAnalysis(_ *via.Ctx, _ int64) { p.sendAtlas() }
+
+func (p *MapPage) sendAtlas() {
+	a := p.src.Current()
+	if a == nil || a.Snap == nil {
+		return
+	}
+	p.Atlas.Set(p.atlas(a))
+	p.Selected.Set(cmp.Or(p.decl, p.in))
 }
 
 func (p *MapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
@@ -59,7 +78,8 @@ func (p *MapPage) View() h.H {
 		h.Div(h.Class("map-layout"),
 			h.Section(h.Class("map-pane"),
 				h.Div(h.Class("map-bar"), p.crumbs(a, sc), p.lensBar()),
-				p.treemap(a, sc),
+				h.Div(h.Class("atlas atlas-map"), h.DataIgnoreMorph(),
+					h.DataEffect(expr.Rawf("codemesh.atlas(el, %s, {focus: %s})", p.Atlas.Ref(), p.Selected.Ref()))),
 				h.P(h.Class("hint"), h.Str(p.lensHelp())),
 			),
 			h.Aside(h.Class("side"), p.side(a, sc)),
@@ -121,179 +141,36 @@ func (p *MapPage) lensHelp() string {
 	return ""
 }
 
-// tile is one treemap cell before layout. A tile with kids is drawn as a
-// frame holding them, one level deep, so the module view shows each
-// package's files and a package view each file's declarations.
-type tile struct {
-	id, label, href, tip string
-	lines                int
-	value                float64
-	selected             bool
-	kids                 []tile
-}
-
-// The layout runs in a nominal space close to a desktop pane's pixels; tiles
-// are then placed in percent of it, so labels fit about as estimated.
-const (
-	mapW, mapH = 1000.0, 620.0
-	frameHead  = 18.0 // label strip of a frame
-)
-
-func (p *MapPage) treemap(a *live.Analysis, sc scope) h.H {
-	tiles := p.tiles(a, sc)
-	if len(tiles) == 0 {
-		return h.P(h.Class("empty"), h.Str("No code here."))
-	}
-	// The scale comes from the tiles that get coloured: a framed tile's kids,
-	// else the tile itself.
-	top := 0.0
-	for _, t := range tiles {
-		if len(t.kids) == 0 {
-			top = math.Max(top, t.value)
-		}
-		for _, k := range t.kids {
-			top = math.Max(top, k.value)
-		}
-	}
-	cells := p.layout(tiles, treemap.Rect{W: mapW, H: mapH}, top, true)
-	return h.El("svg", append([]h.H{
-		h.Class("treemap"), h.Role("img"),
-		h.Aria("label", "Treemap of the current scope"),
-	}, cells...)...)
-}
-
-func (p *MapPage) layout(tiles []tile, area treemap.Rect, top float64, nest bool) []h.H {
-	byID := map[string]tile{}
-	var items []treemap.Item
-	for _, t := range tiles {
-		byID[t.id] = t
-		items = append(items, treemap.Item{ID: t.id, Weight: float64(max(t.lines, 1))})
-	}
-	var out []h.H
-	for _, lt := range treemap.Layout(items, area) {
-		t := byID[lt.ID]
-		r := lt.Rect.Inset(1)
-		if nest && len(t.kids) > 0 && r.W > 60 && r.H > 2*frameHead {
-			out = append(out, p.frameCell(t, r, top)...)
-			continue
-		}
-		out = append(out, p.cell(t, r, top))
-	}
-	return out
-}
-
-// frameCell draws a container: a labelled frame, its kids inside.
-func (p *MapPage) frameCell(t tile, r treemap.Rect, top float64) []h.H {
-	head := h.El("a", h.Href(t.href),
-		h.El("title", h.Str(t.tip)),
-		box(r,
-			h.El("rect", h.Class("frame"), h.Width("100%"), h.Height("100%"), h.RawAttr("rx", "3")),
-			label("frame-label", 6, 13, fitPath(t.label, r.W-12)),
-		),
-	)
-	inner := treemap.Rect{X: r.X + 2, Y: r.Y + frameHead, W: r.W - 4, H: r.H - frameHead - 2}
-	return append([]h.H{head}, p.layout(t.kids, inner, top, false)...)
-}
-
-func (p *MapPage) cell(t tile, r treemap.Rect, top float64) h.H {
-	cls := "cell heat" + fmt.Sprint(p.heat(t.value, top))
-	if t.selected {
-		cls += " sel"
-	}
-	kids := []h.H{h.El("rect", h.Class(cls), h.Width("100%"), h.Height("100%"), h.RawAttr("rx", "2"))}
-	if r.H > 17 {
-		kids = append(kids, label("cell-label", 5, 14, fit(t.label, r.W-10)))
-	}
-	if r.H > 32 {
-		kids = append(kids, label("cell-sub", 5, 28, fit(fmt.Sprintf("%d lines", t.lines), r.W-10)))
-	}
-	return h.El("a", h.Href(t.href), h.El("title", h.Str(t.tip)), box(r, kids...))
-}
-
-// box places a tile as a nested svg in percent of the map, so the map
-// stretches to its pane while labels inside stay at their CSS pixel size,
-// and anything that does not fit is clipped at the tile's edge.
-func box(r treemap.Rect, kids ...h.H) h.H {
-	pct := func(name string, v, of float64) h.Attr { return h.RawAttr(name, fmt.Sprintf("%.3f%%", 100*v/of)) }
-	return h.El("svg", append([]h.H{
-		pct("x", r.X, mapW), pct("y", r.Y, mapH), pct("width", r.W, mapW), pct("height", r.H, mapH),
-	}, kids...)...)
-}
-
-func label(cls string, x, y int, text string) h.H {
-	if text == "" {
-		return nil
-	}
-	return h.El("text", h.Class(cls), h.RawAttr("x", fmt.Sprint(x)), h.RawAttr("y", fmt.Sprint(y)), h.Str(text))
-}
-
-func (p *MapPage) tiles(a *live.Analysis, sc scope) []tile {
+// atlas lays the module out with each declaration's lens value bucketed into
+// a heat from 0 to 5, and every tile named by its path or decl ID so a click
+// can open it.
+func (p *MapPage) atlas(a *live.Analysis) atlas {
 	fi := indexFindings(a.Findings)
-	var out []tile
-	switch {
-	case sc.file != nil:
-		for _, d := range sc.file.Decls {
-			out = append(out, p.declTile(fi, sc.file, d))
+	values := map[int]float64{}
+	at := atlasOf(a, mapW, mapH, func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
+		switch {
+		case d != nil:
+			t.ID = d.ID
+			values[i] = p.value(fi.decl[d.ID], d.Lines, d.Complexity, f.Churn)
+		case f != nil:
+			t.ID = f.Path
+		default:
+			t.ID = pkg.Path
 		}
-	case sc.pkg != nil:
-		for _, f := range sc.pkg.Files {
-			if !f.Test {
-				out = append(out, p.fileTile(fi, f, true))
-			}
-		}
-	default:
-		for _, pkg := range a.Snap.Packages {
-			out = append(out, p.pkgTile(fi, pkg, pkgName(a, pkg)))
-		}
+	})
+	top := 0.0
+	for _, v := range values {
+		top = math.Max(top, v)
 	}
-	return out
+	for i, v := range values {
+		at.Tiles[i].Heat = p.heat(v, top)
+	}
+	at.Lens = p.lens
+	return at
 }
 
-func (p *MapPage) pkgTile(fi findingIndex, pkg *code.Package, label string) tile {
-	t := tile{id: pkg.Path, label: label, href: p.href(pkg.Path, ""), lines: pkg.Lines()}
-	var cx, churn int
-	for _, f := range pkg.Files {
-		if !f.Test {
-			t.kids = append(t.kids, p.fileTile(fi, f, false))
-			cx, churn = max(cx, maxComplexity(f.Decls)), max(churn, f.Churn)
-		}
-	}
-	t.value = p.value(fi.pkg[pkg.Path], t.lines, cx, churn)
-	if p.lens == "hotspot" {
-		// A package is as hot as its hottest file; the product of the most
-		// churned and the most complex file would rate files that differ.
-		t.value = 0
-		for _, k := range t.kids {
-			t.value = math.Max(t.value, k.value)
-		}
-	}
-	t.tip = fmt.Sprintf("%s · %d lines · max complexity %d · %s", pkg.Path, t.lines, cx, plural(len(fi.pkg[pkg.Path]), "smell"))
-	return t
-}
-
-func (p *MapPage) fileTile(fi findingIndex, f *code.File, withDecls bool) tile {
-	cx := maxComplexity(f.Decls)
-	t := tile{
-		id: f.Path, label: path.Base(f.Path), href: p.href(f.Path, ""), lines: f.Lines,
-		value: p.value(fi.file[f.Path], f.Lines, cx, f.Churn),
-		tip:   fmt.Sprintf("%s · %d lines · max complexity %d · %s · %s", f.Path, f.Lines, cx, plural(f.Churn, "commit"), plural(len(fi.file[f.Path]), "smell")),
-	}
-	if withDecls {
-		for _, d := range f.Decls {
-			t.kids = append(t.kids, p.declTile(fi, f, d))
-		}
-	}
-	return t
-}
-
-func (p *MapPage) declTile(fi findingIndex, f *code.File, d *code.Decl) tile {
-	return tile{
-		id: d.ID, label: d.Name, href: p.href(f.Path, d.ID), lines: d.Lines,
-		value:    p.value(fi.decl[d.ID], d.Lines, d.Complexity, f.Churn),
-		tip:      fmt.Sprintf("%s %s · %d lines · complexity %d · %s", d.Kind, d.Name, d.Lines, d.Complexity, plural(len(fi.decl[d.ID]), "smell")),
-		selected: d.ID == p.decl,
-	}
-}
+// The map's layout space, close to the pane's shape on a desktop.
+const mapW, mapH = 1000.0, 620.0
 
 func (p *MapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
 	switch p.lens {
@@ -312,8 +189,8 @@ func (p *MapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
 }
 
 // heat buckets a value into 0 (cold) to 5. Smells and complexity use fixed
-// bands, so the same code reads the same in any scope or codebase; churn and
-// hotspot have no natural scale and are relative to the hottest tile in view.
+// bands, so the same code reads the same in any codebase; churn and hotspot
+// have no natural scale and are relative to the hottest declaration.
 func (p *MapPage) heat(v, top float64) int {
 	if v <= 0 {
 		return 0
@@ -470,14 +347,6 @@ func indexFindings(fs []smell.Finding) findingIndex {
 	return fi
 }
 
-func maxComplexity(ds []*code.Decl) int {
-	n := 0
-	for _, d := range ds {
-		n = max(n, d.Complexity)
-	}
-	return n
-}
-
 // shortPkg prefixes a name with its package's last element when it is not
 // the module root.
 func shortPkg(a *live.Analysis, pkg string) string {
@@ -485,21 +354,4 @@ func shortPkg(a *live.Analysis, pkg string) string {
 		return ""
 	}
 	return path.Base(pkg) + "."
-}
-
-// fit returns s if it fits in width px of 12px semibold text, else "": a
-// label is dropped rather than cut mid-word.
-func fit(s string, width float64) string {
-	if float64(len([]rune(s)))*7.8 > width {
-		return ""
-	}
-	return s
-}
-
-// fitPath is fit for a slash path, falling back to its last element.
-func fitPath(s string, width float64) string {
-	if f := fit(s, width); f != "" {
-		return f
-	}
-	return fit(path.Base(s), width)
 }

@@ -3,7 +3,6 @@ package review
 import (
 	"cmp"
 	"fmt"
-	"strings"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/smell"
@@ -60,16 +59,10 @@ func (b *builder) laneOf(u *Unit, d *code.Decl, resigned bool) Lane {
 // public reports whether other modules can import the package: not under an
 // internal directory and not a command.
 func (b *builder) public(pkg string) bool {
-	s := cmp.Or(b.in.Head, b.in.Base)
-	rel := strings.TrimPrefix(pkg, s.Module)
-	if strings.Contains(rel+"/", "/internal/") {
-		return false
+	if b.in.Head.Package(pkg) == nil {
+		return b.in.Base.Importable(pkg)
 	}
-	p := b.in.Head.Package(pkg)
-	if p == nil {
-		p = b.in.Base.Package(pkg)
-	}
-	return p == nil || p.Name != "main"
+	return b.in.Head.Importable(pkg)
 }
 
 // complexityReason names a complexity worth a reviewer's notice: one that

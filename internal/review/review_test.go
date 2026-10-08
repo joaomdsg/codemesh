@@ -85,6 +85,7 @@ func TestBuild_triagesUnitsIntoLanes(t *testing.T) {
 		"Old":                  review.Contract,
 		"Scale":                review.Logic,
 		"helper":               review.Logic,
+		"tangle":               review.Logic,
 		"TestClamp":            review.Tests,
 		"README.md":            review.Other,
 		"calc/testdata/in.txt": review.Tests,
@@ -182,12 +183,12 @@ func TestBuild_putsNewSmellsOnTheirUnits(t *testing.T) {
 	rev := load(t).rev
 
 	var rules []smell.Rule
-	for _, f := range unit(t, rev, "Clamp").Smells {
+	for _, f := range unit(t, rev, "tangle").Smells {
 		rules = append(rules, f.Rule)
 	}
-	assert.Equal(t, []smell.Rule{smell.UnusedExport}, rules, "only a test calls Clamp")
+	assert.Equal(t, []smell.Rule{smell.ComplexFunc}, rules)
 	assert.True(t, slices.ContainsFunc(rev.Fixed, func(f smell.Finding) bool {
-		return f.Rule == smell.UnusedExport && f.Subject == "Old"
+		return f.Rule == smell.ManyParams && f.Subject == "Old"
 	}), "removing Old removes its smell")
 }
 

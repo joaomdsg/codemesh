@@ -19,7 +19,6 @@
   --heat3: #eeb877;
   --heat4: #e38b5a;
   --heat5: #cf5545;
-  --sel: #17242c;
   --sp1: 4px;
   --sp2: 8px;
   --sp3: 12px;
@@ -53,7 +52,6 @@
     --heat3: #77532c;
     --heat4: #93522f;
     --heat5: #ad4636;
-    --sel: #e3e8ea;
     color-scheme: dark;
   }
 }
@@ -157,21 +155,6 @@ kbd {
 .seg:hover { text-decoration: none; color: var(--ink); }
 .seg.on { color: var(--ink); font-weight: 600; background: var(--line-soft); }
 
-/* Height follows the viewport, so the map and the side panel end together. */
-.treemap { width: 100%; height: calc(100vh - 190px); min-height: 320px; display: block; }
-.cell { stroke: var(--surface); stroke-width: 1; }
-.treemap a:hover .cell { stroke: var(--ink); stroke-width: 1.5; }
-.cell.sel { stroke: var(--sel); stroke-width: 3; }
-.heat0 { fill: var(--heat0); }
-.heat1 { fill: var(--heat1); }
-.heat2 { fill: var(--heat2); }
-.heat3 { fill: var(--heat3); }
-.heat4 { fill: var(--heat4); }
-.heat5 { fill: var(--heat5); }
-.cell-label { font: 600 12px var(--sans); fill: var(--ink); pointer-events: none; }
-.cell-sub { font: 11px var(--sans); fill: var(--muted); pointer-events: none; }
-.heat4 ~ .cell-sub, .heat5 ~ .cell-sub { fill: var(--ink); }
-@media (prefers-color-scheme: dark) { .heat4 ~ text, .heat5 ~ text { fill: #fff; } }
 
 .findings { list-style: none; margin: 0; padding: 0; }
 .finding {
@@ -272,10 +255,24 @@ kbd {
 .atlas .t-d { fill: var(--heat0); stroke: var(--surface); stroke-width: .5; }
 .atlas .t-d.open { fill: var(--accent); cursor: pointer; }
 .atlas .t-d.done { fill: var(--ok); opacity: .45; cursor: pointer; }
-.atlas .t-d.cur { stroke: var(--ink); stroke-width: 2; }
+.atlas .cur { stroke: var(--ink); stroke-width: 2; }
 .atlas-label { fill: var(--muted); font-family: var(--mono); pointer-events: none; }
+/* The map keeps its layout's shape (1000 × 620), so no band goes unused. */
+.atlas.atlas-map { aspect-ratio: 1000 / 620; border: 0; }
+.atlas-map rect { cursor: pointer; }
+.atlas-map .t-p:hover, .atlas-map .t-f:hover { stroke: var(--ink); }
+.atlas-map .t-d:hover { stroke: var(--ink); stroke-width: 1.5; }
+.atlas .t-d.h0 { fill: var(--heat0); }
+.atlas .t-d.h1 { fill: var(--heat1); }
+.atlas .t-d.h2 { fill: var(--heat2); }
+.atlas .t-d.h3 { fill: var(--heat3); }
+.atlas .t-d.h4 { fill: var(--heat4); }
+.atlas .t-d.h5 { fill: var(--heat5); }
+.atlas-map .l-d { fill: var(--ink); }
+.atlas-map .l-d.hot { fill: #fff; }
+.atlas-map .l-f { fill: var(--ink); }
 .atlas .l-p { fill: var(--ink); font-weight: 600; }
-.atlas .l-d { fill: #fff; }
+.atlas:not(.atlas-map) .l-d { fill: #fff; }
 .review { display: flex; flex-direction: column; gap: var(--sp4); min-width: 0; }
 .outline {
   min-height: 0;
@@ -401,9 +398,6 @@ kbd {
   .stamp { margin-left: 0; width: 100%; }
 }
 
-.frame { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
-.treemap a:hover .frame { stroke: var(--ink); }
-.frame-label { font: 600 12px var(--mono); fill: var(--ink); pointer-events: none; }
 .chip-smell { color: var(--bad); border-color: var(--bad); }
 
 /* On wide screens callers sit beside the diff instead of under it. */

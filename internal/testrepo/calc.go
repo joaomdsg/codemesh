@@ -21,8 +21,8 @@ func Scale(x, k int) int {
 
 func helper(x int) int { return x + 1 }
 
-// Old is removed in head.
-func Old() {}
+// Old is removed in head, and its many-params smell with it.
+func Old(a, b, c, d, e, f int) {}
 
 // Moved moves to util.go unchanged.
 func Moved() int { return 7 }
@@ -63,7 +63,34 @@ func Scale(x, k int) int {
 func helper(x, d int) int { return x + d }
 
 // Clamp bounds x to [lo, hi].
-func Clamp(x, lo, hi int) int { return min(max(x, lo), hi) }
+func Clamp(x, lo, hi int) int { return tangle(min(max(x, lo), hi)) }
+
+// tangle brings a new complex-function smell.
+func tangle(x int) int {
+	switch x {
+	case 1, 2:
+		return 1
+	case 3:
+		return 2
+	case 4:
+		return 3
+	case 5:
+		return 4
+	case 6:
+		return 5
+	case 7:
+		return 6
+	case 8:
+		return 7
+	case 9:
+		return 8
+	case 10:
+		return 9
+	case 11:
+		return 10
+	}
+	return 0
+}
 `,
 	"calc/util.go": `package calc
 

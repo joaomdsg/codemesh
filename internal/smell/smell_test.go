@@ -193,33 +193,27 @@ func TestFind_flagsFilesAboveSixHundredLines(t *testing.T) {
 	assert.Equal(t, smell.LargeFileHighLimit, one(t, fs, smell.LargeFile, "big/f1201.go").Limit)
 }
 
-func TestFind_flagsExportsNobodyOutsideUses(t *testing.T) {
+func TestFind_flagsUnusedExportsOfClosedPackagesOnly(t *testing.T) {
+	t.Parallel()
+	s, err := code.Load("testdata/quiet")
+	require.NoError(t, err)
+	fs := smell.Find(s)
+
+	var got []string
+	for _, f := range fs {
+		if f.Rule == smell.UnusedExport {
+			got = append(got, f.Decl+": "+f.Detail)
+		}
+	}
+	assert.Equal(t, []string{"example.com/quiet/internal/priv.Orphan: no use outside its package"}, got,
+		"lib.E is API for other modules; priv.Used has a caller in lib")
+}
+
+func TestFind_leavesImportableExportsAlone(t *testing.T) {
 	t.Parallel()
 	_, fs := loadSmelly(t)
 
-	got := of(fs, smell.UnusedExport)
-	for _, id := range []string{
-		"core.Orphan",
-		"core.OnlyTested", // its only caller is core's own external test
-		"core.Hidden",
-		"core.T",
-		"envy.Few",
-		"size.Long60",
-	} {
-		assert.Equal(t, smell.Info, got[id], id)
-		assert.Contains(t, got, id)
-	}
-	for _, id := range []string{
-		"core.Used",        // called from cmd/app and envy
-		"hub.A",            // called from several packages
-		"core.T.Method",    // methods may satisfy interfaces
-		"cmd/app.Exported", // main packages export nothing
-		"size.TestSize",
-		"core.TestOnlyTested",
-	} {
-		assert.NotContains(t, got, id)
-	}
-	assert.Equal(t, "no use outside its package", one(t, fs, smell.UnusedExport, "core.Orphan").Detail)
+	assert.Empty(t, of(fs, smell.UnusedExport), "every smelly package is importable")
 }
 
 func TestFind_flagsDeclarationsNothingReferences(t *testing.T) {
@@ -324,9 +318,11 @@ func TestFind_sortsBySeverityThenLocation(t *testing.T) {
 func TestFind_reportsEveryRuleWithAReason(t *testing.T) {
 	t.Parallel()
 	_, fs := loadSmelly(t)
+	quiet, err := code.Load("testdata/quiet")
+	require.NoError(t, err)
 
 	seen := map[smell.Rule]bool{}
-	for _, f := range fs {
+	for _, f := range append(fs, smell.Find(quiet)...) {
 		seen[f.Rule] = true
 		assert.NotEmpty(t, f.Rule.Why(), f.Rule)
 	}

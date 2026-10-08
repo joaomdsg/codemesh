@@ -52,10 +52,11 @@ func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
 
 	status, body := e.app.Get("/")
 	require.Equal(t, http.StatusOK, status)
-	assert.Contains(t, body, ">calc<", "the calc package frame")
-	assert.Contains(t, body, ">calc.go<", "its file inside the frame")
+	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"example.com/calc/calc"\]`, body, "the calc package tile")
+	assert.Regexp(t, `\["f",[^\]]*"calc.go","",0,"calc/calc.go"\]`, body, "its file tile")
+	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$atlas, \{focus: \$selected\}\)"`, body)
 	assert.Contains(t, body, "Smells · 1")
-	assert.Contains(t, body, "Unused export")
+	assert.Contains(t, body, "Complex function")
 }
 
 func TestMap_opensADeclarationWithItsSourceAndCallers(t *testing.T) {
@@ -85,7 +86,7 @@ func TestReview_listsUnitsByLaneWithTheirReasons(t *testing.T) {
 
 	status, body := e.app.Get("/review")
 	require.Equal(t, http.StatusOK, status)
-	for _, want := range []string{"Contract", "Logic", "Tests", "Noise", "Clamp", "no direct test", "0 of 9 reviewed"} {
+	for _, want := range []string{"Contract", "Logic", "Tests", "Noise", "Clamp", "no direct test", "0 of 10 reviewed"} {
 		assert.Contains(t, body, want)
 	}
 }
@@ -107,7 +108,7 @@ func TestReview_markRecordsTheUnitAsReviewed(t *testing.T) {
 
 	assert.True(t, e.state.Reviewed(first.Key))
 	_, body := e.app.Get("/review")
-	assert.Contains(t, body, "1 of 9 reviewed")
+	assert.Contains(t, body, "1 of 10 reviewed")
 }
 
 func TestLinks_carryScopeLensAndDeclarationToTheMap(t *testing.T) {
@@ -120,7 +121,7 @@ func TestLinks_carryScopeLensAndDeclarationToTheMap(t *testing.T) {
 	_, deps := e.app.Get("/deps")
 	_, rev := e.app.Get("/review")
 
-	assert.Contains(t, home, `href="/?lens=smells&amp;in=example.com%2Fcalc%2Fcalc"`, "package frame")
+	assert.Contains(t, home, `href="/?lens=smells"`, "crumb to the module")
 	assert.Contains(t, decl, `href="/?lens=complexity&amp;in=calc%2Fcalc.go&amp;d=`+scale+`"`, "lens keeps the scope")
 	assert.Contains(t, decl, `href="/?lens=churn&amp;in=calc%2Fcalc.go"`, "closing the panel keeps the lens")
 	assert.Contains(t, decl, `href="/?lens=churn&amp;in=main.go&amp;d=example.com%2Fcalc.main"`, "caller link")
@@ -177,7 +178,7 @@ func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {
 	assert.Contains(t, body, "undefined: undefined")
 }
 
-func TestMap_givesTheHottestFileTheHottestColour(t *testing.T) {
+func TestMap_givesTheHottestDeclarationTheHottestColour(t *testing.T) {
 	t.Parallel()
 	e := serveRepo(t, map[string]string{
 		"go.mod":  "module example.com/hot\n\ngo 1.27\n",
@@ -194,7 +195,7 @@ func TestMap_givesTheHottestFileTheHottestColour(t *testing.T) {
 	e.src.Refresh()
 
 	_, body := e.app.Get("/?lens=hotspot")
-	assert.Contains(t, body, `class="cell heat5"`, "the hottest file sets the scale")
+	assert.Regexp(t, `\["d",[^\]]*"B","",5,"example.com/hot/p.B"\]`, body, "the hottest declaration sets the scale")
 }
 
 func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
@@ -210,9 +211,9 @@ func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
 
 	_, body := e.app.Get("/review")
 	assert.Contains(t, body, `data-ignore-morph`)
-	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$atlas, \$reviewed, \$_focus\)"`, body)
-	assert.Regexp(t, `\["p",[^\]]*"calc",""\]`, body, "a package tile")
-	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+"\]`, body, "Scale is lit with its card id")
+	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$atlas, \{reviewed: \$reviewed, focus: \$_focus\}\)"`, body)
+	assert.Regexp(t, `\["p",[^\]]*"calc","",0,""\]`, body, "a package tile")
+	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+",0,""\]`, body, "Scale is lit with its card id")
 	assert.Regexp(t, `"reviewed":\["u[0-9a-f]+"\]`, body, "the reviewed card")
 	assert.Contains(t, body, `src="/_codemesh/d3.min.js?v=`)
 }

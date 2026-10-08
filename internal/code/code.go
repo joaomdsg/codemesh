@@ -2,7 +2,10 @@
 // declarations, with metrics and type-checked references between them.
 package code
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // Snapshot is one module as analysed at one point in time.
 type Snapshot struct {
@@ -100,6 +103,17 @@ func (s *Snapshot) ImportedBy(path string) []string {
 		}
 	}
 	return out
+}
+
+// Importable reports whether other modules can import the package at path:
+// no internal directory guards it and it is not a command.
+func (s *Snapshot) Importable(path string) bool {
+	rel := strings.TrimPrefix(path, s.Module)
+	if strings.Contains(rel+"/", "/internal/") {
+		return false
+	}
+	p := s.Package(path)
+	return p == nil || p.Name != "main"
 }
 
 // Lines returns the code lines of a package, test files excluded.

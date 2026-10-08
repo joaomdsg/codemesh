@@ -85,6 +85,16 @@ func TestLoad_resolvesCallersAndRefsThroughTypes(t *testing.T) {
 	assert.Contains(t, s.Decl("example.com/shop/cart.Cart").Callers, "example.com/shop/cart.Cart.Add")
 }
 
+func TestSnapshot_importableExcludesCommandsAndInternalPackages(t *testing.T) {
+	t.Parallel()
+	s := loadShop(t)
+
+	assert.True(t, s.Importable("example.com/shop/cart"))
+	assert.False(t, s.Importable("example.com/shop/cmd/shop"), "a command")
+	assert.False(t, s.Importable("example.com/shop/internal/x"))
+	assert.False(t, s.Importable("example.com/shop/internal"))
+}
+
 func TestLoad_signsStructsByTheirExportedFieldsOnly(t *testing.T) {
 	t.Parallel()
 	s := loadShop(t)

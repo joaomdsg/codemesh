@@ -60,7 +60,7 @@ func (p *ReviewPage) sendAtlas() {
 	if a == nil || a.Snap == nil || a.Review == nil {
 		return
 	}
-	p.Atlas.Set(atlasOf(a, unitCards(a.Review)))
+	p.Atlas.Set(reviewAtlas(a))
 	p.Reviewed.Set(reviewedCards(a.Review, p.state))
 }
 
@@ -228,7 +228,7 @@ func (p *ReviewPage) smellDelta(rev *review.Review) h.H {
 // lit. It ignores morphs, so a re-render never wipes what D3 drew.
 func (p *ReviewPage) atlasIsland() h.H {
 	return h.Div(h.Class("atlas"), h.DataIgnoreMorph(),
-		h.DataEffect(expr.Rawf("codemesh.atlas(el, %s, %s, %s)", p.Atlas.Ref(), p.Reviewed.Ref(), p.Focus.Ref())))
+		h.DataEffect(expr.Rawf("codemesh.atlas(el, %s, {reviewed: %s, focus: %s})", p.Atlas.Ref(), p.Reviewed.Ref(), p.Focus.Ref())))
 }
 
 // outline is the whole change at a glance: every unit by lane, with its

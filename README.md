@@ -35,12 +35,12 @@ To review someone else's branch, check it out first, for example with
 
 ## Map
 
-- **Treemap.** The module shows each package with its files inside. Click
-  into a package to see its files with their declarations, then into a file.
-  Area is lines of code.
+- **Atlas.** The whole module as one zoomable map: packages holding files
+  holding declarations, area by lines of code. Scroll or drag to zoom and
+  pan, double-click to reset, click a tile to open it.
 - **Lenses** colour the tiles:
   - Smells: weighted smells per 100 lines.
-  - Complexity: the highest cyclomatic complexity inside.
+  - Complexity: each declaration's cyclomatic complexity.
   - Churn: commits in the last 90 days.
   - Hotspot: churn × complexity.
 - **Smells.** The side panel lists the smells in the current scope.

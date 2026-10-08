@@ -25,8 +25,9 @@ We dropped:
   and they need call edges the prototype only text-matched. Packages and
   files are stable, and every Go developer already reads them.
 - **The hex cartography and code-inside-hexes zoom.** We use a squarified
-  treemap, nested one level deep, with source in a side panel. It is cheap,
-  deterministic and stable while the code is edited.
+  treemap of packages, files and declarations, zoomed with D3, with source in
+  a side panel. It is cheap, deterministic and stable while the code is
+  edited.
 - **Marks, fences, the dispatch gate and agent runs.** These are agent
   orchestration, which is out of scope for v0.1.
 - **PR-number history.** It is GitHub-specific. Churn comes from plain
@@ -40,14 +41,15 @@ can click through to.
 
 ## Map
 
-- **Treemap.** The module view shows each package as a frame with its files
-  inside; a package view shows each file with its declarations; a file view
-  shows its declarations. Area is lines of code. Tiles are placed in percent
-  of the pane, so labels keep their size at any width.
+- **Atlas.** One squarified treemap of the whole module: packages holding
+  files holding declarations, area by lines of code. The server lays it out;
+  D3 zooms and pans it, with labels that appear once their tile has room.
+  Clicking a tile opens it, and the atlas flies to the selected package, file
+  or declaration.
 - **Lenses** colour the tiles:
   - Smells: weighted smells per 100 lines, in fixed bands.
-  - Complexity: max cyclomatic complexity, in fixed bands.
-  - Churn: commits in the last 90 days, relative to the hottest tile.
+  - Complexity: cyclomatic complexity per declaration, in fixed bands.
+  - Churn: commits in the last 90 days, relative to the hottest declaration.
   - Hotspot: churn × complexity, relative. Code that is both hard and often
     touched is where bugs live.
 - **Smells list** for the current scope, ranked by severity. Each smell
@@ -71,7 +73,7 @@ Each smell is a rule with a documented threshold:
 | deep nesting | nesting depth > 4 | control flow hides the main path |
 | many parameters | > 5 parameters | the function does several jobs |
 | large file | > 600 code lines | the file has several concerns |
-| unused export | exported, no use outside its package | API surface that nobody uses |
+| unused export | exported from a package other modules cannot import (`internal/`), no use outside its package | API surface that nobody uses |
 | dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
 | envious function | most of its references go to one other package | it may live in the wrong package |
 | unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
@@ -137,14 +139,14 @@ the map and the review queue follow your edits.
 
 ## Stack
 
-- Go 1.27 and go-via. Server-rendered HTML with the `h` DSL, and SVG for the
-  treemap.
+- Go 1.27 and go-via. Server-rendered HTML with the `h` DSL.
 - Hand-written CSS and a small keyboard script, inlined through the router's
   `Head.Assets`, so via's CSP admits them by hash.
-- No Node, no build step, no client framework. One island uses D3 (v7.9.0,
-  vendored, ISC): the server lays the atlas out and sends it through via
-  signals with the reviewed cards; a Datastar effect hands those and the
-  focused card to `atlas.js`, which only draws, zooms and links.
+- No Node, no build step, no client framework. The atlas is one island
+  using D3 (v7.9.0, vendored, ISC), on the map and in the review: the server
+  lays it out and sends it through via signals, with the lens heats or the
+  reviewed cards and the selection; a Datastar effect hands them to
+  `atlas.js`, which only draws, zooms and links.
 - Dependencies:
   - `golang.org/x/tools/go/packages` loads the code.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
