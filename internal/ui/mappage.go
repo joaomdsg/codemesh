@@ -147,12 +147,15 @@ func (p *MapPage) lensHelp() string {
 // can open it.
 func (p *MapPage) atlas(a *live.Analysis) atlas {
 	fi := indexFindings(a.Findings)
-	values := map[int]float64{}
+	values, caps := map[int]float64{}, map[int]int{}
 	at := atlasOf(a, mapW, mapH, func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
 		switch {
 		case d != nil:
 			t.ID = d.ID
 			values[i] = p.value(fi.decl[d.ID], d.Lines, d.Complexity, f.Churn)
+			if p.lens == "smells" {
+				caps[i] = heatCap(fi.decl[d.ID])
+			}
 		case f != nil:
 			t.ID = f.Path
 		default:
@@ -165,6 +168,9 @@ func (p *MapPage) atlas(a *live.Analysis) atlas {
 	}
 	for i, v := range values {
 		at.Tiles[i].Heat = p.heat(v, top)
+		if c, ok := caps[i]; ok {
+			at.Tiles[i].Heat = min(at.Tiles[i].Heat, c)
+		}
 	}
 	at.Lens = p.lens
 	return at
@@ -209,6 +215,18 @@ func (p *MapPage) heat(v, top float64) int {
 		}
 	}
 	return 5
+}
+
+// heatCap is the hottest smells heat a declaration's worst finding allows.
+// Density alone makes a three-line const with one info smell the hottest
+// tile on the map; capping by severity keeps the top bands for warn and
+// high findings.
+func heatCap(fs []smell.Finding) int {
+	worst := smell.Info
+	for _, f := range fs {
+		worst = max(worst, f.Severity)
+	}
+	return map[smell.Severity]int{smell.Info: 2, smell.Warn: 4, smell.High: 5}[worst]
 }
 
 func weight(s smell.Severity) int {

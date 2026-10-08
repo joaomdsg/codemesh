@@ -51,7 +51,9 @@ and a banner names it. Imports of it are not module-internal edges.
   Clicking a tile opens it, and the atlas flies to the selected package, file
   or declaration.
 - **Lenses** colour the tiles:
-  - Smells: weighted smells per 100 lines, in fixed bands.
+  - Smells: weighted smells per 100 lines, in fixed bands, capped by the
+    worst smell: info smells alone reach band 2, warn band 4. Without the
+    cap, one info smell on a three-line const is the hottest tile.
   - Complexity: cyclomatic complexity per declaration, in fixed bands.
   - Churn: commits to the file in the 90 days up to the last commit, so a
     quiet repo still shows where its work went; relative to the hottest

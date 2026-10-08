@@ -290,3 +290,15 @@ func TestFrame_namesNestedModulesTheMapLeavesOut(t *testing.T) {
 	}
 	assert.NotContains(t, rev, "is not mapped", "the review lists nested module files")
 }
+
+func TestMap_keepsADeclarationWithOnlyInfoSmellsLukewarm(t *testing.T) {
+	t.Parallel()
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{
+		"internal/x/x.go": "package x\n\nfunc Unused() {}\n",
+	}).app
+
+	_, body := app.Get("/")
+	body = html.UnescapeString(body) // the feed attribute escapes its JSON
+	assert.Regexp(t, `\["d",[^\]]*"Unused","",2,"example.com/calc/internal/x.Unused"\]`, body,
+		"one info smell on one line is dense, yet only info")
+}

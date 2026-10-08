@@ -39,7 +39,8 @@ To review someone else's branch, check it out first, for example with
   holding declarations, area by lines of code. Scroll or drag to zoom and
   pan, double-click to reset, click a tile to open it.
 - **Lenses** colour the tiles:
-  - Smells: weighted smells per 100 lines.
+  - Smells: weighted smells per 100 lines; only warn and high smells
+    reach the hottest colours.
   - Complexity: each declaration's cyclomatic complexity.
   - Churn: commits in the 90 days up to the last commit.
   - Hotspot: churn × complexity.
