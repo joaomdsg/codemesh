@@ -34,14 +34,21 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
 });
 
-// The outline follows the focused unit.
-document.addEventListener("focusin", (e) => {
-  const u = e.target.closest && e.target.closest(".unit");
-  if (!u) return;
+// The outline follows the focused unit. A live re-render replaces the
+// outline, so the mark is put back after every patch.
+let current = "";
+const highlight = () => {
   document.querySelectorAll(".ol-row.cur").forEach((a) => a.classList.remove("cur"));
-  const row = document.querySelector('.ol-row[href="#' + u.id + '"]');
+  const row = current && document.querySelector('.ol-row[href="#' + current + '"]');
   if (row) {
     row.classList.add("cur");
     row.scrollIntoView({ block: "nearest" });
   }
+};
+document.addEventListener("focusin", (e) => {
+  const u = e.target.closest && e.target.closest(".unit");
+  if (!u) return;
+  current = u.id;
+  highlight();
 });
+document.addEventListener("via:patch", () => queueMicrotask(highlight));

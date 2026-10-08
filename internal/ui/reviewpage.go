@@ -25,6 +25,7 @@ type ReviewPage struct {
 	budget int               // diff lines rendered so far in this View
 	inDiff map[string]string // decl ID → unit key, for units in this View
 	full   map[review.Lane]bool
+	whole  map[string]bool // unit keys whose diff shows past maxDiffLines
 }
 
 // laneCap is how many units a lane lists before "Show all": a lane is in
@@ -68,6 +69,14 @@ func (p *ReviewPage) Open(_ *via.Ctx, key string) {
 		p.opened = map[string]bool{}
 	}
 	p.opened[key] = !p.opened[key]
+}
+
+// ShowWhole renders a unit's diff past the per-unit cap.
+func (p *ReviewPage) ShowWhole(_ *via.Ctx, key string) {
+	if p.whole == nil {
+		p.whole = map[string]bool{}
+	}
+	p.whole[key] = true
 }
 
 // ShowLane lists every unit of a lane.
@@ -303,7 +312,7 @@ func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, l review.Lane) h.H {
 	var body h.H
 	switch {
 	case p.showDiff(u, l):
-		body = h.Div(h.Class("unit-body"), diffView(u), p.callersLine(a, u))
+		body = h.Div(h.Class("unit-body"), p.diffView(u), p.callersLine(a, u))
 		if p.opened[u.Key] {
 			body = group([]h.H{body, h.Div(h.Class("fold"), h.Button(h.Class("expand"), on.Click(on.Bind(p.Open, u.Key)), h.Str("Hide diff")))})
 		}
@@ -321,12 +330,12 @@ const contextRun = 3
 // can run to thousands of lines nobody reads in a review.
 const maxDiffLines = 400
 
-func diffView(u *review.Unit) h.H {
+func (p *ReviewPage) diffView(u *review.Unit) h.H {
 	if len(u.Lines) == 0 {
 		return nil
 	}
 	lines, cut := u.Lines, 0
-	if len(lines) > maxDiffLines {
+	if len(lines) > maxDiffLines && !p.whole[u.Key] {
 		lines, cut = lines[:maxDiffLines], len(lines)-maxDiffLines
 	}
 	var rows []h.H
@@ -369,7 +378,7 @@ func diffView(u *review.Unit) h.H {
 	}
 	flush(true)
 	if cut > 0 {
-		rows = append(rows, h.P(h.Class("cut"), h.Str(fmt.Sprintf("%d more lines not shown. Open %s to read them.", cut, u.File))))
+		rows = append(rows, h.Button(h.Class("expand"), on.Click(on.Bind(p.ShowWhole, u.Key)), h.Str(fmt.Sprintf("Show the other %s", plural(cut, "line")))))
 	}
 	return h.Div(h.Class("diff"), group(rows))
 }

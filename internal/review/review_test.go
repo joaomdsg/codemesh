@@ -20,8 +20,12 @@ type fixture struct {
 	head *code.Snapshot
 }
 
-var calc = sync.OnceValues(func() (fixture, error) {
-	dir, err := testrepo.Make(testrepo.CalcBase, testrepo.CalcHead)
+var calc = sync.OnceValues(func() (fixture, error) { return build(testrepo.CalcBase, testrepo.CalcHead) })
+
+// build runs the whole pipeline the way live does: commit base, write head,
+// diff, load both sides, find smells.
+func build(baseFiles, headFiles map[string]string) (fixture, error) {
+	dir, err := testrepo.Make(baseFiles, headFiles)
 	if err != nil {
 		return fixture{}, err
 	}
@@ -48,7 +52,7 @@ var calc = sync.OnceValues(func() (fixture, error) {
 	}
 	rev := review.Build(review.Input{Base: base, Head: head, Diffs: diffs, BaseFindings: smell.Find(base), HeadFindings: smell.Find(head)})
 	return fixture{rev, head}, nil
-})
+}
 
 func load(t *testing.T) fixture {
 	t.Helper()
@@ -185,4 +189,83 @@ func TestBuild_putsNewSmellsOnTheirUnits(t *testing.T) {
 	assert.True(t, slices.ContainsFunc(rev.Fixed, func(f smell.Finding) bool {
 		return f.Rule == smell.UnusedExport && f.Subject == "Old"
 	}), "removing Old removes its smell")
+}
+
+const twisty = `func Twisty(x int) int {
+	if x == 1 { return 1 }
+	if x == 2 { return 2 }
+	if x == 3 { return 3 }
+	if x == 4 { return 4 }
+	if x == 5 { return 5 }
+	if x == 6 { return 6 }
+	if x == 7 { return 7 }
+	if x == 8 { return 8 }
+	if x == 9 { return 9 }
+	if x == 10 { return 10 }
+	return 0
+}
+`
+
+var moves = sync.OnceValues(func() (fixture, error) {
+	return build(map[string]string{
+		"go.mod":          "module example.com/m\n\ngo 1.27\n",
+		"a/a.go":          "package a\n\nfunc Shared() int { return 1 }\n\n" + twisty,
+		"internal/x/x.go": "package x\n\nfunc Helper() int { return 1 }\n",
+		"sub/go.mod":      "module example.com/sub\n\ngo 1.27\n",
+		"sub/s.go":        "package sub\n\nfunc S() {}\n",
+		"main.go":         "package main\n\nimport (\n\t\"example.com/m/a\"\n\t\"example.com/m/internal/x\"\n)\n\nfunc main() { println(a.Shared(), a.Twisty(1), x.Helper()) }\n",
+	}, map[string]string{
+		"a/a.go":          "package a\n",
+		"b/b.go":          "package b\n\nfunc Shared() int { return 2 }\n\n" + twisty,
+		"internal/x/x.go": "package x\n\nfunc Helper() int { return 1 }\n\nfunc New() int { return 2 }\n",
+		"sub/s.go":        "package sub\n\nfunc S() { println() }\n",
+		"main.go":         "package main\n\nimport (\n\t\"example.com/m/b\"\n\t\"example.com/m/internal/x\"\n)\n\nfunc main() { println(b.Shared(), b.Twisty(1), x.Helper(), x.New()) }\n",
+	})
+})
+
+func TestBuild_readsAnEditedMoveAsOneModifiedUnit(t *testing.T) {
+	t.Parallel()
+	f, err := moves()
+	require.NoError(t, err)
+
+	var shared []*review.Unit
+	for _, u := range f.rev.Units {
+		if u.Name == "Shared" {
+			shared = append(shared, u)
+		}
+	}
+	require.Len(t, shared, 1, "not a removal plus an addition")
+	assert.Equal(t, review.Modified, shared[0].Change)
+	assert.Contains(t, shared[0].Reasons, "moved from a/a.go")
+	assert.Equal(t, 1, shared[0].Added)
+	assert.Equal(t, 1, shared[0].Deleted)
+}
+
+func TestBuild_keepsAMovedDeclarationsSmellOffTheNewList(t *testing.T) {
+	t.Parallel()
+	f, err := moves()
+	require.NoError(t, err)
+
+	assert.Equal(t, review.Moved, unit(t, f.rev, "Twisty").Change)
+	for _, s := range f.rev.Introduced {
+		assert.NotEqual(t, "Twisty", s.Subject, "its complexity moved with it")
+	}
+}
+
+func TestBuild_treatsInternalPackagesAsNoContract(t *testing.T) {
+	t.Parallel()
+	f, err := moves()
+	require.NoError(t, err)
+
+	assert.Equal(t, review.Logic, unit(t, f.rev, "New").Lane)
+}
+
+func TestBuild_givesNestedModuleGoFilesTheirCodeLane(t *testing.T) {
+	t.Parallel()
+	f, err := moves()
+	require.NoError(t, err)
+
+	u := unit(t, f.rev, "sub/s.go")
+	assert.Equal(t, review.Logic, u.Lane)
+	assert.Contains(t, u.Reasons, "in another module")
 }

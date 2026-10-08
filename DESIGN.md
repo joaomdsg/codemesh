@@ -88,14 +88,19 @@ consequences. codemesh turns `base...worktree` into a queue of **change
 units**, one per declaration added, removed or modified.
 
 1. **Triage into lanes.** Lanes are ordered by how much reading they need:
-   - **Contract**: exported declarations added, removed or re-signed, and
-     `go.mod`.
+   - **Contract**: exported declarations of importable packages (not under
+     `internal/`, not `main`) added, removed or re-signed, and `go.mod`. A
+     struct's signature is its exported fields, so a new private field is
+     not a contract change.
    - **Logic**: other body and signature changes.
    - **Tests**: test code and `testdata` fixtures.
-   - **Other**: non-Go files.
+   - **Other**: non-Go files. Go files of a nested module have no type
+     information here and become one unit per file, in Logic or Tests.
    - **Noise**: units whose syntax tree is unchanged apart from comments and
      formatting, pure moves (same source, other file or package), generated
-     files, `go.sum`, and import lines.
+     files, `go.sum`, and import lines. A declaration moved and edited is
+     one modified unit, "moved from" its old file, not a removal plus an
+     addition.
 2. **Risk order inside a lane.** The score combines production callers
    (blast radius), whether the unit is exported, complexity after the change
    and its delta, lines changed, and whether any test calls the unit

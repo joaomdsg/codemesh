@@ -1,14 +1,20 @@
 package review
 
 import (
-	"cmp"
-
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
 func delta(base, head []smell.Finding) (introduced, fixed []smell.Finding) {
+	// A decl's smell is keyed by its name, not its file or package, so a
+	// moved declaration carries its smell along instead of trading one.
 	id := func(f smell.Finding) string {
-		return string(f.Rule) + "|" + f.Package + "|" + f.File + "|" + cmp.Or(f.Decl, f.Subject)
+		switch {
+		case f.Decl != "":
+			return string(f.Rule) + "|decl|" + f.Subject
+		case f.File != "":
+			return string(f.Rule) + "|file|" + f.File
+		}
+		return string(f.Rule) + "|pkg|" + f.Package + "|" + f.Target
 	}
 	in := func(list []smell.Finding) map[string]bool {
 		m := map[string]bool{}

@@ -3,6 +3,7 @@ package review
 import (
 	"cmp"
 	"fmt"
+	"strings"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/smell"
@@ -10,7 +11,7 @@ import (
 
 func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	resigned := old != nil && new != nil && old.Signature != new.Signature
-	u.Lane = laneOf(u, cmp.Or(new, old), resigned)
+	u.Lane = b.laneOf(u, cmp.Or(new, old), resigned)
 	u.Risk = min(u.Added+u.Deleted, 40) / 4
 	add := func(reason string, points int) {
 		if reason != "" {
@@ -46,14 +47,29 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	}
 }
 
-func laneOf(u *Unit, d *code.Decl, resigned bool) Lane {
+func (b *builder) laneOf(u *Unit, d *code.Decl, resigned bool) Lane {
 	switch {
 	case d.Test:
 		return Tests
-	case u.Exported && (u.Change != Modified || resigned):
+	case u.Exported && b.public(d.Package) && (u.Change != Modified || resigned):
 		return Contract
 	}
 	return Logic
+}
+
+// public reports whether other modules can import the package: not under an
+// internal directory and not a command.
+func (b *builder) public(pkg string) bool {
+	s := cmp.Or(b.in.Head, b.in.Base)
+	rel := strings.TrimPrefix(pkg, s.Module)
+	if strings.Contains(rel+"/", "/internal/") {
+		return false
+	}
+	p := b.in.Head.Package(pkg)
+	if p == nil {
+		p = b.in.Base.Package(pkg)
+	}
+	return p == nil || p.Name != "main"
 }
 
 // complexityReason names a complexity worth a reviewer's notice: one that

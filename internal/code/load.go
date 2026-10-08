@@ -175,11 +175,11 @@ func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
 					d.Name, d.Exported = id.Name, id.IsExported()
 				}
 				if obj := p.TypesInfo.Defs[id]; obj != nil {
-					t := obj.Type()
 					if gd.Tok == token.TYPE {
-						t = t.Underlying()
+						typ = append(typ, surface(obj.Type().Underlying(), qual))
+					} else {
+						typ = append(typ, types.TypeString(obj.Type(), qual))
 					}
-					typ = append(typ, types.TypeString(t, qual))
 					l.objs[objKey(obj)] = d
 				}
 			}
@@ -248,6 +248,23 @@ func (l *loader) rel(path string) string {
 
 func (l *loader) internal(path string) bool {
 	return path == l.s.Module || strings.HasPrefix(path, l.s.Module+"/")
+}
+
+// surface is the part of a type other packages can see: a struct's exported
+// and embedded fields, or the whole type otherwise. Adding a private field is
+// then no signature change.
+func surface(t types.Type, qual types.Qualifier) string {
+	st, ok := t.(*types.Struct)
+	if !ok {
+		return types.TypeString(t, qual)
+	}
+	var fields []string
+	for f := range st.Fields() {
+		if f.Exported() || f.Embedded() {
+			fields = append(fields, f.Name()+" "+types.TypeString(f.Type(), qual))
+		}
+	}
+	return "struct{" + strings.Join(fields, "; ") + "}"
 }
 
 // objKey names a package-level object or method the same way in every

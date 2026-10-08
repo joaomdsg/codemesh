@@ -123,7 +123,7 @@ func Build(in Input) *Review {
 	for _, id := range touched.list {
 		rev.Units = append(rev.Units, b.declUnit(in.Base.Decl(id), in.Head.Decl(id)))
 	}
-	rev.Units = pairMoves(rev.Units)
+	rev.Units = pairMoves(b, rev.Units)
 	slices.SortStableFunc(rev.Units, func(a, b *Unit) int {
 		return cmp.Or(cmp.Compare(a.Lane, b.Lane), cmp.Compare(b.Risk, a.Risk), cmp.Compare(a.File, b.File), cmp.Compare(a.Name, b.Name))
 	})
@@ -233,6 +233,13 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	case isFixture(p):
 		u.Lane = Tests
 		u.Reasons = append(u.Reasons, "test fixture")
+	case path.Ext(p) == ".go":
+		// Go code of a nested module: no type info here, so one unit per file.
+		u.Lane = Logic
+		if strings.HasSuffix(p, "_test.go") {
+			u.Lane = Tests
+		}
+		u.Reasons = append(u.Reasons, "in another module")
 	}
 	u.Risk = min(u.Added+u.Deleted, 40) / 4
 	u.Key = key(u.ID, strings.Join(newText, "\n")+"\x00"+strings.Join(oldText, "\n"))
@@ -298,32 +305,65 @@ func (u *Unit) setLines(lines []Line) {
 	}
 }
 
-// pairMoves joins an added and a removed unit with the same name and source
-// shape, which is a declaration moved to another package.
-func pairMoves(units []*Unit) []*Unit {
-	out := units[:0]
-	removed := map[string]*Unit{}
+// pairMoves joins an added and a removed declaration of the same name and
+// kind when the name is unique among both: a declaration moved to another
+// package. Unchanged, it is noise; edited, it is one modified unit with its
+// diff, not a removal plus an addition.
+func pairMoves(b *builder, units []*Unit) []*Unit {
+	type nk struct {
+		name string
+		kind code.Kind
+	}
+	removed, added := map[nk][]*Unit{}, map[nk][]*Unit{}
 	for _, u := range units {
-		if u.Change == Removed && u.Kind != "" {
-			removed[u.Name] = u
+		switch {
+		case u.Kind == "":
+		case u.Change == Removed:
+			removed[nk{u.Name, u.Kind}] = append(removed[nk{u.Name, u.Kind}], u)
+		case u.Change == Added:
+			added[nk{u.Name, u.Kind}] = append(added[nk{u.Name, u.Kind}], u)
 		}
 	}
 	gone := map[*Unit]bool{}
-	for _, u := range units {
-		r := removed[u.Name]
-		if u.Change != Added || r == nil || gone[r] || !sameText(r, u) {
+	for k, adds := range added {
+		rems := removed[k]
+		if len(adds) != 1 || len(rems) != 1 {
 			continue
 		}
-		u.Change, u.Lane, u.Risk = Moved, Noise, 0
-		u.Reasons = []string{"moved from " + r.File}
+		u, r := adds[0], rems[0]
+		if len(u.Lines) == 0 || len(r.Lines) == 0 {
+			continue
+		}
 		gone[r] = true
+		if sameText(r, u) {
+			u.Change, u.Lane, u.Risk = Moved, Noise, 0
+			u.Reasons = []string{"moved from " + r.File}
+			continue
+		}
+		b.remerge(u, r)
 	}
+	out := units[:0]
 	for _, u := range units {
 		if !gone[u] {
 			out = append(out, u)
 		}
 	}
 	return out
+}
+
+// remerge turns an added unit into the modified version of a removed one.
+func (b *builder) remerge(u, r *Unit) {
+	var oldText, newText []string
+	for _, l := range r.Lines {
+		oldText = append(oldText, l.Text)
+	}
+	for _, l := range u.Lines {
+		newText = append(newText, l.Text)
+	}
+	u.Added, u.Deleted = 0, 0
+	u.setLines(diffLines(oldText, newText, r.Lines[0].Old, u.Lines[0].New))
+	u.Change = Modified
+	u.Reasons = append([]string{"moved from " + r.File}, u.Reasons...)
 }
 
 func sameText(removed, added *Unit) bool {

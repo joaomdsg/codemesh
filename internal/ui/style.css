@@ -138,7 +138,7 @@ kbd {
 /* Source wants the width more than the map does. */
 .map-layout:has(.side .code) { grid-template-columns: minmax(0, 1fr) minmax(420px, 45%); }
 /* The matrix is as wide as its packages; the smells take the rest. */
-.map-layout:has(.deps) { grid-template-columns: max-content minmax(300px, 1fr); }
+.map-layout:has(.deps) { grid-template-columns: minmax(0, max-content) minmax(300px, 1fr); }
 @media (max-width: 900px) { .map-layout, .map-layout:has(.side .code), .map-layout:has(.deps) { grid-template-columns: minmax(0, 1fr); } }
 .map-pane, .side {
   background: var(--surface);
@@ -377,7 +377,6 @@ kbd {
 .treemap a:hover .frame { stroke: var(--ink); }
 .frame-label { font: 600 12px var(--mono); fill: var(--ink); pointer-events: none; }
 .chip-smell { color: var(--bad); border-color: var(--bad); }
-.cut { margin: 0; padding: var(--sp1) var(--sp3); color: var(--muted); font: 12px var(--sans); }
 
 /* On wide screens callers sit beside the diff instead of under it. */
 .unit-body { display: flex; flex-wrap: wrap; border-top: 1px solid var(--line-soft); }

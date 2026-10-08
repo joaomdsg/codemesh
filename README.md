@@ -58,18 +58,23 @@ unit lands in a lane:
 
 | lane | holds |
 |---|---|
-| Contract | exported API added, removed or re-signed |
+| Contract | exported API of importable packages, added, removed or re-signed |
 | Logic | behaviour changes |
 | Tests | test code and fixtures |
 | Other | non-Go files |
 | Noise | comments, layout, moves, generated files, `go.sum` |
 
+Go files of a nested module have no type information in the outer one, so
+they show as one unit per file. Run codemesh in that module to review them
+by declaration.
+
 Inside a lane, units are ordered by risk. Chips give the reasons: production
 callers, missing direct tests, complexity and its change, and smells the
 change introduces.
 
-Contract and Logic diffs render up front. Tests, Other and Noise cards open
-on demand, which keeps a release-sized diff fast to load. Callers changed in
+Contract and Logic diffs render up front, up to 3000 lines in total; the
+rest, and every Tests, Other and Noise card, open on demand. Lanes list their
+60 riskiest units first. This keeps a release-sized diff fast to load. Callers changed in
 the same diff link to their unit.
 
 Mark units reviewed as you go. A mark is tied to the unit's source, so when

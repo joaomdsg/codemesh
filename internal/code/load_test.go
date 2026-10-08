@@ -85,6 +85,14 @@ func TestLoad_resolvesCallersAndRefsThroughTypes(t *testing.T) {
 	assert.Contains(t, s.Decl("example.com/shop/cart.Cart").Callers, "example.com/shop/cart.Cart.Add")
 }
 
+func TestLoad_signsStructsByTheirExportedFieldsOnly(t *testing.T) {
+	t.Parallel()
+	s := loadShop(t)
+
+	assert.Equal(t, "struct{}", s.Decl("example.com/shop/cart.Cart").Signature, "items is unexported")
+	assert.Equal(t, "struct{Name string}", s.Decl("example.com/shop/store.Item").Signature)
+}
+
 func TestLoad_countsCodeLinesPerFile(t *testing.T) {
 	t.Parallel()
 	s := loadShop(t)
