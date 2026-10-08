@@ -431,6 +431,27 @@ func TestRepo_churnExcludesCommitsOlderThanWindow(t *testing.T) {
 	assert.Equal(t, map[string]int{"new.txt": 1}, got)
 }
 
+func TestRepo_churnCountsBackFromTheLastCommit(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	at := func(days int, file string) {
+		write(t, dir, file, "1\n")
+		git(t, dir, "add", "-A")
+		when := time.Now().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+		cmd := exec.Command("git", "-C", dir, "commit", "-q", "-m", file)
+		cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(out))
+	}
+	at(400, "older.txt")
+	at(300, "old.txt")
+	at(250, "last.txt")
+
+	got, err := open(t, dir).Churn(90 * 24 * time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"old.txt": 1, "last.txt": 1}, got, "a repo quiet for months still has churn")
+}
+
 func TestRepo_churnIsEmptyWithoutCommits(t *testing.T) {
 	t.Parallel()
 	got, err := open(t, newRepo(t)).Churn(time.Hour)

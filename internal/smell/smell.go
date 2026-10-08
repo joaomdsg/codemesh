@@ -69,7 +69,7 @@ var why = map[Rule]string{
 	DeadCode:        "Declared and never referenced: weight with no value.",
 	EnviousFunc:     "Most of its references go to one other package; it may belong there.",
 	UnstableDep:     "Depends on a package less stable than itself, against the Stable Dependencies Principle.",
-	UntestedPackage: "No test files: changes land unguarded.",
+	UntestedPackage: "No test refers to it: changes land unguarded.",
 }
 
 // Why is the one-line reason a rule matters.
@@ -98,11 +98,12 @@ type Finding struct {
 // first, then by package, file and line.
 func Find(s *code.Snapshot) []Finding {
 	var out []Finding
+	reached := testedFromOutside(s)
 	for _, p := range s.Packages {
-		if p.Name != "main" && !p.HasTests() {
+		if p.Name != "main" && !p.HasTests() && !reached[p.Path] {
 			out = append(out, Finding{
 				Rule: UntestedPackage, Severity: Info, Package: p.Path,
-				Subject: p.Rel, Detail: "no test files",
+				Subject: p.Rel, Detail: "no test refers to it",
 			})
 		}
 		for _, f := range p.Files {
@@ -123,5 +124,22 @@ func Find(s *code.Snapshot) []Finding {
 			cmp.Compare(a.Decl, b.Decl),
 		)
 	})
+	return out
+}
+
+// testedFromOutside lists the packages a test in another package refers to,
+// such as an integration test suite in its own directory.
+func testedFromOutside(s *code.Snapshot) map[string]bool {
+	out := map[string]bool{}
+	for _, d := range s.Decls() {
+		if !d.Test {
+			continue
+		}
+		for pkg := range d.Refs {
+			if pkg != d.Package {
+				out[pkg] = true
+			}
+		}
+	}
 	return out
 }

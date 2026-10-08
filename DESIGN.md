@@ -53,7 +53,9 @@ and a banner names it. Imports of it are not module-internal edges.
 - **Lenses** colour the tiles:
   - Smells: weighted smells per 100 lines, in fixed bands.
   - Complexity: cyclomatic complexity per declaration, in fixed bands.
-  - Churn: commits in the last 90 days, relative to the hottest declaration.
+  - Churn: commits to the file in the 90 days up to the last commit, so a
+    quiet repo still shows where its work went; relative to the hottest
+    file.
   - Hotspot: churn × complexity, relative. Code that is both hard and often
     touched is where bugs live.
 - **Smells list** for the current scope, ranked by severity, 60 at a time.
@@ -83,7 +85,7 @@ Each smell is a rule with a documented threshold:
 | dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
 | envious function | most of its references go to one other package | it may live in the wrong package |
 | unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
-| untested package | no test files | changes land unguarded |
+| untested package | no test files, and no test in another package refers to its declarations; not a main package | changes land unguarded |
 
 Code lines are lines holding a Go token. String data (see Other below)
 counts as one line, so an inlined script does not make a large file.

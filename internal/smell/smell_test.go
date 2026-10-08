@@ -288,10 +288,10 @@ func TestFind_flagsPackagesWithoutTests(t *testing.T) {
 		"flaky":  smell.Info,
 		"chaina": smell.Info,
 		"chainb": smell.Info,
-	}, of(fs, smell.UntestedPackage), "not size or core (tested), nor cmd/app (main)")
+	}, of(fs, smell.UntestedPackage), "not size or core (tested), kit (core's test uses it), nor cmd/app (main)")
 	f := one(t, fs, smell.UntestedPackage, "hub")
 	assert.Equal(t, "hub", f.Subject)
-	assert.Equal(t, "no test files", f.Detail)
+	assert.Equal(t, "no test refers to it", f.Detail)
 }
 
 func TestFind_sortsBySeverityThenLocation(t *testing.T) {

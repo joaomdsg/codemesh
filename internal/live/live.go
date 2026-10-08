@@ -23,7 +23,7 @@ import (
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
-// ChurnWindow is how far back churn counts commits.
+// ChurnWindow is how far back from the last commit churn counts commits.
 const ChurnWindow = 90 * 24 * time.Hour
 
 // Analysis is one full pass over the tree.
