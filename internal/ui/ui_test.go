@@ -231,3 +231,46 @@ func TestAssets_serveD3WithAYearOfCaching(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "public, max-age=31536000, immutable", resp.Header.Get("Cache-Control"))
 }
+
+func manyParams(n int) string {
+	var b strings.Builder
+	b.WriteString("package calc\n")
+	for i := range n {
+		fmt.Fprintf(&b, "\nfunc F%d(a, b, c, d, e, f int) int { return a + b + c + d + e + f }\n", i)
+	}
+	return b.String()
+}
+
+func TestMap_pagesASmellsListPastSixty(t *testing.T) {
+	t.Parallel()
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(130)}).app
+	conn := app.Connect()
+	t.Cleanup(conn.Close)
+
+	_, body := app.Get("/?in=example.com/calc/calc")
+	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
+	require.Contains(t, body, "Show 60 more smells")
+
+	status, _ := app.Action(0).Over(conn).Fire()
+	require.Equal(t, http.StatusNoContent, status)
+	assert.NotContains(t, conn.Await("Smells · "), "Show 60 more smells", "the second page leaves fewer than 60")
+}
+
+func TestMap_namesWhereEachDeclarationSmellIs(t *testing.T) {
+	t.Parallel()
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(1)}).app
+
+	_, body := app.Get("/")
+	assert.Contains(t, body, ">calc/many.go:3<")
+}
+
+func TestMap_scopesToAPackageByItsDirectory(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	_, byPath := e.app.Get("/?in=example.com/calc/calc")
+	_, byDir := e.app.Get("/?in=calc")
+	assert.Contains(t, byDir, `<span class="sep">/</span><a href="/?lens=smells&amp;in=example.com%2Fcalc%2Fcalc">calc</a>`)
+	smells := regexp.MustCompile(`Smells · \d+`)
+	assert.Equal(t, smells.FindString(byPath), smells.FindString(byDir))
+}

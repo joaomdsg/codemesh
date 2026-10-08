@@ -43,8 +43,9 @@ To review someone else's branch, check it out first, for example with
   - Complexity: each declaration's cyclomatic complexity.
   - Churn: commits in the last 90 days.
   - Hotspot: churn × complexity.
-- **Smells.** The side panel lists the smells in the current scope.
-  Click a declaration to see its source, metrics and callers.
+- **Smells.** The side panel lists the smells in the current scope, 60 at
+  a time, each with its file and line. Click a declaration to see its
+  source, metrics and callers.
 - **Dependencies.** A dependency structure matrix shows which package imports
   which, with reference counts and instability, and flags imports of less
   stable packages.

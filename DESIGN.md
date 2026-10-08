@@ -52,9 +52,11 @@ can click through to.
   - Churn: commits in the last 90 days, relative to the hottest declaration.
   - Hotspot: churn × complexity, relative. Code that is both hard and often
     touched is where bugs live.
-- **Smells list** for the current scope, ranked by severity. Each smell
-  gives its measure, its threshold and one line on why it matters. A
-  declaration opens with its source, metrics and callers.
+- **Smells list** for the current scope, ranked by severity, 60 at a time.
+  Each smell gives its measure, its threshold, its file and line, and one
+  line on why it matters. A declaration opens with its source, metrics and
+  callers. The scope `?in=` takes an import path, a package directory or a
+  file path.
 - **Dependencies** as a dependency structure matrix (DSM), with packages
   ordered by layer. A node-link graph turns into a hairball past 20 packages.
   Go forbids import cycles, so every mark sits right of the diagonal; the

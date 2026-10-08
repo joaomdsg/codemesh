@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 
+	"github.com/go-via/via"
 	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
@@ -45,5 +47,7 @@ func findingRow(f smell.Finding, lens string) h.H {
 			h.Span(h.Class("subject"), h.Str(f.Subject)),
 		),
 		h.Span(h.Class("detail"), h.Title(f.Rule.Why()), h.Str(f.Detail)),
+		// Names repeat across packages and receivers; the place tells them apart.
+		via.When(f.Decl != "", func() h.H { return h.Span(h.Class("detail"), h.Str(fmt.Sprintf("%s:%d", f.File, f.Line))) }),
 	)
 }

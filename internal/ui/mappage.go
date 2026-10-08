@@ -13,6 +13,7 @@ import (
 	"github.com/go-via/via"
 	"github.com/go-via/via/expr"
 	"github.com/go-via/via/h"
+	"github.com/go-via/via/on"
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/smell"
@@ -25,6 +26,7 @@ type MapPage struct {
 	in   string // scope: "" for the module, a package path or a file path
 	lens string
 	decl string // selected decl ID
+	rows int    // smells listed; grows a page at a time
 
 	// The atlas island's inputs, client-only and rendered by the server: the
 	// layout with a heat per declaration, and the tile to fly to.
@@ -46,12 +48,20 @@ var lenses = []lens{
 func (p *MapPage) OnInit(ctx *via.Ctx) error {
 	q := ctx.Request().URL.Query()
 	p.in, p.lens, p.decl = q.Get("in"), q.Get("lens"), q.Get("d")
+	p.rows = smellsPage
 	if !slices.ContainsFunc(lenses, func(l lens) bool { return l.key == p.lens }) {
 		p.lens = "smells"
 	}
 	p.start(ctx)
 	return nil
 }
+
+// smellsPage is how many smells the side panel lists at a time, in severity
+// order; a big package has hundreds.
+const smellsPage = 60
+
+// More lists the next page of smells.
+func (p *MapPage) More(_ *via.Ctx) { p.rows += smellsPage }
 
 func (p *MapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
 
@@ -86,6 +96,9 @@ func (p *MapPage) scope(a *live.Analysis) scope {
 		return scope{pkg: pkg}
 	}
 	for _, pkg := range a.Snap.Packages {
+		if pkg.Rel == p.in {
+			return scope{pkg: pkg}
+		}
 		for _, f := range pkg.Files {
 			if f.Path == p.in {
 				return scope{pkg: pkg, file: f}
@@ -225,14 +238,13 @@ func (p *MapPage) side(a *live.Analysis, sc scope) h.H {
 		return group([]h.H{h.H2(h.Str("Smells")), okLine("No smells here.")})
 	}
 	title := fmt.Sprintf("Smells · %d", len(fs))
-	const show = 60
 	var rows []h.H
-	for _, f := range fs[:min(len(fs), show)] {
+	for _, f := range fs[:min(len(fs), p.rows)] {
 		rows = append(rows, findingRow(f, p.lens))
 	}
 	var more h.H
-	if len(fs) > show {
-		more = h.P(h.Class("hint"), h.Str(fmt.Sprintf("%d more. Narrow the scope to see them.", len(fs)-show)))
+	if rest := len(fs) - p.rows; rest > 0 {
+		more = h.Button(h.Class("btn more"), on.Click(p.More), h.Str(fmt.Sprintf("Show %d more smells", min(rest, smellsPage))))
 	}
 	return group([]h.H{h.H2(h.Str(title)), h.Ul(append([]h.H{h.Class("findings")}, rows...)...), more})
 }
