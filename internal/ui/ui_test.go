@@ -196,3 +196,34 @@ func TestMap_givesTheHottestFileTheHottestColour(t *testing.T) {
 	_, body := e.app.Get("/?lens=hotspot")
 	assert.Contains(t, body, `class="cell heat5"`, "the hottest file sets the scale")
 }
+
+func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+	scale := ""
+	for _, u := range e.src.Current().Review.Units {
+		if u.Name == "Scale" {
+			scale = u.Key
+		}
+	}
+	require.NoError(t, e.state.Set(scale, true))
+
+	_, body := e.app.Get("/review")
+	assert.Contains(t, body, `data-ignore-morph`)
+	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$atlas, \$reviewed, \$_focus\)"`, body)
+	assert.Regexp(t, `\["p",[^\]]*"calc",""\]`, body, "a package tile")
+	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+"\]`, body, "Scale is lit with its card id")
+	assert.Regexp(t, `"reviewed":\["u[0-9a-f]+"\]`, body, "the reviewed card")
+	assert.Contains(t, body, `src="/_codemesh/d3.min.js?v=`)
+}
+
+func TestAssets_serveD3WithAYearOfCaching(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	resp, err := e.app.Client().Get(e.app.URL() + "/_codemesh/d3.min.js")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "public, max-age=31536000, immutable", resp.Header.Get("Cache-Control"))
+}

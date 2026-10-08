@@ -77,6 +77,10 @@ rest, and every Tests, Other and Noise card, open on demand. Lanes list their
 60 riskiest units first. This keeps a release-sized diff fast to load. Callers changed in
 the same diff link to their unit.
 
+An atlas of the module sits above the outline, with every touched
+declaration lit. It follows the focused unit; drag or scroll to zoom,
+double-click to reset, and click a lit tile to open its card.
+
 Mark units reviewed as you go. A mark is tied to the unit's source, so when
 the author pushes again only the units that changed come back. Marks live in
 `.git/codemesh/` and are never committed.

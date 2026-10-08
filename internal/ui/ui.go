@@ -4,8 +4,11 @@
 package ui
 
 import (
-	_ "embed"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"path"
 	"time"
@@ -23,6 +26,40 @@ var css string
 //go:embed keys.js
 var keysJS string
 
+// assets are files served as they are: D3 and the island that drives it.
+//
+//go:embed assets
+var assets embed.FS
+
+// assetURL names a served asset with a hash of its bytes, so it can be cached
+// forever and still change with each build.
+func assetURL(name string) string {
+	data, err := assets.ReadFile("assets/" + name)
+	if err != nil {
+		panic(err)
+	}
+	sum := sha256.Sum256(data)
+	return "/_codemesh/" + name + "?v=" + hex.EncodeToString(sum[:6])
+}
+
+var (
+	d3URL    = assetURL("d3.min.js")
+	atlasURL = assetURL("atlas.js")
+)
+
+func serveAssets(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.StripPrefix("/_codemesh", http.FileServerFS(assetsRoot)).ServeHTTP(w, r)
+}
+
+var assetsRoot = func() fs.FS {
+	sub, err := fs.Sub(assets, "assets")
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}()
+
 // New returns the app's handler. origin is the URL the browser uses, such as
 // http://localhost:7777; actions from any other origin are refused.
 func New(src *live.Source, state *review.State, origin string) http.Handler {
@@ -32,7 +69,8 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 			Raw:  `<meta name="viewport" content="width=device-width, initial-scale=1">`,
 			Assets: via.Assets{
 				Styles:  []via.Style{{Inline: css}},
-				Scripts: []via.Script{{Inline: keysJS}},
+				// D3 and the island load before Datastar runs any effect.
+				Scripts: []via.Script{{Src: d3URL}, {Src: atlasURL}, {Inline: keysJS}},
 			},
 		}),
 		via.WithTrustedOrigin(origin),
@@ -44,6 +82,7 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 	mux := http.NewServeMux()
 	// Browsers ask for a favicon on every page; answer instead of logging 404s.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.HandleFunc("GET /_codemesh/", serveAssets)
 	mux.Handle("/", r)
 	return mux
 }

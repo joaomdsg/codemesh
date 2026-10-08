@@ -122,7 +122,11 @@ units**, one per declaration added, removed or modified.
    budget, show their header and open on demand. A lane lists its 60
    riskiest units until asked for the rest. An outline lists the listed
    units by lane with their marks.
-7. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
+7. **Where the change sits.** Above the outline, an atlas of the whole
+   module lights every declaration the change touches: blue while open,
+   green once reviewed. It flies to the focused unit's file, and clicking a
+   lit tile opens its card.
+8. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
    next unreviewed unit, `n` skips to it, `o` shows or hides a diff.
 
 ## Live
@@ -137,7 +141,10 @@ the map and the review queue follow your edits.
   treemap.
 - Hand-written CSS and a small keyboard script, inlined through the router's
   `Head.Assets`, so via's CSP admits them by hash.
-- No Node, no build step, no client framework.
+- No Node, no build step, no client framework. One island uses D3 (v7.9.0,
+  vendored, ISC): the server lays the atlas out and sends it through via
+  signals with the reviewed cards; a Datastar effect hands those and the
+  focused card to `atlas.js`, which only draws, zooms and links.
 - Dependencies:
   - `golang.org/x/tools/go/packages` loads the code.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
