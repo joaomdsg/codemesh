@@ -319,16 +319,16 @@ func callersLine(a *live.Analysis, u *review.Unit) h.H {
 		if d == nil {
 			continue
 		}
-		links = append(links, h.A(h.Href("/?in="+urlEscape(d.File)+"&d="+urlEscape(d.ID)), h.Str(shortPkg(a, d.Package)+d.Name)))
+		links = append(links, h.A(h.Href(mapURL{in: d.File, decl: d.ID}.String()), h.Str(shortPkg(a, d.Package)+d.Name)))
 	}
 	return h.P(h.Class("callers-line"), h.Span(h.Class("hint"), h.Str("Called by ")), group(links))
 }
 
 func mapHref(u *review.Unit) string {
 	if u.Kind == "" {
-		return "/?in=" + urlEscape(u.File)
+		return mapURL{in: u.File}.String()
 	}
-	return "/?in=" + urlEscape(u.File) + "&d=" + urlEscape(u.ID)
+	return mapURL{in: u.File, decl: u.ID}.String()
 }
 
 func firstLine(u *review.Unit) int {

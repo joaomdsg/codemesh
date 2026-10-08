@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"math"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -88,16 +87,7 @@ func (p *MapPage) scope(a *live.Analysis) scope {
 	return scope{}
 }
 
-func (p *MapPage) href(in, decl string) string {
-	q := "/?lens=" + p.lens
-	if in != "" {
-		q += "&in=" + urlEscape(in)
-	}
-	if decl != "" {
-		q += "&d=" + urlEscape(decl)
-	}
-	return q
-}
+func (p *MapPage) href(in, decl string) string { return mapURL{p.lens, in, decl}.String() }
 
 func (p *MapPage) crumbs(a *live.Analysis, sc scope) h.H {
 	parts := []h.H{h.A(h.Href(p.href("", "")), h.Str(path.Base(a.Snap.Module)))}
@@ -117,14 +107,7 @@ func (p *MapPage) lensBar() h.H {
 		if l.key == p.lens {
 			cls = "seg on"
 		}
-		q := "/?lens=" + l.key
-		if p.in != "" {
-			q += "&in=" + urlEscape(p.in)
-		}
-		if p.decl != "" {
-			q += "&d=" + urlEscape(p.decl)
-		}
-		kids = append(kids, h.A(h.Class(cls), h.Href(q), h.Title(l.help), h.Str(l.label)))
+		kids = append(kids, h.A(h.Class(cls), h.Href(mapURL{l.key, p.in, p.decl}.String()), h.Title(l.help), h.Str(l.label)))
 	}
 	return h.Nav(append([]h.H{h.Class("segs"), h.Aria("label", "Colour by")}, kids...)...)
 }
@@ -354,31 +337,13 @@ func (p *MapPage) side(a *live.Analysis, sc scope) h.H {
 	const show = 60
 	var rows []h.H
 	for _, f := range fs[:min(len(fs), show)] {
-		rows = append(rows, p.findingRow(f))
+		rows = append(rows, findingRow(f, p.lens))
 	}
 	var more h.H
 	if len(fs) > show {
 		more = h.P(h.Class("hint"), h.Str(fmt.Sprintf("%d more. Narrow the scope to see them.", len(fs)-show)))
 	}
 	return group([]h.H{h.H2(h.Str(title)), h.Ul(append([]h.H{h.Class("findings")}, rows...)...), more})
-}
-
-func (p *MapPage) findingRow(f smell.Finding) h.H {
-	href := p.href(f.Package, "")
-	switch {
-	case f.Decl != "":
-		href = p.href(f.File, f.Decl)
-	case f.File != "":
-		href = p.href(f.File, "")
-	}
-	return h.Li(h.Class("finding"),
-		sevMark(f.Severity),
-		h.A(h.Href(href),
-			h.Span(h.Class("rule"), h.Str(ruleLabel(f.Rule))),
-			h.Span(h.Class("subject"), h.Str(f.Subject)),
-		),
-		h.Span(h.Class("detail"), h.Title(f.Rule.Why()), h.Str(f.Detail)),
-	)
 }
 
 func (p *MapPage) declPanel(a *live.Analysis, d *code.Decl) h.H {
@@ -510,5 +475,3 @@ func fit(s string, width float64) string {
 	}
 	return string(r[:n-1]) + "…"
 }
-
-func urlEscape(s string) string { return url.QueryEscape(s) }

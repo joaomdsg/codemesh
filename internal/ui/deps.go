@@ -38,7 +38,7 @@ func structureFindings(a *live.Analysis) h.H {
 	for _, f := range a.Findings {
 		switch f.Rule {
 		case smell.UnstableDep, smell.EnviousFunc, smell.UntestedPackage:
-			rows = append(rows, (&MapPage{lens: "smells"}).findingRow(f))
+			rows = append(rows, findingRow(f, "smells"))
 		}
 	}
 	if len(rows) == 0 {
@@ -79,7 +79,7 @@ func matrix(a *live.Analysis) h.H {
 	var body []h.H
 	for i, r := range rows {
 		cells := []h.H{
-			h.Th(h.Class("dsm-name"), h.A(h.Href("/?in="+urlEscape(r.pkg.Path)), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(a, r.pkg)))),
+			h.Th(h.Class("dsm-name"), h.A(h.Href(mapURL{in: r.pkg.Path}.String()), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(a, r.pkg)))),
 			h.Td(h.Class("num"), h.Str(fmt.Sprintf("%.2f", r.unstable))),
 			h.Td(h.Class("num"), h.Str(r.ca)),
 			h.Td(h.Class("num"), h.Str(r.ce)),
