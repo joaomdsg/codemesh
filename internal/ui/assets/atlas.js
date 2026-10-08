@@ -99,20 +99,33 @@
   }
 
   // label sizes text to 11 screen pixels at any zoom and shows only labels
-  // that fit their tile on screen.
+  // that fit their tile on screen and clear the labels of the package and
+  // file around them: a frame's label strip is fixed in layout units, so
+  // zoomed out it is thinner than the text.
   function label(s) {
     if (!s.labels) return;
     // Screen pixels per layout unit: the viewBox is scaled into the panel.
     const ppu = (s.svg.node().clientWidth || s.w) / s.w * s.k;
     const px = 11 / ppu;
+    // Tiles come in layout order, each package then its files, each file
+    // then its declarations, so the last shown frame labels are the parents.
+    let pkg = null, file = null;
+    const box = (d) => ({ x0: d[X], y0: d[Y], x1: d[X] + (d[NAME].length * 7 + 6) / ppu, y1: d[Y] + px + 5 / ppu });
+    const clear = (b, o) => !o || b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0;
+    const shown = new Map();
+    s.labels.each((d) => {
+      const fits = d[W] * ppu > d[NAME].length * 7 + 6 && d[H] * ppu > 16;
+      const b = box(d);
+      const ok = fits && clear(b, pkg) && (d[K] === "p" || clear(b, file));
+      if (d[K] === "p") { pkg = ok ? b : null; file = null; }
+      if (d[K] === "f") file = ok ? b : null;
+      shown.set(d, ok);
+    });
     s.labels
       .attr("font-size", px)
       .attr("x", (d) => d[X] + 3 / ppu)
       .attr("y", (d) => d[Y] + px + 2 / ppu)
-      .attr("display", (d) => {
-        const w = d[W] * ppu, h = d[H] * ppu;
-        return w > d[NAME].length * 7 + 6 && h > 16 ? null : "none";
-      });
+      .attr("display", (d) => (shown.get(d) ? null : "none"));
   }
 
   // fly frames the focus with a margin: a declaration is framed by its file,

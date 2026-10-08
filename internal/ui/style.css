@@ -63,6 +63,11 @@ body {
   color: var(--ink);
   font: 14px/1.45 var(--sans);
   font-variant-numeric: tabular-nums;
+  /* Code fonts such as JetBrains Mono draw <= and != as one glyph, which
+     hides the characters a diff is about. font-feature-settings inherits
+     and the font shorthand leaves it alone, so this one rule reaches every
+     mono element. */
+  font-feature-settings: "liga" 0, "calt" 0;
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
@@ -135,9 +140,12 @@ kbd {
 .map-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); gap: var(--sp4); align-items: start; }
 /* Source wants the width more than the map does. */
 .map-layout:has(.side .code) { grid-template-columns: minmax(0, 1fr) minmax(420px, 45%); }
-/* The matrix is as wide as its packages; the smells take the rest. */
-.map-layout:has(.deps) { grid-template-columns: minmax(0, max-content) minmax(300px, 1fr); }
-@media (max-width: 900px) { .map-layout, .map-layout:has(.side .code), .map-layout:has(.deps) { grid-template-columns: minmax(0, 1fr); } }
+/* The matrix is as wide as its packages; the smells take the rest of the
+   row, and drop below once the matrix leaves them less than 300px. */
+.map-layout:has(.deps) { display: flex; flex-wrap: wrap; }
+.map-layout:has(.deps) > .deps { flex: 1 1 max-content; }
+.map-layout:has(.deps) > .side { flex: 1 1 300px; }
+@media (max-width: 900px) { .map-layout, .map-layout:has(.side .code) { grid-template-columns: minmax(0, 1fr); } }
 .map-pane, .side {
   background: var(--surface);
   border: 1px solid var(--line);
