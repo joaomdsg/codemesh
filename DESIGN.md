@@ -6,8 +6,9 @@ codemesh is a local web tool for Go modules. It does two jobs:
 2. **Review**: make reading a change fast enough that review stops being the
    bottleneck.
 
-Run it in a module: `codemesh [-addr localhost:7777] [-base REF] [dir]`. It analyses
-the working tree, so it reviews uncommitted work as well as branches.
+Run it in a module: `codemesh [-addr localhost:7777] [-base REF] [-poll 1s]
+[dir]`. It analyses the working tree, so it reviews uncommitted work as well
+as branches.
 
 ## What we kept from the Intent Canvas, and what we dropped
 

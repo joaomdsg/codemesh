@@ -163,8 +163,8 @@ func (r *Repo) Show(rev, path string) ([]byte, error) {
 	return run(r.Dir, "show", rev+":"+path)
 }
 
-// Churn counts commits per path in the since before the last commit. Renames
-// are not followed.
+// Churn counts commits per path in the since-long window ending at the last
+// commit. Renames are not followed.
 func (r *Repo) Churn(since time.Duration) (map[string]int, error) {
 	if head, err := r.Head(); err != nil || head == "" {
 		return map[string]int{}, err

@@ -217,10 +217,8 @@ func (p *MapPage) heat(v, top float64) int {
 	return 5
 }
 
-// heatCap is the hottest smells heat a declaration's worst finding allows.
-// Density alone makes a three-line const with one info smell the hottest
-// tile on the map; capping by severity keeps the top bands for warn and
-// high findings.
+// heatCap is the hottest heat a declaration's worst smell allows. By
+// density alone, a three-line const with one info smell is the hottest tile.
 func heatCap(fs []smell.Finding) int {
 	worst := smell.Info
 	for _, f := range fs {

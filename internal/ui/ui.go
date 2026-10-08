@@ -137,15 +137,15 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 	if n := s.open(a); n > 0 {
 		pending = h.Span(h.Class("count"), h.Title("units not yet reviewed"), h.Str(n))
 	}
-	var failure h.H
+	var banner h.H
 	switch {
 	case a != nil && a.Err != nil:
-		failure = h.Div(h.Class("banner err"), h.Role("alert"), h.Str("Load failed: "+a.Err.Error()+". Showing the last good analysis; fix the error and it reloads."))
+		banner = h.Div(h.Class("banner err"), h.Role("alert"), h.Str("Load failed: "+a.Err.Error()+". Showing the last good analysis; fix the error and it reloads."))
 	case a != nil && a.Snap != nil:
-		failure = typeErrors(a)
+		banner = typeErrors(a)
 		// The review lists nested modules' files; the map and matrix lack them.
 		if active != tabReview {
-			failure = group([]h.H{failure, nestedModules(a)})
+			banner = group([]h.H{banner, nestedModules(a)})
 		}
 	}
 	return h.Div(h.Class("app"),
@@ -159,7 +159,7 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 			),
 			h.Span(h.Class("stamp"), h.Aria("live", "polite"), s.Stamp.Display()),
 		),
-		failure,
+		banner,
 		h.Main(append([]h.H{h.Class("main")}, main...)...),
 	)
 }
