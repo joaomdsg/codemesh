@@ -41,7 +41,11 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 	via.Mount(r, "/", MapPage{shell: shell})
 	via.Mount(r, "/deps", DepsPage{shell: shell})
 	via.Mount(r, "/review", ReviewPage{shell: shell})
-	return r
+	mux := http.NewServeMux()
+	// Browsers ask for a favicon on every page; answer instead of logging 404s.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	mux.Handle("/", r)
+	return mux
 }
 
 // shell is the frame every page shares: the header, the live stamp, and the

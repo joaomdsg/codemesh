@@ -124,3 +124,11 @@ func TestLinks_carryScopeLensAndDeclarationToTheMap(t *testing.T) {
 	assert.Contains(t, rev, `href="/?in=calc%2Fcalc.go&amp;d=example.com%2Fcalc%2Fcalc.Clamp"`, "unit location")
 	assert.Contains(t, rev, `href="/?in=main.go&amp;d=example.com%2Fcalc.main"`, "unit caller")
 }
+
+func TestFavicon_answersWithoutContent(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	status, _ := e.app.Get("/favicon.ico")
+	assert.Equal(t, http.StatusNoContent, status)
+}
