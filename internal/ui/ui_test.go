@@ -166,7 +166,7 @@ func TestReview_capsLongLanesAtTheRiskiestUnits(t *testing.T) {
 	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()}).app
 
 	_, body := app.Get("/review")
-	assert.Contains(t, body, "Show 10 more logic units")
+	assert.Contains(t, body, "Show 10 more units")
 	assert.Equal(t, 60, strings.Count(body, `<article class="unit"`))
 }
 
@@ -182,7 +182,7 @@ func TestReview_offersALongLaneOnePageAtATime(t *testing.T) {
 	// vt drops SSE lines over 64 KB, so the next page's render is checked
 	// in a browser, not here.
 	_, body := app.Get("/review")
-	assert.Contains(t, body, "Show 60 more logic units", "72 more wait, a page at a time")
+	assert.Contains(t, body, "Show 60 more units", "72 more wait, a page at a time")
 }
 
 func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {

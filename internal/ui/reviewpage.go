@@ -284,7 +284,7 @@ func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit)
 	}
 	if hidden := len(units) - len(shown); hidden > 0 {
 		cards = append(cards, h.Button(h.Class("btn more"), on.Click(on.Bind(p.MoreUnits, int(l))),
-			h.Str(fmt.Sprintf("Show %d more %s units", min(hidden, laneCap), strings.ToLower(l.String())))))
+			h.Str(fmt.Sprintf("Show %d more units", min(hidden, laneCap)))))
 	}
 	return h.Section(h.Class("lane lane-"+strings.ToLower(l.String())), h.Div(h.Class("lane-bar"), head, accept), group(cards))
 }
