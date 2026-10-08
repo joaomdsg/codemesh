@@ -105,3 +105,22 @@ func TestReview_markRecordsTheUnitAsReviewed(t *testing.T) {
 	_, body := e.app.Get("/review")
 	assert.Contains(t, body, "1 of 9 reviewed")
 }
+
+func TestLinks_carryScopeLensAndDeclarationToTheMap(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+	scale := url.QueryEscape("example.com/calc/calc.Scale")
+
+	_, home := e.app.Get("/")
+	_, decl := e.app.Get("/?lens=churn&in=calc/calc.go&d=" + scale)
+	_, deps := e.app.Get("/deps")
+	_, rev := e.app.Get("/review")
+
+	assert.Contains(t, home, `href="/?lens=smells&amp;in=example.com%2Fcalc%2Fcalc"`, "package frame")
+	assert.Contains(t, decl, `href="/?lens=complexity&amp;in=calc%2Fcalc.go&amp;d=`+scale+`"`, "lens keeps the scope")
+	assert.Contains(t, decl, `href="/?lens=churn&amp;in=calc%2Fcalc.go"`, "closing the panel keeps the lens")
+	assert.Contains(t, decl, `href="/?lens=churn&amp;in=main.go&amp;d=example.com%2Fcalc.main"`, "caller link")
+	assert.Contains(t, deps, `href="/?in=example.com%2Fcalc%2Fcalc"`, "matrix row")
+	assert.Contains(t, rev, `href="/?in=calc%2Fcalc.go&amp;d=example.com%2Fcalc%2Fcalc.Clamp"`, "unit location")
+	assert.Contains(t, rev, `href="/?in=main.go&amp;d=example.com%2Fcalc.main"`, "unit caller")
+}
