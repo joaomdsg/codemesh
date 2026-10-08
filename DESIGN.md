@@ -102,8 +102,8 @@ decision a reader takes in at a glance; an `else if` ladder still counts
 each branch, since each condition must be read. The cost: a long switch
 no longer shows how many paths a test must cover.
 
-Code lines are lines holding a Go token. String data (see Other below)
-counts as one line, so an inlined script does not make a large file.
+Code lines are lines holding a Go token. A long string literal (see Other
+below) counts as one line, so an inlined script does not make a large file.
 
 Test code and generated files are exempt from every rule. Functions in a
 main package are exempt from envious-function, since wiring other packages
@@ -122,9 +122,9 @@ units**, one per declaration added, removed or modified.
      field is not a contract change.
    - **Logic**: other body and signature changes.
    - **Tests**: test code and `testdata` fixtures.
-   - **Other**: non-Go files, a nested module's `go.mod`, and string data:
-     a package-level const or var whose value is only string literals over
-     several lines, such as an inlined script. Go files of a nested module
+   - **Other**: non-Go files, a nested module's `go.mod`, and long string
+     literals: a package-level const or var whose value is only string
+     literals over several lines, such as an inlined script. Go files of a nested module
      have no type information here and become one unit per file, in Logic
      or Tests, or Noise when only comments and layout changed.
    - **Noise**: units whose syntax tree is unchanged apart from comments and

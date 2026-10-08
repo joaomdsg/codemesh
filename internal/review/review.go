@@ -26,7 +26,7 @@ const (
 	Contract Lane = iota // exported API added, removed or re-signed, and go.mod
 	Logic                // behaviour changes
 	Tests                // test code
-	Other                // non-Go files and string data
+	Other                // non-Go files and long string literals
 	Noise                // no change in meaning: comments, layout, moves, generated
 )
 

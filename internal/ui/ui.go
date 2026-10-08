@@ -216,9 +216,9 @@ func nestedModules(a *live.Analysis) h.H {
 	case 0:
 		return nil
 	case 1:
-		text = fmt.Sprintf("The nested module %s is not mapped. Run codemesh in %s to map it.", n[0], n[0])
+		text = fmt.Sprintf("Nested module %s/ not mapped. Run codemesh in %s/ to map it.", n[0], n[0])
 	default:
-		text = fmt.Sprintf("%d nested modules are not mapped: %s. Run codemesh in each to map it.", len(n), strings.Join(n, ", "))
+		text = fmt.Sprintf("%d nested modules not mapped: %s/. Run codemesh in each to map it.", len(n), strings.Join(n, "/, "))
 	}
 	return h.Div(h.Class("banner warn"), h.Role("status"), h.Str("▲ "+text))
 }

@@ -39,7 +39,7 @@ type lens struct {
 }
 
 var lenses = []lens{
-	{"smells", "Smells", "smells per 100 lines, weighted by severity"},
+	{"smells", "Smells", "smells per 100 lines, weighted by severity; red only with a high smell"},
 	{"complexity", "Complexity", "each declaration's cyclomatic complexity, a switch counting once"},
 	{"churn", "Churn", "commits to the declaration's file in the 90 days up to the last commit"},
 	{"hotspot", "Hotspot", "churn × complexity: hard code that keeps changing"},
@@ -260,7 +260,7 @@ func (p *MapPage) side(a *live.Analysis, sc scope) h.H {
 	}
 	var more h.H
 	if rest := len(fs) - p.rows; rest > 0 {
-		more = h.Button(h.Class("btn more"), on.Click(p.More), h.Str(fmt.Sprintf("Show %d more smells", min(rest, smellsPage))))
+		more = h.Button(h.Class("btn more"), on.Click(p.More), h.Str(fmt.Sprintf("Show %d more smells (%d left)", min(rest, smellsPage), rest)))
 	}
 	return group([]h.H{h.H2(h.Str(title)), h.Ul(append([]h.H{h.Class("findings")}, rows...)...), more})
 }

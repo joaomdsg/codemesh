@@ -294,7 +294,7 @@ func TestBuild_putsStringDataInOther(t *testing.T) {
 
 	u := unit(t, f.rev, "Script")
 	assert.Equal(t, review.Other, u.Lane)
-	assert.Contains(t, u.Reasons, "string data")
+	assert.Contains(t, u.Reasons, "long string literal")
 }
 
 func TestBuild_putsANestedGoModInOther(t *testing.T) {

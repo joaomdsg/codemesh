@@ -255,10 +255,10 @@ func (p *ReviewPage) outline(rev *review.Review) h.H {
 }
 
 var laneHelp = map[review.Lane]string{
-	review.Contract: "exported API and go.mod: read first, others depend on it",
+	review.Contract: "exported API and go.mod: read first, others depend on them",
 	review.Logic:    "behaviour changes, riskiest first",
 	review.Tests:    "test code",
-	review.Other:    "non-Go files and string data",
+	review.Other:    "non-Go files and long string literals",
 	review.Noise:    "no change in meaning: comments, layout, moves, generated code",
 }
 
@@ -284,7 +284,7 @@ func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit)
 	}
 	if hidden := len(units) - len(shown); hidden > 0 {
 		cards = append(cards, h.Button(h.Class("btn more"), on.Click(on.Bind(p.MoreUnits, int(l))),
-			h.Str(fmt.Sprintf("Show %d more units", min(hidden, laneCap)))))
+			h.Str(fmt.Sprintf("Show %d more units (%d left)", min(hidden, laneCap), hidden))))
 	}
 	return h.Section(h.Class("lane lane-"+strings.ToLower(l.String())), h.Div(h.Class("lane-bar"), head, accept), group(cards))
 }

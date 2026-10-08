@@ -142,7 +142,7 @@ kbd {
 /* The matrix is as wide as its packages; the smells take the rest of the
    row, and drop below once the matrix leaves them less than 300px. */
 .map-layout:has(.deps) { display: flex; flex-wrap: wrap; }
-.map-layout:has(.deps) > .deps { flex: 1 1 max-content; }
+.map-layout:has(.deps) > .deps { flex: 0 1 max-content; }
 .map-layout:has(.deps) > .side { flex: 1 1 300px; }
 @media (max-width: 900px) { .map-layout, .map-layout:has(.side .code) { grid-template-columns: minmax(0, 1fr); } }
 .map-pane, .side {
@@ -219,7 +219,9 @@ kbd {
 /* Dependencies */
 .deps { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--sp3); }
 .deps { min-width: 0; }
-.dsm-wrap { overflow: auto; margin-top: var(--sp3); }
+/* Capped at the viewport so the sticky header and names stay in view and
+   the side panel is not pushed a screen down. */
+.dsm-wrap { overflow: auto; margin-top: var(--sp3); max-height: calc(100vh - 220px); }
 .dsm { border-collapse: collapse; font-size: 12px; }
 .dsm th, .dsm td { border: 1px solid var(--line-soft); padding: 2px 6px; text-align: center; min-width: 26px; height: 24px; }
 .dsm thead th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--surface); }

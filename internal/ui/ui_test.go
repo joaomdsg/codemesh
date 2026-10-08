@@ -166,7 +166,7 @@ func TestReview_capsLongLanesAtTheRiskiestUnits(t *testing.T) {
 	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()}).app
 
 	_, body := app.Get("/review")
-	assert.Contains(t, body, "Show 10 more units")
+	assert.Contains(t, body, "Show 10 more units (10 left)")
 	assert.Equal(t, 60, strings.Count(body, `<article class="unit"`))
 }
 
@@ -182,7 +182,7 @@ func TestReview_offersALongLaneOnePageAtATime(t *testing.T) {
 	// vt drops SSE lines over 64 KB, so the next page's render is checked
 	// in a browser, not here.
 	_, body := app.Get("/review")
-	assert.Contains(t, body, "Show 60 more units", "72 more wait, a page at a time")
+	assert.Contains(t, body, "Show 60 more units (70 left)", "70 more wait, a page at a time")
 }
 
 func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {
@@ -264,11 +264,11 @@ func TestMap_pagesASmellsListPastSixty(t *testing.T) {
 
 	_, body := app.Get("/?in=example.com/calc/calc")
 	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
-	require.Contains(t, body, "Show 60 more smells")
+	require.Contains(t, body, "Show 60 more smells (")
 
 	status, _ := app.Action(0).Over(conn).Fire()
 	require.Equal(t, http.StatusNoContent, status)
-	assert.NotContains(t, conn.Await("Smells · "), "Show 60 more smells", "the second page leaves fewer than 60")
+	assert.NotContains(t, conn.Await("Smells · "), "Show 60 more smells (", "the second page leaves fewer than 60")
 }
 
 func TestMap_namesWhereEachDeclarationSmellIs(t *testing.T) {
@@ -276,7 +276,7 @@ func TestMap_namesWhereEachDeclarationSmellIs(t *testing.T) {
 	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(1)}).app
 
 	_, body := app.Get("/")
-	assert.Contains(t, body, ">calc/many.go:3<")
+	assert.Contains(t, body, ", limit 5 · calc/many.go:3<")
 }
 
 func TestMap_scopesToAPackageByItsDirectory(t *testing.T) {
@@ -301,9 +301,9 @@ func TestFrame_namesNestedModulesTheMapLeavesOut(t *testing.T) {
 	_, deps := app.Get("/deps")
 	_, rev := app.Get("/review")
 	for _, body := range []string{home, deps} {
-		assert.Contains(t, body, "The nested module tools is not mapped. Run codemesh in tools to map it.")
+		assert.Contains(t, body, "Nested module tools/ not mapped. Run codemesh in tools/ to map it.")
 	}
-	assert.NotContains(t, rev, "is not mapped", "the review lists nested module files")
+	assert.NotContains(t, rev, "not mapped", "the review lists nested module files")
 }
 
 func TestMap_keepsADeclarationWithOnlyInfoSmellsLukewarm(t *testing.T) {

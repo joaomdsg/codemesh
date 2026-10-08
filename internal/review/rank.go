@@ -36,7 +36,7 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	}
 	cur := cmp.Or(new, old)
 	if cur.Data {
-		add("string data", 0)
+		add("long string literal", 0)
 	}
 	// A test function is exported only so the test runner finds it.
 	if u.Exported && !cur.Test {

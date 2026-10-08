@@ -5,7 +5,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/go-via/via"
 	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
@@ -46,8 +45,15 @@ func findingRow(f smell.Finding, lens string) h.H {
 			h.Span(h.Class("rule"), h.Str(ruleLabel(f.Rule))),
 			h.Span(h.Class("subject"), h.Str(f.Subject)),
 		),
-		h.Span(h.Class("detail"), h.Title(f.Rule.Why()), h.Str(f.Detail)),
-		// Names repeat across packages and receivers; the place tells them apart.
-		via.When(f.Decl != "", func() h.H { return h.Span(h.Class("detail"), h.Str(fmt.Sprintf("%s:%d", f.File, f.Line))) }),
+		h.Span(h.Class("detail"), h.Title(f.Rule.Why()), h.Str(f.Detail+where(f))),
 	)
+}
+
+// where names a declaration finding's file and line: names repeat across
+// packages and receivers, the place tells them apart.
+func where(f smell.Finding) string {
+	if f.Decl == "" {
+		return ""
+	}
+	return fmt.Sprintf(" · %s:%d", f.File, f.Line)
 }
