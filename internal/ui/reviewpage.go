@@ -257,10 +257,10 @@ func (p *ReviewPage) outline(rev *review.Review) h.H {
 }
 
 var laneHelp = map[review.Lane]string{
-	review.Contract: "exported API added, removed or re-signed: read first, others depend on it",
+	review.Contract: "exported API and go.mod: read first, others depend on it",
 	review.Logic:    "behaviour changes, riskiest first",
 	review.Tests:    "test code",
-	review.Other:    "files outside Go code",
+	review.Other:    "non-Go files and string data",
 	review.Noise:    "no change in meaning: comments, layout, moves, generated code",
 }
 

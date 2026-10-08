@@ -139,3 +139,22 @@ func TestLoad_ignoresBlankIdentifiersWhenResolvingReferences(t *testing.T) {
 		assert.NotContains(t, d.Refs, "", d.ID)
 	}
 }
+
+func TestLoad_countsAStringLiteralDeclarationAsDataOnItsFirstLine(t *testing.T) {
+	t.Parallel()
+	s, err := code.Load("testdata/data")
+	require.NoError(t, err)
+
+	for _, name := range []string{"script", "Schema", "greeting"} {
+		d := s.Decl("example.com/data/page." + name)
+		require.NotNil(t, d, name)
+		assert.True(t, d.Data, name)
+		assert.Equal(t, 1, d.Lines, name)
+	}
+	assert.False(t, s.Decl("example.com/data/page.Kind").Data, "a one-line string is a value, not data")
+	q := s.Decl("example.com/data/page.Query")
+	assert.False(t, q.Data)
+	assert.Equal(t, 5, q.Lines, "a literal inside a function still reads as code")
+	// package, import, three data lines, Kind, Query's five, Page's one.
+	assert.Equal(t, 12, s.Package("example.com/data/page").Files[0].Lines)
+}

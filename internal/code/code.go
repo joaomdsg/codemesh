@@ -60,6 +60,10 @@ type Decl struct {
 	File     string // File.Path
 	Test     bool   // declared in a _test.go file
 	Exported bool
+	// Data marks a package-level const or var whose value is only string
+	// literals over several lines, such as an inlined script. It counts as
+	// one code line: its content is not Go a reader has to follow.
+	Data bool
 
 	Start, End int // 1-based line span, doc comment included
 	Lines      int // code lines in the span

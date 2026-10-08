@@ -58,10 +58,10 @@ unit lands in a lane:
 
 | lane | holds |
 |---|---|
-| Contract | exported API of importable packages, added, removed or re-signed |
+| Contract | exported API of importable packages, added, removed or re-signed, and `go.mod` |
 | Logic | behaviour changes |
 | Tests | test code and fixtures |
-| Other | non-Go files |
+| Other | non-Go files and string data, such as an inlined script |
 | Noise | comments, layout, moves, generated files, `go.sum` |
 
 Go files of a nested module have no type information in the outer one, so

@@ -122,16 +122,19 @@ func (l *loader) addFile(p *packages.Package, owner, name string, f *ast.File) *
 		src = nil
 	}
 	code := codeLines(l.fset.File(f.Pos()), src)
-	file.Lines = len(code)
 	for _, gd := range f.Decls {
 		for _, u := range l.declsOf(p, gd) {
 			u.d.Package, u.d.File, u.d.Test = owner, file.Path, file.Test
+			if u.d.Data {
+				keepFirst(code, u.d.Start, u.d.End)
+			}
 			u.d.Lines = countIn(code, u.d.Start, u.d.End)
 			file.Decls = append(file.Decls, u.d)
 			l.units = append(l.units, u)
 			l.s.decls[u.d.ID] = u.d
 		}
 	}
+	file.Lines = len(code)
 	return file
 }
 
@@ -188,6 +191,7 @@ func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
 			}
 			d.ID = p.PkgPath + "." + d.Name
 			d.Signature = strings.Join(typ, ", ")
+			d.Data = gd.Tok != token.TYPE && l.isData(spec.(*ast.ValueSpec), p.TypesInfo)
 			d.Shape = shape(spec)
 			out = append(out, unit{d, spec, p.TypesInfo})
 		}
@@ -274,6 +278,29 @@ func surface(t types.Type, qual types.Qualifier) string {
 		}
 	}
 	return "struct{" + strings.Join(fields, "; ") + "}"
+}
+
+// isData reports whether vs holds text rather than code: every value is a
+// string literal, a concatenation of them, or a conversion of one, as in
+// json.RawMessage(`…`), and they run over several lines. A one-line string,
+// such as an enum value, stays code: changing it changes behaviour.
+func (l *loader) isData(vs *ast.ValueSpec, info *types.Info) bool {
+	var lit func(e ast.Expr) bool
+	lit = func(e ast.Expr) bool {
+		switch e := ast.Unparen(e).(type) {
+		case *ast.BasicLit:
+			return e.Kind == token.STRING
+		case *ast.BinaryExpr:
+			return e.Op == token.ADD && lit(e.X) && lit(e.Y)
+		case *ast.CallExpr:
+			return len(e.Args) == 1 && info.Types[e.Fun].IsType() && lit(e.Args[0])
+		}
+		return false
+	}
+	if len(vs.Values) == 0 || slices.ContainsFunc(vs.Values, func(e ast.Expr) bool { return !lit(e) }) {
+		return false
+	}
+	return l.fset.Position(vs.Values[0].Pos()).Line < l.fset.Position(vs.Values[len(vs.Values)-1].End()).Line
 }
 
 // objKey names a package-level object or method the same way in every

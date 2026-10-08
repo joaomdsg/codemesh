@@ -39,6 +39,20 @@ func codeLines(tf *token.File, src []byte) map[int]bool {
 	}
 }
 
+// keepFirst drops every code line in start..end but the first.
+func keepFirst(lines map[int]bool, start, end int) {
+	kept := false
+	for l := start; l <= end; l++ {
+		if !lines[l] {
+			continue
+		}
+		if kept {
+			delete(lines, l)
+		}
+		kept = true
+	}
+}
+
 func countIn(lines map[int]bool, start, end int) int {
 	n := 0
 	for l := start; l <= end; l++ {
@@ -169,4 +183,13 @@ func ShapeOf(src string) (string, error) {
 		return "", errors.New("no declaration")
 	}
 	return shape(f.Decls[0]), nil
+}
+
+// FileShape returns the Shape of a whole Go source file.
+func FileShape(src string) (string, error) {
+	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
+	if err != nil {
+		return "", err
+	}
+	return shape(f), nil
 }

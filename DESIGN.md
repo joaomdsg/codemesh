@@ -79,6 +79,9 @@ Each smell is a rule with a documented threshold:
 | unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
 | untested package | no test files | changes land unguarded |
 
+Code lines are lines holding a Go token. String data (see Other below)
+counts as one line, so an inlined script does not make a large file.
+
 Test code and generated files are exempt from every rule. Functions in a
 main package are exempt from envious-function, since wiring other packages
 together is a main package's job.
@@ -91,13 +94,16 @@ units**, one per declaration added, removed or modified.
 
 1. **Triage into lanes.** Lanes are ordered by how much reading they need:
    - **Contract**: exported declarations of importable packages (not under
-     `internal/`, not `main`) added, removed or re-signed, and `go.mod`. A
-     struct's signature is its exported fields, so a new private field is
-     not a contract change.
+     `internal/`, not `main`) added, removed or re-signed, and the module's
+     `go.mod`. A struct's signature is its exported fields, so a new private
+     field is not a contract change.
    - **Logic**: other body and signature changes.
    - **Tests**: test code and `testdata` fixtures.
-   - **Other**: non-Go files. Go files of a nested module have no type
-     information here and become one unit per file, in Logic or Tests.
+   - **Other**: non-Go files, a nested module's `go.mod`, and string data:
+     a package-level const or var whose value is only string literals over
+     several lines, such as an inlined script. Go files of a nested module have no type
+     information here and become one unit per file, in Logic or Tests, or
+     Noise when only comments and layout changed.
    - **Noise**: units whose syntax tree is unchanged apart from comments and
      formatting, pure moves (same source, other file or package), generated
      files, `go.sum`, and import lines. A declaration moved and edited is

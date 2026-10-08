@@ -34,7 +34,12 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 			add(plural(tests, "test caller"), 0)
 		}
 	}
-	if u.Exported {
+	cur := cmp.Or(new, old)
+	if cur.Data {
+		add("string data", 0)
+	}
+	// A test function is exported only so the test runner finds it.
+	if u.Exported && !cur.Test {
 		add("exported", 4)
 	}
 	if new == nil || new.Kind != code.Func && new.Kind != code.Method {
@@ -52,6 +57,8 @@ func (b *builder) laneOf(u *Unit, d *code.Decl, resigned bool) Lane {
 		return Tests
 	case u.Exported && b.public(d.Package) && (u.Change != Modified || resigned):
 		return Contract
+	case d.Data:
+		return Other
 	}
 	return Logic
 }

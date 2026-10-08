@@ -270,3 +270,57 @@ func TestBuild_givesNestedModuleGoFilesTheirCodeLane(t *testing.T) {
 	assert.Equal(t, review.Logic, u.Lane)
 	assert.Contains(t, u.Reasons, "in another module")
 }
+
+var edges = sync.OnceValues(func() (fixture, error) {
+	return build(map[string]string{
+		"go.mod":               "module example.com/e\n\ngo 1.27\n",
+		"page/page.go":         "package page\n\nconst Script = `\na\n`\n\nfunc Use() string { return Script }\n",
+		"internal/k/k.go":      "package k\n\nfunc K() int { return 1 }\n",
+		"internal/k/k_test.go": "package k\n\nimport \"testing\"\n\nfunc TestK(t *testing.T) { K() }\n",
+		"sub/go.mod":           "module example.com/sub\n\ngo 1.27\n",
+		"sub/doc.go":           "// Package sub does s.\npackage sub\n",
+	}, map[string]string{
+		"page/page.go":         "package page\n\nconst Script = `\na\nb\n`\n\nfunc Use() string { return Script }\n",
+		"internal/k/k_test.go": "package k\n\nimport \"testing\"\n\nfunc TestK(t *testing.T) { _ = K() }\n",
+		"sub/go.mod":           "module example.com/sub\n\ngo 1.27.0\n",
+		"sub/doc.go":           "// Package sub does t.\npackage sub\n",
+	})
+})
+
+func TestBuild_putsStringDataInOther(t *testing.T) {
+	t.Parallel()
+	f, err := edges()
+	require.NoError(t, err)
+
+	u := unit(t, f.rev, "Script")
+	assert.Equal(t, review.Other, u.Lane)
+	assert.Contains(t, u.Reasons, "string data")
+}
+
+func TestBuild_putsANestedGoModInOther(t *testing.T) {
+	t.Parallel()
+	f, err := edges()
+	require.NoError(t, err)
+
+	u := unit(t, f.rev, "sub/go.mod")
+	assert.Equal(t, review.Other, u.Lane)
+	assert.Contains(t, u.Reasons, "in another module")
+}
+
+func TestBuild_readsACommentOnlyNestedModuleFileAsNoise(t *testing.T) {
+	t.Parallel()
+	f, err := edges()
+	require.NoError(t, err)
+
+	u := unit(t, f.rev, "sub/doc.go")
+	assert.Equal(t, review.Noise, u.Lane)
+	assert.Contains(t, u.Reasons, "comments or layout only")
+}
+
+func TestBuild_givesTestFunctionsNoExportedChip(t *testing.T) {
+	t.Parallel()
+	f, err := edges()
+	require.NoError(t, err)
+
+	assert.NotContains(t, unit(t, f.rev, "TestK").Reasons, "exported")
+}

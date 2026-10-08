@@ -23,10 +23,10 @@ import (
 type Lane int
 
 const (
-	Contract Lane = iota // exported API added, removed or re-signed
+	Contract Lane = iota // exported API added, removed or re-signed, and go.mod
 	Logic                // behaviour changes
 	Tests                // test code
-	Other                // non-Go files
+	Other                // non-Go files and string data
 	Noise                // no change in meaning: comments, layout, moves, generated
 )
 
@@ -227,12 +227,17 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	case path.Base(p) == "go.sum":
 		u.Lane = Noise
 		u.Reasons = append(u.Reasons, "checksums")
-	case path.Base(p) == "go.mod" && !isFixture(p):
+	case p == "go.mod":
 		u.Lane = Contract
 		u.Reasons = append(u.Reasons, "dependencies")
 	case isFixture(p):
 		u.Lane = Tests
 		u.Reasons = append(u.Reasons, "test fixture")
+	case path.Base(p) == "go.mod":
+		u.Reasons = append(u.Reasons, "dependencies", "in another module")
+	case path.Ext(p) == ".go" && sameShape(oldText, newText):
+		u.Lane = Noise
+		u.Reasons = append(u.Reasons, "comments or layout only")
 	case path.Ext(p) == ".go":
 		// Go code of a nested module: no type info here, so one unit per file.
 		u.Lane = Logic
@@ -375,6 +380,20 @@ func sameText(removed, added *Unit) bool {
 		b = append(b, l.Text)
 	}
 	return slices.Equal(a, b)
+}
+
+// sameShape reports whether two versions of a Go file differ only in
+// comments and layout. A side that is missing or does not parse differs.
+func sameShape(old, new []string) bool {
+	if len(old) == 0 || len(new) == 0 {
+		return false
+	}
+	a, err := code.FileShape(strings.Join(old, "\n"))
+	if err != nil {
+		return false
+	}
+	b, err := code.FileShape(strings.Join(new, "\n"))
+	return err == nil && a == b
 }
 
 func isFixture(p string) bool {
