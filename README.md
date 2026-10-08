@@ -41,7 +41,8 @@ To review someone else's branch, check it out first, for example with
 - **Lenses** colour the tiles:
   - Smells: weighted smells per 100 lines; only warn and high smells
     reach the hottest colours.
-  - Complexity: each declaration's cyclomatic complexity.
+  - Complexity: each declaration's cyclomatic complexity, a switch counting
+    once.
   - Churn: commits in the 90 days up to the last commit.
   - Hotspot: churn × complexity.
 - **Smells.** The side panel lists the smells in the current scope, 60 at

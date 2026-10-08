@@ -59,8 +59,8 @@ func TestLoad_measuresFunctions(t *testing.T) {
 	assert.Equal(t, "Cart.Total", total.Name)
 	assert.True(t, total.Exported)
 	assert.Equal(t, 6, total.Params)
-	// 1 + for + if + && + else-if + || + two non-default cases.
-	assert.Equal(t, 8, total.Complexity)
+	// 1 + for + if + && + else-if + || + the switch.
+	assert.Equal(t, 7, total.Complexity)
 	assert.Equal(t, 2, total.Nesting, "an else-if is not deeper than its if")
 	assert.Equal(t, 13, total.Start, "doc comment starts the span")
 	assert.Equal(t, 31, total.End)
@@ -166,4 +166,14 @@ func TestLoad_namesTheNestedModulesItLeavesOut(t *testing.T) {
 
 	assert.Equal(t, []string{"sub"}, s.Nested, "not the module inside it, not a testdata fixture")
 	assert.Empty(t, s.Package("example.com/nested/a").Imports, "an import of another module is not a module-internal edge")
+}
+
+func TestLoad_countsASwitchAsOneDecisionHoweverManyCases(t *testing.T) {
+	t.Parallel()
+	s, err := code.Load("testdata/switchy")
+	require.NoError(t, err)
+
+	for _, name := range []string{"Dispatch", "Kind", "Wait"} {
+		assert.Equal(t, 2, s.Decl("example.com/switchy/s."+name).Complexity, name)
+	}
 }

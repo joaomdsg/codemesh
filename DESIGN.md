@@ -54,7 +54,8 @@ and a banner names it. Imports of it are not module-internal edges.
   - Smells: weighted smells per 100 lines, in fixed bands, capped by the
     worst smell: info smells alone reach band 2, warn band 4. Without the
     cap, one info smell on a three-line const is the hottest tile.
-  - Complexity: cyclomatic complexity per declaration, in fixed bands.
+  - Complexity: modified cyclomatic complexity per declaration, in fixed
+    bands.
   - Churn: commits to the file in the 90 days up to the last commit, so a
     quiet repo still shows where its work went; relative to the hottest
     file.
@@ -79,7 +80,7 @@ Each smell is a rule with a documented threshold:
 | smell | rule | why |
 |---|---|---|
 | long function | > 60 code lines (high > 120) | hard to hold in your head |
-| complex function | cyclomatic > 10 (high > 20) | paths you must test and read |
+| complex function | modified cyclomatic > 10 (high > 20) | decisions you must read and test |
 | deep nesting | nesting depth > 4 | control flow hides the main path |
 | many parameters | > 5 parameters | the function does several jobs |
 | large file | > 600 code lines (high > 1200) | the file has several concerns |
@@ -91,6 +92,14 @@ Each smell is a rule with a documented threshold:
 
 A finding past the high limit is high severity and names that limit
 ("121 lines, high limit 120").
+
+Complexity is modified cyclomatic complexity: one plus each `if`, `for`,
+`&&` and `||`, with a `switch` or `select` counting once however many cases
+it has (lizard's `-m`). Plain McCabe counts every case, so a flat 14-way
+string dispatch scored 29 and outranked nested loops. A switch is one
+decision a reader takes in at a glance; an `else if` ladder still counts
+each branch, since each condition must be read. The cost: a long switch
+no longer shows how many paths a test must cover.
 
 Code lines are lines holding a Go token. String data (see Other below)
 counts as one line, so an inlined script does not make a large file.
@@ -173,7 +182,7 @@ the map and the review queue follow your edits.
   - `golang.org/x/tools/go/packages` loads the code.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
     binary files and mode changes correctly, where the alternatives do not.
-  - Cyclomatic complexity is hand-rolled, about 30 lines, to avoid an
+  - Complexity is hand-rolled, about 40 lines, to avoid an
     untagged dependency.
 
 ## Layout

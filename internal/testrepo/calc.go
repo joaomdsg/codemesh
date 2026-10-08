@@ -67,26 +67,34 @@ func Clamp(x, lo, hi int) int { return tangle(min(max(x, lo), hi)) }
 
 // tangle brings a new complex-function smell.
 func tangle(x int) int {
-	switch x {
-	case 1, 2:
+	if x == 2 {
 		return 1
-	case 3:
+	}
+	if x == 3 {
 		return 2
-	case 4:
+	}
+	if x == 4 {
 		return 3
-	case 5:
+	}
+	if x == 5 {
 		return 4
-	case 6:
+	}
+	if x == 6 {
 		return 5
-	case 7:
+	}
+	if x == 7 {
 		return 6
-	case 8:
+	}
+	if x == 8 {
 		return 7
-	case 9:
+	}
+	if x == 9 {
 		return 8
-	case 10:
+	}
+	if x == 10 {
 		return 9
-	case 11:
+	}
+	if x == 11 {
 		return 10
 	}
 	return 0

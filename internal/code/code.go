@@ -71,7 +71,7 @@ type Decl struct {
 	Start, End int // 1-based line span, doc comment included
 	Lines      int // code lines in the span
 
-	Complexity int    // cyclomatic complexity; funcs and methods only
+	Complexity int    // modified cyclomatic complexity; funcs and methods only
 	Nesting    int    // deepest statement nesting; funcs and methods only
 	Params     int    // parameter count; funcs and methods only
 	Signature  string // type signature, for contract-change detection

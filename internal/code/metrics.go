@@ -63,21 +63,22 @@ func countIn(lines map[int]bool, start, end int) int {
 	return n
 }
 
-// complexity is McCabe's cyclomatic complexity: one plus each branch point.
+// complexity is modified cyclomatic complexity: one plus each branch point,
+// with a switch or select counting once however many cases it has. Plain
+// McCabe counts every case, which rates a flat 14-way dispatch as harder to
+// read than nested loops. An else-if ladder still counts each branch.
 func complexity(body *ast.BlockStmt) int {
 	n := 1
 	ast.Inspect(body, func(node ast.Node) bool {
 		switch x := node.(type) {
 		case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt:
 			n++
-		case *ast.CaseClause:
-			if x.List != nil {
-				n++
-			}
-		case *ast.CommClause:
-			if x.Comm != nil {
-				n++
-			}
+		case *ast.SwitchStmt:
+			n += decides(x.Body)
+		case *ast.TypeSwitchStmt:
+			n += decides(x.Body)
+		case *ast.SelectStmt:
+			n += decides(x.Body)
 		case *ast.BinaryExpr:
 			if x.Op == token.LAND || x.Op == token.LOR {
 				n++
@@ -86,6 +87,23 @@ func complexity(body *ast.BlockStmt) int {
 		return true
 	})
 	return n
+}
+
+// decides is 1 when a switch or select body has a clause besides default.
+func decides(body *ast.BlockStmt) int {
+	for _, c := range body.List {
+		switch c := c.(type) {
+		case *ast.CaseClause:
+			if c.List != nil {
+				return 1
+			}
+		case *ast.CommClause:
+			if c.Comm != nil {
+				return 1
+			}
+		}
+	}
+	return 0
 }
 
 // nesting is the deepest chain of nested if/for/switch/select statements.

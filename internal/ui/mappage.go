@@ -40,7 +40,7 @@ type lens struct {
 
 var lenses = []lens{
 	{"smells", "Smells", "smells per 100 lines, weighted by severity"},
-	{"complexity", "Complexity", "each declaration's cyclomatic complexity"},
+	{"complexity", "Complexity", "each declaration's cyclomatic complexity, a switch counting once"},
 	{"churn", "Churn", "commits to the declaration's file in the 90 days up to the last commit"},
 	{"hotspot", "Hotspot", "churn × complexity: hard code that keeps changing"},
 }
