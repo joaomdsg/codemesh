@@ -26,10 +26,10 @@ type MapPage struct {
 	lens string
 	decl string // selected decl ID
 
-	// The atlas island's inputs, both sent by the server: the layout with a
-	// heat per declaration, and the tile to fly to.
-	Atlas    via.Signal[atlas]
-	Selected via.Signal[string]
+	// The atlas island's inputs, client-only and rendered by the server: the
+	// layout with a heat per declaration, and the tile to fly to.
+	Atlas    via.SignalCS[atlas]
+	Selected via.SignalCS[string] `via:"init=\"\""`
 }
 
 type lens struct {
@@ -50,20 +50,7 @@ func (p *MapPage) OnInit(ctx *via.Ctx) error {
 		p.lens = "smells"
 	}
 	p.start(ctx)
-	p.sendAtlas()
-	ctx.Listen(p.src.Updates, p.onAnalysis)
 	return nil
-}
-
-func (p *MapPage) onAnalysis(_ *via.Ctx, _ int64) { p.sendAtlas() }
-
-func (p *MapPage) sendAtlas() {
-	a := p.src.Current()
-	if a == nil || a.Snap == nil {
-		return
-	}
-	p.Atlas.Set(p.atlas(a))
-	p.Selected.Set(cmp.Or(p.decl, p.in))
 }
 
 func (p *MapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
@@ -78,6 +65,7 @@ func (p *MapPage) View() h.H {
 		h.Div(h.Class("map-layout"),
 			h.Section(h.Class("map-pane"),
 				h.Div(h.Class("map-bar"), p.crumbs(a, sc), p.lensBar()),
+				feed(map[expr.Expr]any{p.Atlas.Ref(): p.atlas(a), p.Selected.Ref(): cmp.Or(p.decl, p.in)}),
 				h.Div(h.Class("atlas atlas-map"), h.DataIgnoreMorph(),
 					h.DataEffect(expr.Rawf("codemesh.atlas(el, %s, {focus: %s})", p.Atlas.Ref(), p.Selected.Ref()))),
 				h.P(h.Class("hint"), h.Str(p.lensHelp())),

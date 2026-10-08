@@ -144,9 +144,12 @@ the map and the review queue follow your edits.
   `Head.Assets`, so via's CSP admits them by hash.
 - No Node, no build step, no client framework. The atlas is one island
   using D3 (v7.9.0, vendored, ISC), on the map and in the review: the server
-  lays it out and sends it through via signals, with the lens heats or the
-  reviewed cards and the selection; a Datastar effect hands them to
-  `atlas.js`, which only draws, zooms and links.
+  lays it out and renders it, with the lens heats or the reviewed cards and
+  the selection, into client-only signals (`SignalCS`), so the layout is
+  never posted back with an action. via v0.9.0 has no server-side setter for
+  a `SignalCS`, so the values ride on a hidden element's `data-signals`
+  attributes, which Datastar applies on every morph. A Datastar effect hands
+  them to `atlas.js`, which only draws, zooms and links.
 - Dependencies:
   - `golang.org/x/tools/go/packages` loads the code.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,

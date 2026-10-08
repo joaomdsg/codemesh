@@ -52,9 +52,10 @@ func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
 
 	status, body := e.app.Get("/")
 	require.Equal(t, http.StatusOK, status)
+	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"example.com/calc/calc"\]`, body, "the calc package tile")
 	assert.Regexp(t, `\["f",[^\]]*"calc.go","",0,"calc/calc.go"\]`, body, "its file tile")
-	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$atlas, \{focus: \$selected\}\)"`, body)
+	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$_atlas, \{focus: \$_selected\}\)"`, body)
 	assert.Contains(t, body, "Smells · 1")
 	assert.Contains(t, body, "Complex function")
 }
@@ -195,6 +196,7 @@ func TestMap_givesTheHottestDeclarationTheHottestColour(t *testing.T) {
 	e.src.Refresh()
 
 	_, body := e.app.Get("/?lens=hotspot")
+	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["d",[^\]]*"B","",5,"example.com/hot/p.B"\]`, body, "the hottest declaration sets the scale")
 }
 
@@ -210,11 +212,12 @@ func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
 	require.NoError(t, e.state.Set(scale, true))
 
 	_, body := e.app.Get("/review")
+	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Contains(t, body, `data-ignore-morph`)
-	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$atlas, \{reviewed: \$reviewed, focus: \$_focus\}\)"`, body)
+	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$_atlas, \{reviewed: \$_reviewed, focus: \$_focus\}\)"`, body)
 	assert.Regexp(t, `\["p",[^\]]*"calc","",0,""\]`, body, "a package tile")
 	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+",0,""\]`, body, "Scale is lit with its card id")
-	assert.Regexp(t, `"reviewed":\["u[0-9a-f]+"\]`, body, "the reviewed card")
+	assert.Regexp(t, `data-signals:_reviewed="\["u[0-9a-f]+"\]"`, body, "the reviewed card")
 	assert.Contains(t, body, `src="/_codemesh/d3.min.js?v=`)
 }
 

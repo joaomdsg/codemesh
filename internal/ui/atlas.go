@@ -2,9 +2,14 @@ package ui
 
 import (
 	"encoding/json"
+	"maps"
 	"math"
 	"path"
+	"slices"
+	"strings"
 
+	"github.com/go-via/via/expr"
+	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/review"
@@ -96,6 +101,22 @@ func belowLabel(r treemap.Rect, strip float64) treemap.Rect {
 func tileAt(kind, name string, r treemap.Rect) atlasTile {
 	round := func(v float64) float64 { return math.Round(v*10) / 10 }
 	return atlasTile{K: kind, X: round(r.X), Y: round(r.Y), W: round(r.W), H: round(r.H), Name: name}
+}
+
+// feed hands server values to client-only signals: a data-signals attribute
+// per value on a hidden element, which Datastar applies on load and again on
+// every morph. A SignalCS is never posted back, so the layout stays in the
+// browser instead of riding along on each action.
+func feed(vals map[expr.Expr]any) h.H {
+	kids := []h.H{h.Class("atlas-feed"), h.Hidden(true)}
+	for _, ref := range slices.Sorted(maps.Keys(vals)) {
+		b, err := json.Marshal(vals[ref])
+		if err != nil {
+			panic(err)
+		}
+		kids = append(kids, h.Data("signals:"+strings.TrimPrefix(string(ref), "$"), string(b)))
+	}
+	return h.Div(kids...)
 }
 
 // reviewAtlas lights each declaration that has a review unit with its card id.

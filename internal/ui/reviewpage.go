@@ -21,11 +21,12 @@ import (
 // first, with reviewed units folded away.
 type ReviewPage struct {
 	shell
-	// The atlas island's inputs: the server sends the layout and the reviewed
-	// cards; the focused card is the browser's own.
-	Atlas    via.Signal[atlas]
-	Reviewed via.Signal[[]string] `via:"init=[]"`
-	Focus    via.SignalCS[string] `via:"init=\"\""`
+	// The atlas island's inputs, all client-only: the server renders the
+	// layout and the reviewed cards into them; the focused card is the
+	// browser's own.
+	Atlas    via.SignalCS[atlas]
+	Reviewed via.SignalCS[[]string] `via:"init=[]"`
+	Focus    via.SignalCS[string]   `via:"init=\"\""`
 
 	err    string
 	opened map[string]bool   // unit keys whose diff the reviewer asked to see
@@ -47,28 +48,7 @@ const renderBudget = 3000
 
 func (p *ReviewPage) OnInit(ctx *via.Ctx) error {
 	p.start(ctx)
-	p.sendAtlas()
-	ctx.Listen(p.src.Updates, p.onAnalysis)
 	return nil
-}
-
-func (p *ReviewPage) onAnalysis(_ *via.Ctx, _ int64) { p.sendAtlas() }
-
-// sendAtlas sends the island its layout and marks for the current analysis.
-func (p *ReviewPage) sendAtlas() {
-	a := p.src.Current()
-	if a == nil || a.Snap == nil || a.Review == nil {
-		return
-	}
-	p.Atlas.Set(reviewAtlas(a))
-	p.Reviewed.Set(reviewedCards(a.Review, p.state))
-}
-
-// sendMarks resends only the reviewed cards, after a mark changes.
-func (p *ReviewPage) sendMarks() {
-	if a := p.src.Current(); a != nil && a.Review != nil {
-		p.Reviewed.Set(reviewedCards(a.Review, p.state))
-	}
 }
 
 func (p *ReviewPage) PageMeta() via.Meta { return via.Meta{Title: "Review · codemesh"} }
@@ -76,7 +56,6 @@ func (p *ReviewPage) PageMeta() via.Meta { return via.Meta{Title: "Review · cod
 // Mark toggles one unit's reviewed mark.
 func (p *ReviewPage) Mark(_ *via.Ctx, key string) {
 	p.save(key, !p.state.Reviewed(key))
-	p.sendMarks()
 }
 
 // AcceptNoise marks every noise unit reviewed.
@@ -90,7 +69,6 @@ func (p *ReviewPage) AcceptNoise(_ *via.Ctx) {
 			break
 		}
 	}
-	p.sendMarks()
 }
 
 // Open shows or hides one unit's diff.
@@ -170,7 +148,7 @@ func (p *ReviewPage) View() h.H {
 	// The focused card becomes $_focus, which the atlas follows.
 	track := on.EventCS("focusin", expr.Rawf("%s = evt.target.closest('.unit')?.id || %s", p.Focus.Ref(), p.Focus.Ref()))
 	return p.frame(tabReview, a, h.Div(h.Class("review-layout"), track,
-		h.Div(h.Class("review-side"), p.atlasIsland(), p.outline(rev)),
+		h.Div(h.Class("review-side"), p.atlasIsland(a), p.outline(rev)),
 		h.Div(append([]h.H{h.Class("review")}, body...)...),
 	))
 }
@@ -226,9 +204,15 @@ func (p *ReviewPage) smellDelta(rev *review.Review) h.H {
 
 // atlasIsland is the D3 map of the module with this change's declarations
 // lit. It ignores morphs, so a re-render never wipes what D3 drew.
-func (p *ReviewPage) atlasIsland() h.H {
-	return h.Div(h.Class("atlas"), h.DataIgnoreMorph(),
-		h.DataEffect(expr.Rawf("codemesh.atlas(el, %s, {reviewed: %s, focus: %s})", p.Atlas.Ref(), p.Reviewed.Ref(), p.Focus.Ref())))
+func (p *ReviewPage) atlasIsland(a *live.Analysis) h.H {
+	return group([]h.H{
+		feed(map[expr.Expr]any{
+			p.Atlas.Ref():    reviewAtlas(a),
+			p.Reviewed.Ref(): reviewedCards(a.Review, p.state),
+		}),
+		h.Div(h.Class("atlas"), h.DataIgnoreMorph(),
+			h.DataEffect(expr.Rawf("codemesh.atlas(el, %s, {reviewed: %s, focus: %s})", p.Atlas.Ref(), p.Reviewed.Ref(), p.Focus.Ref()))),
+	})
 }
 
 // outline is the whole change at a glance: every unit by lane, with its
