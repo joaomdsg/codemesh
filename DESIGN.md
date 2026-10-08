@@ -11,7 +11,7 @@ the working tree, so it reviews uncommitted work as well as branches.
 
 ## What we kept from the Intent Canvas, and what we dropped
 
-The canvas (`docs/Intent Canvas v10 · packages first.html`) is a prototype for
+The canvas (`docs/intent-canvas-v10-packages-first.html`) is a prototype for
 steering coding agents. We kept its two portable ideas:
 
 - **Packages first.** Declared package boundaries are the map. Nothing is
