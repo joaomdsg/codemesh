@@ -33,9 +33,11 @@ type env struct {
 	state *review.State
 }
 
-func serve(t *testing.T) env {
+func serve(t *testing.T) env { return serveRepo(t, testrepo.CalcBase, testrepo.CalcHead) }
+
+func serveRepo(t *testing.T, base, head map[string]string) env {
 	t.Helper()
-	dir := testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead)
+	dir := testrepo.New(t, base, head)
 	src := live.New(dir, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(src.Close)
 	require.NoError(t, src.Refresh().Err)
@@ -159,15 +161,18 @@ func TestReview_capsLongLanesAtTheRiskiestUnits(t *testing.T) {
 	for i := range 70 {
 		fmt.Fprintf(&many, "\nfunc f%d() int { return %d }\n", i, i)
 	}
-	dir := testrepo.New(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()})
-	src := live.New(dir, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	t.Cleanup(src.Close)
-	require.NoError(t, src.Refresh().Err)
-	state, err := review.OpenState(filepath.Join(t.TempDir(), "reviewed.json"))
-	require.NoError(t, err)
-	app := vt.Serve(t, ui.New(src, state, "http://localhost:7777"))
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()}).app
 
 	_, body := app.Get("/review")
 	assert.Contains(t, body, "Show 10 more logic units")
 	assert.Equal(t, 60, strings.Count(body, `<article class="unit"`))
+}
+
+func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {
+	t.Parallel()
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/broken.go": "package calc\n\nfunc Broken() int { return undefined }\n"}).app
+
+	_, body := app.Get("/")
+	assert.Contains(t, body, "1 package did not type-check")
+	assert.Contains(t, body, "undefined: undefined")
 }

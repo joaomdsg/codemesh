@@ -386,3 +386,4 @@ kbd {
 .ol-row.cur { color: var(--accent); font-weight: 600; }
 .more { align-self: flex-start; }
 .ol-more { color: var(--muted); font-size: 12px; padding-left: calc(16px + var(--sp2)); }
+.banner.warn { color: var(--warn); background: var(--surface); overflow-wrap: anywhere; }

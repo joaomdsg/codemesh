@@ -98,8 +98,11 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 		pending = h.Span(h.Class("count"), h.Title("units not yet reviewed"), h.Str(n))
 	}
 	var failure h.H
-	if a != nil && a.Err != nil {
-		failure = h.Div(h.Class("banner err"), h.Str("Load failed: "+a.Err.Error()+". Showing the last good analysis; fix the error and it reloads."))
+	switch {
+	case a != nil && a.Err != nil:
+		failure = h.Div(h.Class("banner err"), h.Role("alert"), h.Str("Load failed: "+a.Err.Error()+". Showing the last good analysis; fix the error and it reloads."))
+	case a != nil && a.Snap != nil:
+		failure = typeErrors(a)
 	}
 	return h.Div(h.Class("app"),
 		h.Header(h.Class("top"),
@@ -138,6 +141,27 @@ func pkgName(a *live.Analysis, p *code.Package) string {
 		return path.Base(a.Snap.Module)
 	}
 	return p.Rel
+}
+
+// typeErrors warns that packages failed to type-check: references through
+// them are missing, so callers and smells undercount until the code builds.
+func typeErrors(a *live.Analysis) h.H {
+	var broken []string
+	first := ""
+	for _, p := range a.Snap.Packages {
+		if len(p.Errors) > 0 {
+			broken = append(broken, pkgName(a, p))
+			if first == "" {
+				first = p.Errors[0]
+			}
+		}
+	}
+	if len(broken) == 0 {
+		return nil
+	}
+	return h.Div(h.Class("banner warn"), h.Role("status"),
+		h.Str(fmt.Sprintf("▲ %s did not type-check, so callers and smells there may be missing until it builds. First error: %s",
+			plural(len(broken), "package"), first)))
 }
 
 // okLine is the quiet success line: a green check, grey text.
