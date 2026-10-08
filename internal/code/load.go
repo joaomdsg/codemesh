@@ -152,7 +152,7 @@ func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
 		}
 		if obj := p.TypesInfo.Defs[gd.Name]; obj != nil {
 			d.Signature = types.TypeString(obj.Type(), qual)
-			l.objs[objKey(obj)] = d
+			l.index(obj, d)
 		}
 		d.Shape = shape(gd)
 		return []unit{{d, gd, p.TypesInfo}}
@@ -180,7 +180,7 @@ func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
 					} else {
 						typ = append(typ, types.TypeString(obj.Type(), qual))
 					}
-					l.objs[objKey(obj)] = d
+					l.index(obj, d)
 				}
 			}
 			if d.Name == "" || d.Name == "_" {
@@ -194,6 +194,15 @@ func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
 		return out
 	}
 	return nil
+}
+
+// index makes obj resolvable to d. Objects outside the package scope, such
+// as a blank identifier, have no key; storing them under "" would resolve
+// every local variable to d.
+func (l *loader) index(obj types.Object, d *Decl) {
+	if k := objKey(obj); k != "" {
+		l.objs[k] = d
+	}
 }
 
 // resolve records every reference from u's syntax to a module declaration.

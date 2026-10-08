@@ -126,3 +126,16 @@ func TestDecl_shapeIgnoresCommentsAndLayoutButNotCode(t *testing.T) {
 	assert.Equal(t, a, b)
 	assert.NotEqual(t, a, c)
 }
+
+func TestLoad_ignoresBlankIdentifiersWhenResolvingReferences(t *testing.T) {
+	t.Parallel()
+	s, err := code.Load("testdata/blank")
+	require.NoError(t, err)
+
+	f := s.Decl("example.com/blank/b.F")
+	require.NotNil(t, f)
+	assert.Equal(t, map[string]int{"example.com/blank/b": 1}, f.Refs, "only the T in its signature")
+	for _, d := range s.Decls() {
+		assert.NotContains(t, d.Refs, "", d.ID)
+	}
+}
