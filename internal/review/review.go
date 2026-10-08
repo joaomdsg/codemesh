@@ -104,14 +104,7 @@ func (r *Review) Lane(l Lane) []*Unit {
 // Build triages the diff into units.
 func Build(in Input) *Review {
 	b := &builder{in: in, src: map[string][]string{}}
-	touched := map[string]bool{}
-	var ids []string
-	touch := func(id string) {
-		if !touched[id] {
-			touched[id] = true
-			ids = append(ids, id)
-		}
-	}
+	var touched orderedSet
 	rev := &Review{}
 	for _, d := range in.Diffs {
 		p := cmp.Or(d.NewPath, d.OldPath)
@@ -120,30 +113,14 @@ func Build(in Input) *Review {
 			rev.Units = append(rev.Units, b.fileUnit(d, hf))
 			continue
 		}
-		var newSpans, oldSpans []span
-		for _, h := range d.Hunks {
-			newSpans = append(newSpans, span{h.NewStart, h.NewLines})
-			oldSpans = append(oldSpans, span{h.OldStart, h.OldLines})
-		}
-		if hf != nil {
-			for _, dc := range hf.Decls {
-				if hits(dc.Start, dc.End, newSpans) {
-					touch(dc.ID)
-				}
-			}
-		}
-		if bf != nil {
-			for _, dc := range bf.Decls {
-				if hits(dc.Start, dc.End, oldSpans) {
-					touch(dc.ID)
-				}
-			}
-		}
+		newSpans, oldSpans := spansOf(d)
+		touched.add(touchedIn(hf, newSpans)...)
+		touched.add(touchedIn(bf, oldSpans)...)
 		if u := b.looseUnit(d, hf, bf, newSpans, oldSpans); u != nil {
 			rev.Units = append(rev.Units, u)
 		}
 	}
-	for _, id := range ids {
+	for _, id := range touched.list {
 		rev.Units = append(rev.Units, b.declUnit(in.Base.Decl(id), in.Head.Decl(id)))
 	}
 	rev.Units = pairMoves(rev.Units)
@@ -482,6 +459,47 @@ func attach(rev *Review) {
 }
 
 type span struct{ start, n int }
+
+func spansOf(d gitx.FileDiff) (newSpans, oldSpans []span) {
+	for _, h := range d.Hunks {
+		newSpans = append(newSpans, span{h.NewStart, h.NewLines})
+		oldSpans = append(oldSpans, span{h.OldStart, h.OldLines})
+	}
+	return newSpans, oldSpans
+}
+
+// touchedIn returns the IDs of f's decls that a hunk side touches.
+func touchedIn(f *code.File, spans []span) []string {
+	if f == nil {
+		return nil
+	}
+	var ids []string
+	for _, d := range f.Decls {
+		if hits(d.Start, d.End, spans) {
+			ids = append(ids, d.ID)
+		}
+	}
+	return ids
+}
+
+// orderedSet keeps first-seen order, so units come out in diff order before
+// the sort and ties stay stable.
+type orderedSet struct {
+	seen map[string]bool
+	list []string
+}
+
+func (s *orderedSet) add(ids ...string) {
+	if s.seen == nil {
+		s.seen = map[string]bool{}
+	}
+	for _, id := range ids {
+		if !s.seen[id] {
+			s.seen[id] = true
+			s.list = append(s.list, id)
+		}
+	}
+}
 
 // hits reports whether a hunk side touches lines [start, end]. With -U0 a
 // side of zero lines is a point after line s.
