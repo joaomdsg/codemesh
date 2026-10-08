@@ -19,7 +19,7 @@ func fileFindings(p *code.Package, f *code.File) []Finding {
 	return []Finding{{
 		Rule: LargeFile, Severity: sev, Package: p.Path, File: f.Path,
 		Subject: f.Path, Measure: f.Lines, Limit: limit,
-		Detail: fmt.Sprintf("%d lines, limit %d", f.Lines, limit),
+		Detail: fmt.Sprintf("%d lines, %s %d", f.Lines, limitWord(sev), limit),
 	}}
 }
 
@@ -38,10 +38,10 @@ func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl)
 	isFunc := d.Kind == code.Func || d.Kind == code.Method
 	if isFunc {
 		if sev, limit, ok := tier(d.Lines, LongFuncLimit, LongFuncHighLimit); ok {
-			out = append(out, at(LongFunc, sev, d.Lines, limit, fmt.Sprintf("%d lines, limit %d", d.Lines, limit)))
+			out = append(out, at(LongFunc, sev, d.Lines, limit, fmt.Sprintf("%d lines, %s %d", d.Lines, limitWord(sev), limit)))
 		}
 		if sev, limit, ok := tier(d.Complexity, ComplexFuncLimit, ComplexFuncHighLimit); ok {
-			out = append(out, at(ComplexFunc, sev, d.Complexity, limit, fmt.Sprintf("complexity %d, limit %d", d.Complexity, limit)))
+			out = append(out, at(ComplexFunc, sev, d.Complexity, limit, fmt.Sprintf("complexity %d, %s %d", d.Complexity, limitWord(sev), limit)))
 		}
 		if d.Nesting > DeepNestingLimit {
 			out = append(out, at(DeepNesting, Warn, d.Nesting, DeepNestingLimit, fmt.Sprintf("nesting %d, limit %d", d.Nesting, DeepNestingLimit)))
@@ -83,6 +83,15 @@ func tier(v, warn, high int) (Severity, int, bool) {
 		return Warn, warn, true
 	}
 	return Info, 0, false
+}
+
+// limitWord names the limit a tiered measure passed, so a high row's
+// limit reads apart from a warn row's.
+func limitWord(sev Severity) string {
+	if sev == High {
+		return "high limit"
+	}
+	return "limit"
 }
 
 func usedOutside(s *code.Snapshot, d *code.Decl) bool {

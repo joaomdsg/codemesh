@@ -76,16 +76,19 @@ Each smell is a rule with a documented threshold:
 
 | smell | rule | why |
 |---|---|---|
-| long function | > 60 code lines | hard to hold in your head |
+| long function | > 60 code lines (high > 120) | hard to hold in your head |
 | complex function | cyclomatic > 10 (high > 20) | paths you must test and read |
 | deep nesting | nesting depth > 4 | control flow hides the main path |
 | many parameters | > 5 parameters | the function does several jobs |
-| large file | > 600 code lines | the file has several concerns |
+| large file | > 600 code lines (high > 1200) | the file has several concerns |
 | unused export | exported from a package other modules cannot import (`internal/`), no use outside its package | API surface that nobody uses |
 | dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
 | envious function | most of its references go to one other package | it may live in the wrong package |
 | unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
 | untested package | no test files, and no test in another package refers to its declarations; not a main package | changes land unguarded |
+
+A finding past the high limit is high severity and names that limit
+("121 lines, high limit 120").
 
 Code lines are lines holding a Go token. String data (see Other below)
 counts as one line, so an inlined script does not make a large file.

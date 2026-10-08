@@ -132,7 +132,7 @@ func TestFind_flagsLongFunctionsAboveSixtyLines(t *testing.T) {
 	assert.Equal(t, prefix+"size", f.Package)
 	assert.Equal(t, 121, f.Measure)
 	assert.Equal(t, smell.LongFuncHighLimit, f.Limit)
-	assert.Equal(t, "121 lines, limit 120", f.Detail)
+	assert.Equal(t, "121 lines, high limit 120", f.Detail)
 	assert.Equal(t, "61 lines, limit 60", one(t, fs, smell.LongFunc, "size.Long61").Detail)
 }
 
@@ -150,6 +150,7 @@ func TestFind_flagsComplexFunctionsAboveTen(t *testing.T) {
 	assert.Equal(t, smell.ComplexFuncLimit, f.Limit)
 	assert.Equal(t, "complexity 11, limit 10", f.Detail)
 	assert.Equal(t, smell.ComplexFuncHighLimit, one(t, fs, smell.ComplexFunc, "size.Cx21").Limit)
+	assert.Equal(t, "complexity 21, high limit 20", one(t, fs, smell.ComplexFunc, "size.Cx21").Detail)
 }
 
 func TestFind_flagsNestingAboveFour(t *testing.T) {
@@ -191,6 +192,7 @@ func TestFind_flagsFilesAboveSixHundredLines(t *testing.T) {
 	assert.Equal(t, smell.LargeFileLimit, f.Limit)
 	assert.Equal(t, "601 lines, limit 600", f.Detail)
 	assert.Equal(t, smell.LargeFileHighLimit, one(t, fs, smell.LargeFile, "big/f1201.go").Limit)
+	assert.Equal(t, "1201 lines, high limit 1200", one(t, fs, smell.LargeFile, "big/f1201.go").Detail)
 }
 
 func TestFind_flagsUnusedExportsOfClosedPackagesOnly(t *testing.T) {
