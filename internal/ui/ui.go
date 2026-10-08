@@ -140,6 +140,23 @@ func pkgName(a *live.Analysis, p *code.Package) string {
 	return p.Rel
 }
 
+// okLine is the quiet success line: a green check, grey text.
+func okLine(text string) h.H {
+	return h.P(h.Class("hint"), h.Span(h.Class("ok"), h.Str("✓ ")), h.Str(text))
+}
+
+// delta writes "+3 −1", leaving out a zero side.
+func delta(added, deleted int) h.H {
+	var kids []h.H
+	if added > 0 {
+		kids = append(kids, h.Span(h.Class("add"), h.Str(fmt.Sprintf("+%d", added))))
+	}
+	if deleted > 0 {
+		kids = append(kids, h.Span(h.Class("del"), h.Str(fmt.Sprintf("−%d", deleted))))
+	}
+	return group(kids)
+}
+
 func group(kids []h.H) h.H { return via.Each(kids, func(k h.H) h.H { return k }) }
 
 func plural(n int, word string) string {

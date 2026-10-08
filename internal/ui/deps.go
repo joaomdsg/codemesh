@@ -42,11 +42,10 @@ func structureFindings(a *live.Analysis) h.H {
 		}
 	}
 	if len(rows) == 0 {
-		return group([]h.H{h.H2(h.Str("Structure")), h.P(h.Class("ok"), h.Str("✓ No structural findings."))})
+		return group([]h.H{h.H2(h.Str("Structure")), okLine("No structural smells.")})
 	}
 	return group([]h.H{
 		h.H2(h.Str(fmt.Sprintf("Structure · %d", len(rows)))),
-		h.P(h.Class("hint"), h.Str("Unstable dependencies, functions that lean on another package, packages without tests.")),
 		h.Ul(append([]h.H{h.Class("findings")}, rows...)...),
 	})
 }
@@ -106,17 +105,17 @@ func matrix(a *live.Analysis) h.H {
 	for range bad {
 		unstable++
 	}
-	summary := "✓ Every package depends only on packages at least as stable as itself."
+	summary := okLine("Every package imports only packages at least as stable as itself.")
 	if unstable > 0 {
-		summary = fmt.Sprintf("%s break the Stable Dependencies Principle: a package imports one that changes more easily than it does.", plural(unstable, "import"))
+		summary = h.P(h.Class("warn"), h.Str(fmt.Sprintf("▲ %s of a less stable package, against the Stable Dependencies Principle.", plural(unstable, "import"))))
 	}
 	return h.Div(h.Class("deps"),
 		h.H2(h.Str("Dependencies")),
-		h.P(h.Class("hint"), h.Str("Row imports column. A cell counts references. Rows run from consumers down to foundations, so every mark sits right of the diagonal. I is instability: 0 is depended on and stable, 1 depends on others and is free to change.")),
-		h.P(h.Class(map[bool]string{true: "warn", false: "ok"}[unstable > 0]), h.Str(summary)),
+		summary,
 		h.Div(h.Class("dsm-wrap"),
 			h.Table(h.Class("dsm"), h.Thead(h.Tr(head...)), h.Tbody(body...)),
 		),
+		h.P(h.Class("hint"), h.Str("Row imports column; a cell counts references. I is instability: 0 stable, 1 free to change.")),
 	)
 }
 

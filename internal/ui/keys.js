@@ -1,5 +1,5 @@
 // Review keys: j/k move between units, r toggles the focused unit's mark and
-// moves on, n jumps to the next unreviewed unit.
+// moves on, n jumps to the next unreviewed unit, o shows or hides its diff.
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest("input, textarea, select")) return;
   const units = [...document.querySelectorAll(".unit")];
@@ -9,13 +9,19 @@ document.addEventListener("keydown", (e) => {
     const u = units[i];
     if (!u) return;
     u.focus({ preventScroll: true });
-    u.scrollIntoView({ block: "start", behavior: "smooth" });
+    u.scrollIntoView({ block: "start" });
   };
   const nextOpen = (from) => units.findIndex((u, i) => i > from && !u.classList.contains("reviewed"));
   switch (e.key) {
     case "j": go(Math.min(at + 1, units.length - 1)); break;
     case "k": go(Math.max(at - 1, 0)); break;
     case "n": go(nextOpen(at)); break;
+    case "o": {
+      const open = at >= 0 && units[at].querySelector(".expand");
+      if (!open) return;
+      open.click();
+      break;
+    }
     case "r": {
       const mark = at >= 0 && units[at].querySelector(".mark");
       if (!mark) return;
@@ -26,4 +32,16 @@ document.addEventListener("keydown", (e) => {
     default: return;
   }
   e.preventDefault();
+});
+
+// The outline follows the focused unit.
+document.addEventListener("focusin", (e) => {
+  const u = e.target.closest && e.target.closest(".unit");
+  if (!u) return;
+  document.querySelectorAll(".ol-row.cur").forEach((a) => a.classList.remove("cur"));
+  const row = document.querySelector('.ol-row[href="#' + u.id + '"]');
+  if (row) {
+    row.classList.add("cur");
+    row.scrollIntoView({ block: "nearest" });
+  }
 });

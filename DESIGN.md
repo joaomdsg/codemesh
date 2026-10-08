@@ -40,20 +40,25 @@ can click through to.
 
 ## Map
 
-- **Treemap.** Packages → files → declarations, one level per click, with a
-  breadcrumb. Area is lines of code.
+- **Treemap.** The module view shows each package as a frame with its files
+  inside; a package view shows each file with its declarations; a file view
+  shows its declarations. Area is lines of code. Tiles are placed in percent
+  of the pane, so labels keep their size at any width.
 - **Lenses** colour the tiles:
-  - Smells: weighted findings per line.
-  - Complexity: max cyclomatic complexity.
-  - Churn: commits in the last 90 days.
-  - Hotspot: churn × complexity. Code that is both hard and often touched is
-    where bugs live.
-- **Findings list** for the current scope, ranked by severity. Each finding
-  gives its measure, its threshold and one line on why it matters.
+  - Smells: weighted smells per 100 lines, in fixed bands.
+  - Complexity: max cyclomatic complexity, in fixed bands.
+  - Churn: commits in the last 90 days, relative to the hottest tile.
+  - Hotspot: churn × complexity, relative. Code that is both hard and often
+    touched is where bugs live.
+- **Smells list** for the current scope, ranked by severity. Each smell
+  gives its measure, its threshold and one line on why it matters. A
+  declaration opens with its source, metrics and callers.
 - **Dependencies** as a dependency structure matrix (DSM), with packages
   ordered by layer. A node-link graph turns into a hairball past 20 packages.
-  In a DSM, a mark above the diagonal is an upward dependency, so layering
-  violations jump out.
+  Go forbids import cycles, so every mark sits right of the diagonal; the
+  matrix earns its place with reference counts per edge, instability per
+  package, and the imports that break the Stable Dependencies Principle
+  marked in red.
 
 ### Smells v0.1
 
@@ -79,27 +84,36 @@ consequences. codemesh turns `base...worktree` into a queue of **change
 units**, one per declaration added, removed or modified.
 
 1. **Triage into lanes.** Lanes are ordered by how much reading they need:
-   - **Contract**: exported signatures added, removed or changed.
-   - **Logic**: body changes.
-   - **Tests**: test changes.
+   - **Contract**: exported declarations added, removed or re-signed, and
+     `go.mod`.
+   - **Logic**: other body and signature changes.
+   - **Tests**: test code and `testdata` fixtures.
+   - **Other**: non-Go files.
    - **Noise**: units whose syntax tree is unchanged apart from comments and
-     formatting, pure moves (same body, other file), and generated or
-     non-Go files.
-   Noise is collapsed, and one key accepts it all.
-2. **Risk order inside a lane.** The score combines callers (blast radius),
-   whether the unit is exported, complexity after the change and its delta,
-   lines changed, and whether any test references the unit. The reasons
-   show as chips, so the order explains itself.
+     formatting, pure moves (same source, other file or package), generated
+     files, `go.sum`, and import lines.
+2. **Risk order inside a lane.** The score combines production callers
+   (blast radius), whether the unit is exported, complexity after the change
+   and its delta, lines changed, and whether any test calls the unit
+   directly. Test callers are listed but add no risk. The reasons show as
+   chips, so the order explains itself.
 3. **Impact beside the hunk.** The real callers of a changed function are
-   listed next to the hunk, from type information.
-4. **Smell delta.** The base is analysed in a temporary worktree. The header
-   says which smells the change introduces and which it fixes.
+   listed next to its diff, from type information. Callers changed in the
+   same diff come first and link to their unit, so a contract change and its
+   call sites are read together.
+4. **Smell delta.** The base is analysed in a temporary worktree. Each smell
+   the change introduces shows as a chip on its unit; the header counts new
+   and fixed smells.
 5. **Review state that survives new pushes.** Marking a unit reviewed stores
-   its identity plus a hash of its new source in `.git/codemesh/`. When the
+   its identity plus a hash of its source in `.git/codemesh/`. When the
    author pushes again, only the units whose source changed come back.
    Re-review costs only the delta.
-6. **Keyboard first.** `j`/`k` move, `r` marks reviewed, `n` skips to the
-   next unreviewed unit.
+6. **Read only what needs reading.** Contract and Logic diffs render up to a
+   budget of 3000 lines; Tests, Other and Noise cards, and anything past the
+   budget, show their header and open on demand. An outline lists every
+   unit by lane with its mark.
+7. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
+   next unreviewed unit, `n` skips to it, `o` shows or hides a diff.
 
 ## Live
 
@@ -129,6 +143,8 @@ internal/code       load a module: packages, files, decls, metrics, refs
 internal/smell      detectors over a code.Snapshot
 internal/gitx       git: merge-base, diff, show, churn, worktree
 internal/review     diff + base/head snapshots → ranked change units
+internal/live       re-analyse on change, keep the base worktree, publish
 internal/treemap    squarified layout, pure
 internal/ui         via pages
+internal/testrepo   throwaway git repos and the calc fixture, for tests
 ```

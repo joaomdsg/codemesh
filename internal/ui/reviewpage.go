@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
 	"hash/fnv"
+	"path"
+	"slices"
 	"strings"
 
 	"github.com/go-via/via"
@@ -17,8 +20,17 @@ import (
 // first, with reviewed units folded away.
 type ReviewPage struct {
 	shell
-	err string
+	err    string
+	opened map[string]bool   // unit keys whose diff the reviewer asked to see
+	budget int               // diff lines rendered so far in this View
+	inDiff map[string]string // decl ID → unit key, for units in this View
 }
+
+// renderBudget bounds the diff lines one page render shows unasked. Past it,
+// and in the lanes that rarely need reading, cards show their header and a
+// button that renders the diff on demand: a release-sized change otherwise
+// sends megabytes nobody scrolls through.
+const renderBudget = 3000
 
 func (p *ReviewPage) OnInit(ctx *via.Ctx) error {
 	p.start(ctx)
@@ -45,6 +57,14 @@ func (p *ReviewPage) AcceptNoise(_ *via.Ctx) {
 	}
 }
 
+// Open shows or hides one unit's diff.
+func (p *ReviewPage) Open(_ *via.Ctx, key string) {
+	if p.opened == nil {
+		p.opened = map[string]bool{}
+	}
+	p.opened[key] = !p.opened[key]
+}
+
 // Rescan re-analyses now, without waiting for the watcher.
 func (p *ReviewPage) Rescan(_ *via.Ctx) { p.src.Refresh() }
 
@@ -67,6 +87,11 @@ func (p *ReviewPage) View() h.H {
 	}
 	rev := a.Review
 	done := len(rev.Units) - p.open(a)
+	p.budget = 0
+	p.inDiff = map[string]string{}
+	for _, u := range rev.Units {
+		p.inDiff[u.ID] = u.Key
+	}
 	var lanes []h.H
 	for _, l := range review.Lanes {
 		if units := rev.Lane(l); len(units) > 0 {
@@ -109,7 +134,7 @@ func (p *ReviewPage) summary(a *live.Analysis, done int) h.H {
 			h.Span(h.Class(map[bool]string{true: "ok", false: "hint"}[done == len(rev.Units) && done > 0]), h.Str(progress)),
 			h.Button(h.Class("btn"), on.Click(p.Rescan), h.Str("Rescan")),
 		),
-		h.P(h.Class("keys"), h.Kbd(h.Str("j")), h.Kbd(h.Str("k")), h.Str(" move "), h.Kbd(h.Str("r")), h.Str(" mark reviewed "), h.Kbd(h.Str("n")), h.Str(" next unreviewed")),
+		h.P(h.Class("keys"), key("move", "j", "k"), key("mark reviewed", "r"), key("next unreviewed", "n"), key("show diff", "o")),
 	)
 }
 
@@ -140,6 +165,11 @@ func (p *ReviewPage) smellDelta(rev *review.Review) h.H {
 // outline is the whole change at a glance: every unit by lane, with its
 // mark, linking to its card.
 func (p *ReviewPage) outline(rev *review.Review) h.H {
+	// Build and build read alike in a list; name the package of either.
+	names := map[string]int{}
+	for _, u := range rev.Units {
+		names[strings.ToLower(u.Name)]++
+	}
 	var kids []h.H
 	for _, l := range review.Lanes {
 		units := rev.Lane(l)
@@ -154,11 +184,17 @@ func (p *ReviewPage) outline(rev *review.Review) h.H {
 			}
 			rows = append(rows, h.Li(h.A(h.Class(cls), h.Href("#"+unitID(u.Key)),
 				h.Span(h.Class("ol-mark"), h.Str(glyph)),
-				h.Span(h.Class("ol-name"), h.Str(u.Name)),
-				h.Span(h.Class("ol-delta"), h.Str(fmt.Sprintf("+%d −%d", u.Added, u.Deleted))),
+				h.Span(h.Class("ol-name"), h.Str(u.Name), via.When(names[strings.ToLower(u.Name)] > 1, func() h.H { return h.Span(h.Class("ol-pkg"), h.Str(" "+path.Base(u.Package))) })),
+				h.Span(h.Class("ol-delta"), delta(u.Added, u.Deleted)),
 			)))
 		}
-		kids = append(kids, h.H3(h.Str(l.String())), h.Ul(rows...))
+		reviewed := 0
+		for _, u := range units {
+			if p.state.Reviewed(u.Key) {
+				reviewed++
+			}
+		}
+		kids = append(kids, h.H3(h.Str(l.String()), h.Span(h.Class("ol-count"), h.Str(fmt.Sprintf(" %d/%d", reviewed, len(units))))), h.Ul(rows...))
 	}
 	return h.Nav(append([]h.H{h.Class("outline"), h.Aria("label", "Units")}, kids...)...)
 }
@@ -180,7 +216,7 @@ func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit)
 	}
 	head := h.Div(h.Class("lane-head"),
 		h.H3(h.Str(l.String())),
-		h.Span(h.Class("hint"), h.Str(fmt.Sprintf("%d of %d open · %s", open, len(units), laneHelp[l]))),
+		h.Span(h.Class("hint"), h.Str(fmt.Sprintf("%d of %d reviewed · %s", len(units)-open, len(units), laneHelp[l]))),
 	)
 	var accept h.H
 	if l == review.Noise && open > 0 {
@@ -188,18 +224,30 @@ func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit)
 	}
 	var cards []h.H
 	for _, u := range units {
-		cards = append(cards, p.card(a, u, l == review.Noise))
+		cards = append(cards, p.card(a, u, l))
 	}
 	return h.Section(h.Class("lane lane-"+strings.ToLower(l.String())), h.Div(h.Class("lane-bar"), head, accept), group(cards))
 }
 
-func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, folded bool) h.H {
+// showDiff decides whether a card renders its diff unasked.
+func (p *ReviewPage) showDiff(u *review.Unit, l review.Lane) bool {
+	if p.opened[u.Key] {
+		return true
+	}
+	if l > review.Logic || p.budget >= renderBudget || p.state.Reviewed(u.Key) {
+		return false
+	}
+	p.budget += len(u.Lines)
+	return true
+}
+
+func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, l review.Lane) h.H {
 	done := p.state.Reviewed(u.Key)
 	cls := "unit"
 	if done {
 		cls += " reviewed"
 	}
-	label, glyph := "Mark reviewed", "○"
+	label, glyph := "Mark reviewed", ""
 	if done {
 		label, glyph = "Reviewed. Click to reopen", "✓"
 	}
@@ -219,15 +267,18 @@ func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, folded bool) h.H {
 		h.Span(h.Class("unit-name"), h.Str(u.Name)),
 		h.Span(h.Class("badge change-"+string(u.Change)), h.Str(string(u.Change))),
 		h.A(h.Class("unit-loc"), h.Href(mapHref(u)), h.Str(where)),
-		h.Span(h.Class("unit-delta"), h.Span(h.Class("add"), h.Str(fmt.Sprintf("+%d", u.Added))), h.Str(" "), h.Span(h.Class("del"), h.Str(fmt.Sprintf("−%d", u.Deleted)))),
+		h.Span(h.Class("unit-delta"), delta(u.Added, u.Deleted)),
 		h.Span(h.Class("chips"), group(chips)),
 	)
 	var body h.H
-	if !done && !folded {
-		body = group([]h.H{diffView(u), callersLine(a, u)})
-	}
-	if !done && folded {
-		body = h.Details(h.Class("fold"), h.Summary(h.Str("Show diff")), diffView(u))
+	switch {
+	case p.showDiff(u, l):
+		body = h.Div(h.Class("unit-body"), diffView(u), p.callersLine(a, u))
+		if p.opened[u.Key] {
+			body = group([]h.H{body, h.Div(h.Class("fold"), h.Button(h.Class("expand"), on.Click(on.Bind(p.Open, u.Key)), h.Str("Hide diff")))})
+		}
+	case len(u.Lines) > 0:
+		body = h.Div(h.Class("fold"), h.Button(h.Class("expand"), on.Click(on.Bind(p.Open, u.Key)), h.Str("Show diff · "+plural(len(u.Lines), "line"))))
 	}
 	return h.Article(h.Class(cls), h.ID(unitID(u.Key)), h.TabIndex(0), head, body)
 }
@@ -304,24 +355,45 @@ func diffRow(l review.Line) h.H {
 	return h.Div(h.Class(cls), no(l.Old), no(l.New), h.Span(h.Class("op"), h.Str(string(l.Op))), h.Span(h.Class("tx"), h.Str(l.Text)))
 }
 
-func callersLine(a *live.Analysis, u *review.Unit) h.H {
+// callersLine lists who calls the unit. Callers changed in this same diff
+// come first and link to their card, so a contract change and its call
+// sites are read together.
+func (p *ReviewPage) callersLine(a *live.Analysis, u *review.Unit) h.H {
 	if len(u.Callers) == 0 {
 		return nil
 	}
 	const show = 8
+	ids := slices.Clone(u.Callers)
+	slices.SortStableFunc(ids, func(x, y string) int {
+		_, cx := p.inDiff[x]
+		_, cy := p.inDiff[y]
+		return cmp.Compare(b2i(cy), b2i(cx))
+	})
 	var links []h.H
-	for i, id := range u.Callers {
+	for i, id := range ids {
 		if i == show {
-			links = append(links, h.Span(h.Class("hint"), h.Str(fmt.Sprintf("and %d more", len(u.Callers)-show))))
+			links = append(links, h.Span(h.Class("hint"), h.Str(fmt.Sprintf("and %d more", len(ids)-show))))
 			break
 		}
 		d := a.Snap.Decl(id)
 		if d == nil {
 			continue
 		}
-		links = append(links, h.A(h.Href(mapURL{in: d.File, decl: d.ID}.String()), h.Str(shortPkg(a, d.Package)+d.Name)))
+		name := shortPkg(a, d.Package) + d.Name
+		if key, ok := p.inDiff[id]; ok {
+			links = append(links, h.A(h.Class("changed"), h.Href("#"+unitID(key)), h.Title("Changed in this diff"), h.Str(name), h.Span(h.Class("badge"), h.Str("changed"))))
+			continue
+		}
+		links = append(links, h.A(h.Href(mapURL{in: d.File, decl: d.ID}.String()), h.Str(name)))
 	}
-	return h.P(h.Class("callers-line"), h.Span(h.Class("hint"), h.Str("Called by ")), group(links))
+	return h.P(h.Class("callers-line"), h.Span(h.Class("hint"), h.Str("Called by")), group(links))
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func mapHref(u *review.Unit) string {
@@ -351,6 +423,15 @@ func unitID(key string) string {
 	f := fnv.New64a()
 	f.Write([]byte(key))
 	return fmt.Sprintf("u%x", f.Sum64())
+}
+
+// key is one keyboard hint; its keys and label never wrap apart.
+func key(label string, keys ...string) h.H {
+	var kids []h.H
+	for _, k := range keys {
+		kids = append(kids, h.Kbd(h.Str(k)))
+	}
+	return h.Span(h.Class("key"), group(kids), h.Str(label))
 }
 
 func short(sha string) string { return sha[:min(len(sha), 7)] }

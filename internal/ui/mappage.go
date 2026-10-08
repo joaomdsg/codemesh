@@ -31,7 +31,7 @@ type lens struct {
 }
 
 var lenses = []lens{
-	{"smells", "Smells", "findings per 100 lines, weighted by severity"},
+	{"smells", "Smells", "smells per 100 lines, weighted by severity"},
 	{"complexity", "Complexity", "highest cyclomatic complexity inside"},
 	{"churn", "Churn", "commits in the last 90 days"},
 	{"hotspot", "Hotspot", "churn × complexity: hard code that keeps changing"},
@@ -132,6 +132,8 @@ type tile struct {
 	kids                 []tile
 }
 
+// The layout runs in a nominal space close to a desktop pane's pixels; tiles
+// are then placed in percent of it, so labels fit about as estimated.
 const (
 	mapW, mapH = 1000.0, 620.0
 	frameHead  = 18.0 // label strip of a frame
@@ -151,7 +153,7 @@ func (p *MapPage) treemap(a *live.Analysis, sc scope) h.H {
 	}
 	cells := p.layout(tiles, treemap.Rect{W: mapW, H: mapH}, top, true)
 	return h.El("svg", append([]h.H{
-		h.Class("treemap"), h.RawAttr("viewBox", fmt.Sprintf("0 0 %g %g", mapW, mapH)), h.Role("img"),
+		h.Class("treemap"), h.Role("img"),
 		h.Aria("label", "Treemap of the current scope"),
 	}, cells...)...)
 }
@@ -180,8 +182,10 @@ func (p *MapPage) layout(tiles []tile, area treemap.Rect, top float64, nest bool
 func (p *MapPage) frameCell(t tile, r treemap.Rect, top float64) []h.H {
 	head := h.El("a", h.Href(t.href),
 		h.El("title", h.Str(t.tip)),
-		h.El("rect", h.Class("frame"), num("x", r.X), num("y", r.Y), num("width", r.W), num("height", r.H), h.RawAttr("rx", "3")),
-		h.El("text", h.Class("frame-label"), num("x", r.X+6), num("y", r.Y+13), h.Str(fit(t.label, r.W-12))),
+		box(r,
+			h.El("rect", h.Class("frame"), h.Width("100%"), h.Height("100%"), h.RawAttr("rx", "3")),
+			label("frame-label", 6, 13, fitPath(t.label, r.W-12)),
+		),
 	)
 	inner := treemap.Rect{X: r.X + 2, Y: r.Y + frameHead, W: r.W - 4, H: r.H - frameHead - 2}
 	return append([]h.H{head}, p.layout(t.kids, inner, top, false)...)
@@ -192,18 +196,31 @@ func (p *MapPage) cell(t tile, r treemap.Rect, top float64) h.H {
 	if t.selected {
 		cls += " sel"
 	}
-	kids := []h.H{
-		h.Href(t.href),
-		h.El("title", h.Str(t.tip)),
-		h.El("rect", h.Class(cls), num("x", r.X), num("y", r.Y), num("width", r.W), num("height", r.H), h.RawAttr("rx", "2")),
+	kids := []h.H{h.El("rect", h.Class(cls), h.Width("100%"), h.Height("100%"), h.RawAttr("rx", "2"))}
+	if r.H > 17 {
+		kids = append(kids, label("cell-label", 5, 14, fit(t.label, r.W-10)))
 	}
-	if r.W > 40 && r.H > 17 {
-		kids = append(kids, h.El("text", h.Class("cell-label"), num("x", r.X+5), num("y", r.Y+14), h.Str(fit(t.label, r.W-10))))
+	if r.H > 32 {
+		kids = append(kids, label("cell-sub", 5, 28, fit(fmt.Sprintf("%d lines", t.lines), r.W-10)))
 	}
-	if r.W > 40 && r.H > 32 {
-		kids = append(kids, h.El("text", h.Class("cell-sub"), num("x", r.X+5), num("y", r.Y+28), h.Str(fit(fmt.Sprintf("%d lines", t.lines), r.W-10))))
+	return h.El("a", h.Href(t.href), h.El("title", h.Str(t.tip)), box(r, kids...))
+}
+
+// box places a tile as a nested svg in percent of the map, so the map
+// stretches to its pane while labels inside stay at their CSS pixel size,
+// and anything that does not fit is clipped at the tile's edge.
+func box(r treemap.Rect, kids ...h.H) h.H {
+	pct := func(name string, v, of float64) h.Attr { return h.RawAttr(name, fmt.Sprintf("%.3f%%", 100*v/of)) }
+	return h.El("svg", append([]h.H{
+		pct("x", r.X, mapW), pct("y", r.Y, mapH), pct("width", r.W, mapW), pct("height", r.H, mapH),
+	}, kids...)...)
+}
+
+func label(cls string, x, y int, text string) h.H {
+	if text == "" {
+		return nil
 	}
-	return h.El("a", kids...)
+	return h.El("text", h.Class(cls), h.RawAttr("x", fmt.Sprint(x)), h.RawAttr("y", fmt.Sprint(y)), h.Str(text))
 }
 
 func (p *MapPage) tiles(a *live.Analysis, sc scope) []tile {
@@ -238,7 +255,7 @@ func (p *MapPage) pkgTile(fi findingIndex, pkg *code.Package, label string) tile
 		}
 	}
 	t.value = p.value(fi.pkg[pkg.Path], t.lines, cx, churn)
-	t.tip = fmt.Sprintf("%s · %d lines · max complexity %d · %s", pkg.Path, t.lines, cx, plural(len(fi.pkg[pkg.Path]), "finding"))
+	t.tip = fmt.Sprintf("%s · %d lines · max complexity %d · %s", pkg.Path, t.lines, cx, plural(len(fi.pkg[pkg.Path]), "smell"))
 	return t
 }
 
@@ -247,7 +264,7 @@ func (p *MapPage) fileTile(fi findingIndex, f *code.File, withDecls bool) tile {
 	t := tile{
 		id: f.Path, label: path.Base(f.Path), href: p.href(f.Path, ""), lines: f.Lines,
 		value: p.value(fi.file[f.Path], f.Lines, cx, f.Churn),
-		tip:   fmt.Sprintf("%s · %d lines · max complexity %d · %d commits · %s", f.Path, f.Lines, cx, f.Churn, plural(len(fi.file[f.Path]), "finding")),
+		tip:   fmt.Sprintf("%s · %d lines · max complexity %d · %s · %s", f.Path, f.Lines, cx, plural(f.Churn, "commit"), plural(len(fi.file[f.Path]), "smell")),
 	}
 	if withDecls {
 		for _, d := range f.Decls {
@@ -261,7 +278,7 @@ func (p *MapPage) declTile(fi findingIndex, f *code.File, d *code.Decl) tile {
 	return tile{
 		id: d.ID, label: d.Name, href: p.href(f.Path, d.ID), lines: d.Lines,
 		value:    p.value(fi.decl[d.ID], d.Lines, d.Complexity, f.Churn),
-		tip:      fmt.Sprintf("%s %s · %d lines · complexity %d · %s", d.Kind, d.Name, d.Lines, d.Complexity, plural(len(fi.decl[d.ID]), "finding")),
+		tip:      fmt.Sprintf("%s %s · %d lines · complexity %d · %s", d.Kind, d.Name, d.Lines, d.Complexity, plural(len(fi.decl[d.ID]), "smell")),
 		selected: d.ID == p.decl,
 	}
 }
@@ -327,13 +344,10 @@ func (p *MapPage) side(a *live.Analysis, sc scope) h.H {
 			fs = append(fs, f)
 		}
 	}
-	title := "Findings"
-	if len(fs) > 0 {
-		title = fmt.Sprintf("Findings · %d", len(fs))
-	}
 	if len(fs) == 0 {
-		return group([]h.H{h.H2(h.Str(title)), h.P(h.Class("ok"), h.Str("✓ No findings in this scope."))})
+		return group([]h.H{h.H2(h.Str("Smells")), okLine("No smells here.")})
 	}
+	title := fmt.Sprintf("Smells · %d", len(fs))
 	const show = 60
 	var rows []h.H
 	for _, f := range fs[:min(len(fs), show)] {
@@ -360,7 +374,7 @@ func (p *MapPage) declPanel(a *live.Analysis, d *code.Decl) h.H {
 		if c == nil {
 			continue
 		}
-		callers = append(callers, h.Li(h.A(h.Href(p.href(c.File, c.ID)), h.Str(shortPkg(a, c.Package)+c.Name))))
+		callers = append(callers, h.A(h.Href(p.href(c.File, c.ID)), h.Str(shortPkg(a, c.Package)+c.Name)))
 	}
 	metrics := []h.H{metric("lines", d.Lines), metric("callers", len(d.Callers))}
 	if d.Kind == code.Func || d.Kind == code.Method {
@@ -372,11 +386,11 @@ func (p *MapPage) declPanel(a *live.Analysis, d *code.Decl) h.H {
 			h.A(h.Class("close"), h.Href(p.href(p.in, "")), h.Aria("label", "Close"), h.Str("✕")),
 		),
 		h.P(h.Class("loc"), h.Str(fmt.Sprintf("%s %s:%d", d.Kind, d.File, d.Start))),
-		h.Dl(append([]h.H{h.Class("metrics")}, metrics...)...),
+		h.P(append([]h.H{h.Class("metrics")}, metrics...)...),
 		via.When(len(fs) > 0, func() h.H { return h.Ul(append([]h.H{h.Class("findings")}, fs...)...) }),
 		source(a.Snap, d),
 		via.When(len(callers) > 0, func() h.H {
-			return group([]h.H{h.H3(h.Str("Called by")), h.Ul(append([]h.H{h.Class("callers")}, callers...)...)})
+			return h.P(h.Class("callers-line"), h.Span(h.Class("hint"), h.Str("Called by")), group(callers))
 		}),
 	})
 }
@@ -398,7 +412,7 @@ func source(s *code.Snapshot, d *code.Decl) h.H {
 }
 
 func metric(label string, v int) h.H {
-	return h.Div(h.Dt(h.Str(label)), h.Dd(h.Str(v)))
+	return h.Span(h.Class("badge"), h.Str(fmt.Sprintf("%s %d", label, v)))
 }
 
 func sevMark(s smell.Severity) h.H {
@@ -461,17 +475,19 @@ func shortPkg(a *live.Analysis, pkg string) string {
 	return path.Base(pkg) + "."
 }
 
-func num(name string, v float64) h.Attr { return h.RawAttr(name, fmt.Sprintf("%.1f", v)) }
-
-// fit trims s to roughly the characters that fit in width px of 12px text.
+// fit returns s if it fits in width px of 12px semibold text, else "": a
+// label is dropped rather than cut mid-word.
 func fit(s string, width float64) string {
-	n := int(width / 7)
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	if n < 2 {
+	if float64(len([]rune(s)))*7.8 > width {
 		return ""
 	}
-	return string(r[:n-1]) + "…"
+	return s
+}
+
+// fitPath is fit for a slash path, falling back to its last element.
+func fitPath(s string, width float64) string {
+	if f := fit(s, width); f != "" {
+		return f
+	}
+	return fit(path.Base(s), width)
 }

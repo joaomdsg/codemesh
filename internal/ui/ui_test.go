@@ -50,7 +50,7 @@ func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
 	require.Equal(t, http.StatusOK, status)
 	assert.Contains(t, body, ">calc<", "the calc package frame")
 	assert.Contains(t, body, ">calc.go<", "its file inside the frame")
-	assert.Contains(t, body, "Findings")
+	assert.Contains(t, body, "Smells · 1")
 	assert.Contains(t, body, "Unused export")
 }
 
@@ -131,4 +131,21 @@ func TestFavicon_answersWithoutContent(t *testing.T) {
 
 	status, _ := e.app.Get("/favicon.ico")
 	assert.Equal(t, http.StatusNoContent, status)
+}
+
+func TestReview_linksCallersChangedInTheSameDiffToTheirCard(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	_, body := e.app.Get("/review")
+	assert.Regexp(t, `<a class="changed" href="#u[0-9a-f]+" title="Changed in this diff">calc.TestClamp`, body)
+}
+
+func TestReview_foldsLanesThatRarelyNeedReading(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	_, body := e.app.Get("/review")
+	assert.Contains(t, body, "Show diff · ", "Tests, Other and Noise cards wait to be opened")
+	assert.Contains(t, body, ">\treturn helper(x, 1) * k<", "a Logic diff renders unasked")
 }
