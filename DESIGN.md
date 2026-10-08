@@ -149,9 +149,12 @@ units**, one per declaration added, removed or modified.
    Re-review costs only the delta.
 6. **Read only what needs reading.** Contract and Logic diffs render up to a
    budget of 3000 lines; Tests, Other and Noise cards, and anything past the
-   budget, show their header and open on demand. A lane lists its 60
-   riskiest units until asked for the rest. An outline lists the listed
-   units by lane with their marks.
+   budget, show their header and open on demand. A lane lists 60 units at
+   a time, riskiest first, and each "Show more" adds the next 60. Listing a
+   release-sized lane at once (864 units on one repo) built a 2.8 MB page
+   in 1.9 s; grouping by package was rejected because it breaks the risk
+   order across the lane. An outline lists the listed units by lane with
+   their marks.
 7. **Where the change sits.** Above the outline, an atlas of the whole
    module lights every declaration the change touches: blue while open,
    green once reviewed. It flies to the focused unit's file, and clicking a

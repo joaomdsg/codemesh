@@ -79,9 +79,9 @@ callers, missing direct tests, complexity and its change, and smells the
 change introduces.
 
 Contract and Logic diffs render up front, up to 3000 lines in total; the
-rest, and every Tests, Other and Noise card, open on demand. Lanes list their
-60 riskiest units first. This keeps a release-sized diff fast to load. Callers changed in
-the same diff link to their unit.
+rest, and every Tests, Other and Noise card, open on demand. Lanes list 60
+units at a time, riskiest first. This keeps a release-sized diff fast to
+load. Callers changed in the same diff link to their unit.
 
 An atlas of the module sits above the outline, with every touched
 declaration lit. It follows the focused unit; drag or scroll to zoom,

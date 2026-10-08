@@ -170,6 +170,21 @@ func TestReview_capsLongLanesAtTheRiskiestUnits(t *testing.T) {
 	assert.Equal(t, 60, strings.Count(body, `<article class="unit"`))
 }
 
+func TestReview_offersALongLaneOnePageAtATime(t *testing.T) {
+	t.Parallel()
+	var many strings.Builder
+	many.WriteString("package calc\n")
+	for i := range 130 {
+		fmt.Fprintf(&many, "\nfunc f%d() int { return %d }\n", i, i)
+	}
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()}).app
+
+	// vt drops SSE lines over 64 KB, so the next page's render is checked
+	// in a browser, not here.
+	_, body := app.Get("/review")
+	assert.Contains(t, body, "Show 60 more logic units", "72 more wait, a page at a time")
+}
+
 func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {
 	t.Parallel()
 	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/broken.go": "package calc\n\nfunc Broken() int { return undefined }\n"}).app
