@@ -274,3 +274,19 @@ func TestMap_scopesToAPackageByItsDirectory(t *testing.T) {
 	smells := regexp.MustCompile(`Smells · \d+`)
 	assert.Equal(t, smells.FindString(byPath), smells.FindString(byDir))
 }
+
+func TestFrame_namesNestedModulesTheMapLeavesOut(t *testing.T) {
+	t.Parallel()
+	app := serveRepo(t, testrepo.CalcBase, map[string]string{
+		"tools/go.mod": "module example.com/tools\n\ngo 1.27\n",
+		"tools/t.go":   "package tools\n",
+	}).app
+
+	_, home := app.Get("/")
+	_, deps := app.Get("/deps")
+	_, rev := app.Get("/review")
+	for _, body := range []string{home, deps} {
+		assert.Contains(t, body, "The nested module tools is not mapped. Run codemesh in tools to map it.")
+	}
+	assert.NotContains(t, rev, "is not mapped", "the review lists nested module files")
+}

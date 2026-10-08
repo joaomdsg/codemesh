@@ -12,6 +12,9 @@ type Snapshot struct {
 	Module   string // module path
 	Dir      string // absolute module root
 	Packages []*Package
+	// Nested are the directories, relative to Dir, of modules inside this
+	// one. Go loads them as separate modules, so their code is not here.
+	Nested []string
 
 	decls map[string]*Decl
 	pkgs  map[string]*Package

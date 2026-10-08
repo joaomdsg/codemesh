@@ -158,3 +158,12 @@ func TestLoad_countsAStringLiteralDeclarationAsDataOnItsFirstLine(t *testing.T) 
 	// package, import, three data lines, Kind, Query's five, Page's one.
 	assert.Equal(t, 12, s.Package("example.com/data/page").Files[0].Lines)
 }
+
+func TestLoad_namesTheNestedModulesItLeavesOut(t *testing.T) {
+	t.Parallel()
+	s, err := code.Load("testdata/nested")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"sub"}, s.Nested, "not the module inside it, not a testdata fixture")
+	assert.Empty(t, s.Package("example.com/nested/a").Imports, "an import of another module is not a module-internal edge")
+}

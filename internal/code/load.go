@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,6 +46,7 @@ func Load(dir string) (*Snapshot, error) {
 	if l.s.Module == "" {
 		return nil, errors.New("no main module found in " + abs)
 	}
+	l.s.Nested = nestedModules(l.s.Dir)
 	for _, p := range loaded {
 		l.addPackage(p)
 	}
@@ -239,10 +241,35 @@ func (l *loader) finish() {
 	slices.SortFunc(l.s.Packages, func(a, b *Package) int { return cmp.Compare(a.Path, b.Path) })
 	for _, p := range l.s.Packages {
 		slices.SortFunc(p.Files, func(a, b *File) int { return cmp.Compare(a.Path, b.Path) })
+		// A nested module shares the path prefix but is another module.
+		p.Imports = slices.DeleteFunc(p.Imports, func(path string) bool { return l.s.pkgs[path] == nil })
 	}
 	for _, d := range l.s.decls {
 		slices.Sort(d.Callers)
 	}
+}
+
+// nestedModules lists the directories below root holding a go.mod, the
+// outermost only. The go command skips the same directories: hidden ones,
+// testdata, and those starting with an underscore.
+func nestedModules(root string) []string {
+	var out []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || p == root {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || name == "testdata" || name == "vendor" {
+			return filepath.SkipDir
+		}
+		if _, err := os.Stat(filepath.Join(p, "go.mod")); err == nil {
+			rel, _ := filepath.Rel(root, p)
+			out = append(out, filepath.ToSlash(rel))
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out
 }
 
 func (l *loader) span(doc *ast.CommentGroup, start, end token.Pos) (int, int) {

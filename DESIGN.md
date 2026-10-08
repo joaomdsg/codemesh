@@ -41,6 +41,10 @@ can click through to.
 
 ## Map
 
+Go loads a nested module (a directory below the root with its own
+`go.mod`) as a separate module, so the map, smells and matrix leave it out,
+and a banner names it. Imports of it are not module-internal edges.
+
 - **Atlas.** One squarified treemap of the whole module: packages holding
   files holding declarations, area by lines of code. The server lays it out;
   D3 zooms and pans it, with labels that appear once their tile has room.

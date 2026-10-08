@@ -50,6 +50,9 @@ To review someone else's branch, check it out first, for example with
   which, with reference counts and instability, and flags imports of less
   stable packages.
 
+A nested module, a directory with its own `go.mod`, is left out of the map
+and the matrix, and a banner names it. Run codemesh in it to map it.
+
 The smell rules and their thresholds are in [DESIGN.md](DESIGN.md).
 
 ## Review

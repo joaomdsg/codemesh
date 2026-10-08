@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/go-via/via"
@@ -142,6 +143,10 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 		failure = h.Div(h.Class("banner err"), h.Role("alert"), h.Str("Load failed: "+a.Err.Error()+". Showing the last good analysis; fix the error and it reloads."))
 	case a != nil && a.Snap != nil:
 		failure = typeErrors(a)
+		// The review lists nested modules' files; the map and matrix lack them.
+		if active != tabReview {
+			failure = group([]h.H{failure, nestedModules(a)})
+		}
 	}
 	return h.Div(h.Class("app"),
 		h.Header(h.Class("top"),
@@ -201,6 +206,21 @@ func typeErrors(a *live.Analysis) h.H {
 	return h.Div(h.Class("banner warn"), h.Role("status"),
 		h.Str(fmt.Sprintf("▲ %s did not type-check, so callers and smells there may be missing until it builds. First error: %s",
 			plural(len(broken), "package"), first)))
+}
+
+// nestedModules says which modules inside this one the map leaves out: Go
+// loads each as its own module.
+func nestedModules(a *live.Analysis) h.H {
+	var text string
+	switch n := a.Snap.Nested; len(n) {
+	case 0:
+		return nil
+	case 1:
+		text = fmt.Sprintf("The nested module %s is not mapped. Run codemesh in %s to map it.", n[0], n[0])
+	default:
+		text = fmt.Sprintf("%d nested modules are not mapped: %s. Run codemesh in each to map it.", len(n), strings.Join(n, ", "))
+	}
+	return h.Div(h.Class("banner warn"), h.Role("status"), h.Str("▲ "+text))
 }
 
 // okLine is the quiet success line: a green check, grey text.
