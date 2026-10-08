@@ -24,7 +24,8 @@ func fileFindings(p *code.Package, f *code.File) []Finding {
 }
 
 func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl) []Finding {
-	if d.Test {
+	// Nobody edits generated code by hand, so its smells are not actionable.
+	if d.Test || f.Generated {
 		return nil
 	}
 	at := func(rule Rule, sev Severity, measure, limit int, detail string) Finding {
@@ -35,7 +36,7 @@ func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl)
 	}
 	var out []Finding
 	isFunc := d.Kind == code.Func || d.Kind == code.Method
-	if isFunc && !f.Generated {
+	if isFunc {
 		if sev, limit, ok := tier(d.Lines, LongFuncLimit, LongFuncHighLimit); ok {
 			out = append(out, at(LongFunc, sev, d.Lines, limit, fmt.Sprintf("%d lines, limit %d", d.Lines, limit)))
 		}
@@ -49,14 +50,15 @@ func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl)
 			out = append(out, at(ManyParams, Warn, d.Params, ManyParamsLimit, fmt.Sprintf("%d params, limit %d", d.Params, ManyParamsLimit)))
 		}
 	}
-	if isFunc {
+	main := p.Name == "main"
+	// A main package exists to wire others together; leaning on them is its job.
+	if isFunc && !main {
 		if other, n, own := envy(d); other != "" {
 			f := at(EnviousFunc, Info, n, own, fmt.Sprintf("%d refs to %s, %d to own package", n, relOf(s, other), own))
 			f.Target = other
 			out = append(out, f)
 		}
 	}
-	main := p.Name == "main"
 	if d.Exported && !main && d.Kind != code.Method && !usedOutside(s, d) {
 		out = append(out, at(UnusedExport, Info, 0, 0, "no use outside its package"))
 	}

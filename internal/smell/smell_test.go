@@ -342,3 +342,14 @@ func TestSeverity_stringNamesLevels(t *testing.T) {
 	assert.Equal(t, "warn", smell.Warn.String())
 	assert.Equal(t, "high", smell.High.String())
 }
+
+func TestFind_leavesGeneratedCodeAndMainWiringAlone(t *testing.T) {
+	t.Parallel()
+	s, err := code.Load("testdata/quiet")
+	require.NoError(t, err)
+
+	for _, f := range smell.Find(s) {
+		assert.NotEqual(t, "lib/zz_generated.go", f.File, "%s on generated code", f.Rule)
+		assert.NotEqual(t, smell.EnviousFunc, f.Rule, "main wires packages by design: %s", f.Subject)
+	}
+}

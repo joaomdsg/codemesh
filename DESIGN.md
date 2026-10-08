@@ -77,6 +77,10 @@ Each smell is a rule with a documented threshold:
 | unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
 | untested package | no test files | changes land unguarded |
 
+Test code and generated files are exempt from every rule. Functions in a
+main package are exempt from envious-function, since wiring other packages
+together is a main package's job.
+
 ## Review
 
 A diff is a list of lines. A reviewer cares about declarations and their
