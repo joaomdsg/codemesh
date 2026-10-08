@@ -29,11 +29,11 @@ type ReviewPage struct {
 	Focus    via.SignalCS[string]   `via:"init=\"\""`
 
 	err    string
-	opened map[string]bool   // unit keys whose diff the reviewer asked to see
-	budget int               // diff lines rendered so far in this View
-	inDiff map[string]string // decl ID → unit key, for units in this View
+	opened map[string]bool     // unit keys whose diff the reviewer asked to see
+	budget int                 // diff lines rendered so far in this View
+	inDiff map[string]string   // decl ID → unit key, for units in this View
 	pages  map[review.Lane]int // pages of laneCap units listed past the first
-	whole  map[string]bool // unit keys whose diff shows past maxDiffLines
+	whole  map[string]bool     // unit keys whose diff shows past maxDiffLines
 }
 
 // laneCap is how many units a lane lists at a time: a lane is in risk
