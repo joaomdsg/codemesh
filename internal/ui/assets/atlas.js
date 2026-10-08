@@ -110,8 +110,9 @@
     // Tiles come in layout order, each package then its files, each file
     // then its declarations, so the last shown frame labels are the parents.
     let pkg = null, file = null;
-    // The glyphs' box: ascent from 4px below the tile top to the descent.
-    const box = (d) => ({ x0: d[X], y0: d[Y] + 4 / ppu, x1: d[X] + (d[NAME].length * 7 + 6) / ppu, y1: d[Y] + px + 5 / ppu });
+    // The text's box, as the browser measures it: 2px below the tile top to
+    // the descent.
+    const box = (d) => ({ x0: d[X], y0: d[Y] + 2 / ppu, x1: d[X] + (d[NAME].length * 7 + 6) / ppu, y1: d[Y] + px + 5 / ppu });
     const clear = (b, o) => !o || b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0;
     const shown = new Map();
     s.labels.each((d) => {
