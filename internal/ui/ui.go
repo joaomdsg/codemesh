@@ -68,7 +68,7 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 			Lang: "en",
 			Raw:  `<meta name="viewport" content="width=device-width, initial-scale=1">`,
 			Assets: via.Assets{
-				Styles:  []via.Style{{Inline: css}},
+				Styles: []via.Style{{Inline: css}},
 				// D3 and the island load before Datastar runs any effect.
 				Scripts: []via.Script{{Src: d3URL}, {Src: atlasURL}, {Inline: keysJS}},
 			},
