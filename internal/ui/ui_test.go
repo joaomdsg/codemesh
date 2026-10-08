@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"fmt"
 	"html"
 	"io"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/go-via/via/vt"
@@ -148,4 +150,24 @@ func TestReview_foldsLanesThatRarelyNeedReading(t *testing.T) {
 	_, body := e.app.Get("/review")
 	assert.Contains(t, body, "Show diff · ", "Tests, Other and Noise cards wait to be opened")
 	assert.Contains(t, body, ">\treturn helper(x, 1) * k<", "a Logic diff renders unasked")
+}
+
+func TestReview_capsLongLanesAtTheRiskiestUnits(t *testing.T) {
+	t.Parallel()
+	var many strings.Builder
+	many.WriteString("package calc\n")
+	for i := range 70 {
+		fmt.Fprintf(&many, "\nfunc f%d() int { return %d }\n", i, i)
+	}
+	dir := testrepo.New(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()})
+	src := live.New(dir, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(src.Close)
+	require.NoError(t, src.Refresh().Err)
+	state, err := review.OpenState(filepath.Join(t.TempDir(), "reviewed.json"))
+	require.NoError(t, err)
+	app := vt.Serve(t, ui.New(src, state, "http://localhost:7777"))
+
+	_, body := app.Get("/review")
+	assert.Contains(t, body, "Show 10 more logic units")
+	assert.Equal(t, 60, strings.Count(body, `<article class="unit"`))
 }

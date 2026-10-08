@@ -24,7 +24,12 @@ type ReviewPage struct {
 	opened map[string]bool   // unit keys whose diff the reviewer asked to see
 	budget int               // diff lines rendered so far in this View
 	inDiff map[string]string // decl ID → unit key, for units in this View
+	full   map[review.Lane]bool
 }
+
+// laneCap is how many units a lane lists before "Show all": a lane is in
+// risk order, so the cut keeps the units most worth reading.
+const laneCap = 60
 
 // renderBudget bounds the diff lines one page render shows unasked. Past it,
 // and in the lanes that rarely need reading, cards show their header and a
@@ -63,6 +68,22 @@ func (p *ReviewPage) Open(_ *via.Ctx, key string) {
 		p.opened = map[string]bool{}
 	}
 	p.opened[key] = !p.opened[key]
+}
+
+// ShowLane lists every unit of a lane.
+func (p *ReviewPage) ShowLane(_ *via.Ctx, l int) {
+	if p.full == nil {
+		p.full = map[review.Lane]bool{}
+	}
+	p.full[review.Lane(l)] = true
+}
+
+// visible is the part of a lane that renders.
+func (p *ReviewPage) visible(l review.Lane, units []*review.Unit) []*review.Unit {
+	if p.full[l] || len(units) <= laneCap {
+		return units
+	}
+	return units[:laneCap]
 }
 
 // Rescan re-analyses now, without waiting for the watcher.
@@ -177,7 +198,8 @@ func (p *ReviewPage) outline(rev *review.Review) h.H {
 			continue
 		}
 		var rows []h.H
-		for _, u := range units {
+		shown := p.visible(l, units)
+		for _, u := range shown {
 			cls, glyph := "ol-row", "○"
 			if p.state.Reviewed(u.Key) {
 				cls, glyph = "ol-row done", "✓"
@@ -193,6 +215,9 @@ func (p *ReviewPage) outline(rev *review.Review) h.H {
 			if p.state.Reviewed(u.Key) {
 				reviewed++
 			}
+		}
+		if hidden := len(units) - len(shown); hidden > 0 {
+			rows = append(rows, h.Li(h.Class("ol-more"), h.Str(fmt.Sprintf("%d more", hidden))))
 		}
 		kids = append(kids, h.H3(h.Str(l.String()), h.Span(h.Class("ol-count"), h.Str(fmt.Sprintf(" %d/%d", reviewed, len(units))))), h.Ul(rows...))
 	}
@@ -223,8 +248,13 @@ func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit)
 		accept = h.Button(h.Class("btn"), on.Click(p.AcceptNoise), h.Str("Mark all noise reviewed"))
 	}
 	var cards []h.H
-	for _, u := range units {
+	shown := p.visible(l, units)
+	for _, u := range shown {
 		cards = append(cards, p.card(a, u, l))
+	}
+	if hidden := len(units) - len(shown); hidden > 0 {
+		cards = append(cards, h.Button(h.Class("btn more"), on.Click(on.Bind(p.ShowLane, int(l))),
+			h.Str(fmt.Sprintf("Show %d more %s units", hidden, strings.ToLower(l.String())))))
 	}
 	return h.Section(h.Class("lane lane-"+strings.ToLower(l.String())), h.Div(h.Class("lane-bar"), head, accept), group(cards))
 }

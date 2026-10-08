@@ -384,3 +384,5 @@ kbd {
 .unit-body .diff { flex: 1 1 640px; border-top: 0; }
 .unit-body .callers-line { flex: 0 1 260px; flex-direction: column; align-content: start; border-top: 0; border-left: 1px solid var(--line-soft); }
 .ol-row.cur { color: var(--accent); font-weight: 600; }
+.more { align-self: flex-start; }
+.ol-more { color: var(--muted); font-size: 12px; padding-left: calc(16px + var(--sp2)); }
