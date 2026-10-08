@@ -96,8 +96,8 @@ A finding past the high limit is high severity and names that limit
 
 Complexity is modified cyclomatic complexity: one plus each `if`, `for`,
 `&&` and `||`, with a `switch` or `select` counting once however many cases
-it has (lizard's `-m`). Plain McCabe counts every case, so a flat 14-way
-string dispatch scored 29 and outranked nested loops. A switch is one
+it has (lizard's `-m`). Plain McCabe counts every case, so a 14-case string
+dispatch scored 29. A switch is one
 decision a reader takes in at a glance; an `else if` ladder still counts
 each branch, since each condition must be read. The cost: a long switch
 no longer shows how many paths a test must cover.
@@ -124,19 +124,19 @@ units**, one per declaration added, removed or modified.
    - **Tests**: test code and `testdata` fixtures.
    - **Other**: non-Go files, a nested module's `go.mod`, and string data:
      a package-level const or var whose value is only string literals over
-     several lines, such as an inlined script. Go files of a nested module have no type
-     information here and become one unit per file, in Logic or Tests, or
-     Noise when only comments and layout changed.
+     several lines, such as an inlined script. Go files of a nested module
+     have no type information here and become one unit per file, in Logic
+     or Tests, or Noise when only comments and layout changed.
    - **Noise**: units whose syntax tree is unchanged apart from comments and
      formatting, pure moves (same source, other file or package), generated
      files, `go.sum`, and import lines. A declaration moved and edited is
      one modified unit, "moved from" its old file, not a removal plus an
      addition.
 2. **Risk order inside a lane.** The score combines production callers
-   (blast radius), whether the unit is exported, complexity after the change
-   and its delta, lines changed, and whether any test calls the unit
-   directly. Test callers are listed but add no risk. The reasons show as
-   chips, so the order explains itself.
+   (blast radius), whether the unit is exported (test functions aside),
+   complexity after the change and its delta, lines changed, and whether
+   any test calls the unit directly. Test callers are listed but add no
+   risk. The reasons show as chips, so the order explains itself.
 3. **Impact beside the hunk.** The real callers of a changed function are
    listed next to its diff, from type information. Callers changed in the
    same diff come first and link to their unit, so a contract change and its
