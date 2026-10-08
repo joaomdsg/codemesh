@@ -6,7 +6,7 @@ codemesh is a local web tool for Go modules. It does two jobs:
 2. **Review**: make reading a change fast enough that review stops being the
    bottleneck.
 
-Run it in a module: `codemesh [-addr :7777] [-base REF] [dir]`. It analyses
+Run it in a module: `codemesh [-addr localhost:7777] [-base REF] [dir]`. It analyses
 the working tree, so it reviews uncommitted work as well as branches.
 
 ## What we kept from the Intent Canvas, and what we dropped
@@ -25,7 +25,7 @@ We dropped:
   and they need call edges the prototype only text-matched. Packages and
   files are stable, and every Go developer already reads them.
 - **The hex cartography and code-inside-hexes zoom.** We use a squarified
-  treemap, one level at a time, with source in a side pane. It is cheap,
+  treemap, nested one level deep, with source in a side panel. It is cheap,
   deterministic and stable while the code is edited.
 - **Marks, fences, the dispatch gate and agent runs.** These are agent
   orchestration, which is out of scope for v0.1.
@@ -72,7 +72,7 @@ Each smell is a rule with a documented threshold:
 | many parameters | > 5 parameters | the function does several jobs |
 | large file | > 600 code lines | the file has several concerns |
 | unused export | exported, no use outside its package | API surface that nobody uses |
-| dead code | declared, no use anywhere (not main/init/tests) | weight with no value |
+| dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
 | envious function | most of its references go to one other package | it may live in the wrong package |
 | unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
 | untested package | no test files | changes land unguarded |
@@ -119,8 +119,9 @@ units**, one per declaration added, removed or modified.
    Re-review costs only the delta.
 6. **Read only what needs reading.** Contract and Logic diffs render up to a
    budget of 3000 lines; Tests, Other and Noise cards, and anything past the
-   budget, show their header and open on demand. An outline lists every
-   unit by lane with its mark.
+   budget, show their header and open on demand. A lane lists its 60
+   riskiest units until asked for the rest. An outline lists the listed
+   units by lane with their marks.
 7. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
    next unreviewed unit, `n` skips to it, `o` shows or hides a diff.
 
@@ -134,8 +135,8 @@ the map and the review queue follow your edits.
 
 - Go 1.27 and go-via. Server-rendered HTML with the `h` DSL, and SVG for the
   treemap.
-- Hand-written CSS inlined through `PageMeta().Assets`, so via's CSP admits
-  it by hash.
+- Hand-written CSS and a small keyboard script, inlined through the router's
+  `Head.Assets`, so via's CSP admits them by hash.
 - No Node, no build step, no client framework.
 - Dependencies:
   - `golang.org/x/tools/go/packages` loads the code.

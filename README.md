@@ -6,8 +6,8 @@ A local web tool for Go modules. It does two jobs:
 - **Review**: read a change as declarations, riskiest first, so review stops
   being the bottleneck.
 
-It analyses the working tree and re-analyses on every save, so you can keep
-it open while you code.
+It analyses the working tree and re-analyses within a second of every save,
+so you can keep it open while you code.
 
 ## Install
 
