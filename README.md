@@ -6,6 +6,8 @@ A local web tool for Go modules. It does two jobs:
 - **Review**: read a change as declarations, riskiest first, so review stops
   being the bottleneck.
 
+A third, **Diagnose**, is a spike: see [Diagnose (spike)](#diagnose-spike).
+
 It analyses the working tree and re-analyses within a second of every save,
 so you can keep it open while you code.
 
@@ -15,12 +17,13 @@ so you can keep it open while you code.
 go install github.com/joaomdsg/codemesh/cmd/codemesh@latest
 ```
 
-It needs Go 1.27 or newer and `git` on the PATH.
+It needs Go 1.27 or newer and `git` on the PATH. The Diagnose spike's
+"Try a fix" also needs `claude` (Claude Code) on the PATH.
 
 ## Run
 
 ```
-codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [dir]
+codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [-agent claude] [dir]
 ```
 
 Open http://localhost:7777. `dir` defaults to the current directory and must
@@ -56,6 +59,16 @@ A nested module, a directory with its own `go.mod`, is left out of the map
 and the matrix, and a banner names it. Run codemesh in it to map it.
 
 The smell rules and their thresholds are in [DESIGN.md](DESIGN.md).
+
+## Diagnose (spike)
+
+The Diagnose tab marks the places that need attention and explains each in
+plain words: what is wrong, why it matters, what to do and how to check.
+Hover a marker for the short version, click it for the full one. "Try a
+fix" asks Claude Code to treat it in a throwaway worktree, replays what it
+did step by step on the map, and shows the before and after, checked with
+the repository's own `ci.sh` or `make ci` when it has one. See
+[DESIGN.md](DESIGN.md#diagnose-spike).
 
 ## Review
 

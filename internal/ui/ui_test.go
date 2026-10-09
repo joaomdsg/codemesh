@@ -7,13 +7,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-via/via/vt"
+	"github.com/joaomdsg/codemesh/internal/fix"
 	"github.com/joaomdsg/codemesh/internal/live"
+	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/joaomdsg/codemesh/internal/ui"
@@ -31,6 +35,7 @@ type env struct {
 	app   *vt.App
 	src   *live.Source
 	state *review.State
+	runs  *fix.Runs
 }
 
 func serve(t *testing.T) env { return serveRepo(t, testrepo.CalcBase, testrepo.CalcHead) }
@@ -43,7 +48,10 @@ func serveRepo(t *testing.T, base, head map[string]string) env {
 	require.NoError(t, src.Refresh().Err)
 	state, err := review.OpenState(filepath.Join(t.TempDir(), "reviewed.json"))
 	require.NoError(t, err)
-	return env{vt.Serve(t, ui.New(src, state, "http://localhost:7777")), src, state}
+	runs := fix.NewRuns(dir)
+	runs.Agent = "false" // a fix run fails at once instead of starting Claude
+	t.Cleanup(runs.Close)
+	return env{vt.Serve(t, ui.New(src, state, runs, "http://localhost:7777")), src, state, runs}
 }
 
 func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
@@ -316,4 +324,74 @@ func TestMap_keepsADeclarationWithOnlyInfoSmellsLukewarm(t *testing.T) {
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["d",[^\]]*"Unused","",2,"example.com/calc/internal/x.Unused"\]`, body,
 		"one info smell on one line is dense, yet only info")
+}
+
+func TestDiagnose_marksAPlaceAndOpensItsPrognosis(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	status, body := e.app.Get("/diagnose")
+	require.Equal(t, http.StatusOK, status)
+	body = html.UnescapeString(body)
+	assert.Contains(t, body, `"key":"complex:example.com/calc/calc.tangle"`, "tangle is past the complexity limit")
+	assert.Contains(t, body, "Hard to follow")
+
+	status, body = e.app.Get("/prognosis/" + url.PathEscape("complex:example.com/calc/calc.tangle"))
+	require.Equal(t, http.StatusOK, status)
+	for _, want := range []string{"Why it matters", "What to do", "How to check", "Try a fix"} {
+		assert.Contains(t, body, want)
+	}
+}
+
+// streamAt is the mount a page's live stream connects to, read off the page
+// the way the browser does: query strings do not reach it.
+var streamAt = regexp.MustCompile(`@post\('([^']*)/_via/sse'\)`)
+
+func TestDiagnose_fixActionReachesTheOpenPrognosis(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+	const key = "complex:example.com/calc/calc.tangle"
+	_, page := e.app.Get("/prognosis/" + url.PathEscape(key))
+	stream := streamAt.FindStringSubmatch(page)
+	require.NotNil(t, stream, "the page connects a live stream")
+	conn := e.app.ConnectAt(html.UnescapeString(stream[1]), "{}")
+	t.Cleanup(conn.Close)
+	actions := actionURL.FindAllStringSubmatch(page, -1)
+	require.Len(t, actions, 1, "Try a fix is the panel's one action")
+
+	status, _ := e.app.ChildAction("r", 0).Over(conn).Raw(html.UnescapeString(actions[0][2] + actions[0][1])).Fire()
+	require.Equal(t, http.StatusNoContent, status, "the stream's render binds the same action the page showed")
+	assert.NotNil(t, e.runs.Get(key), "the click started a run")
+}
+
+func TestDiagnose_replaysWhatTheAgentDid(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\n"+
+		`echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"calc/calc.go"}}]}}'`+"\n"), 0o755))
+	e.runs.Agent = agent
+	const key = "complex:example.com/calc/calc.tangle"
+	g := findPrognosis(t, e, key)
+	run := e.runs.Start(g)
+	require.Eventually(t, func() bool { s := run.Snapshot(); return s.State == fix.Done || s.State == fix.Failed },
+		time.Minute, 50*time.Millisecond)
+
+	_, body := e.app.Get("/prognosis/" + url.PathEscape(key))
+	body = html.UnescapeString(body)
+	assert.Contains(t, body, "codemesh.replay(el, $_replay)")
+	assert.Contains(t, body, `"title":"Read calc.go"`)
+	assert.Contains(t, body, `"file":"calc/calc.go"`, "a relative path lands on the module's file tile")
+}
+
+func findPrognosis(t *testing.T, e env, key string) prognosis.Prognosis {
+	t.Helper()
+	a := e.src.Current()
+	for _, g := range prognosis.Find(a.Snap, a.Findings) {
+		if g.Key == key {
+			return g
+		}
+	}
+	t.Fatalf("no prognosis %s", key)
+	return prognosis.Prognosis{}
 }

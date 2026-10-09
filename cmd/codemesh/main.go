@@ -1,7 +1,7 @@
-// Command codemesh serves a map of a Go module's smells and a review queue
-// for its working-tree changes.
+// Command codemesh serves a map of a Go module's smells, a review queue for
+// its working-tree changes and a diagnosis of its health.
 //
-//	codemesh [-addr localhost:7777] [-base REF] [dir]
+//	codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [-agent claude] [dir]
 package main
 
 import (
@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/fix"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/ui"
@@ -33,6 +34,7 @@ func run() error {
 	addr := flag.String("addr", "localhost:7777", "address to serve on")
 	base := flag.String("base", "", "ref to review against (default: origin/HEAD, main or master)")
 	poll := flag.Duration("poll", time.Second, "how often to check the tree for changes")
+	agent := flag.String("agent", "claude", "command that treats a prognosis, called like claude -p")
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "usage: codemesh [flags] [dir]")
 		flag.PrintDefaults()
@@ -59,7 +61,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: ui.New(src, state, origin), ReadHeaderTimeout: 10 * time.Second}
+	runs := fix.NewRuns(dir)
+	runs.Agent = *agent
+	defer runs.Close()
+	srv := &http.Server{Handler: ui.New(src, state, runs, origin), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

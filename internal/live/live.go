@@ -234,6 +234,21 @@ func (s *Source) fingerprint() string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// Load loads the module in dir and sets each file's churn from its repo,
+// when dir is in one: the analysis a Source runs, for a tree it does not watch.
+func Load(dir string) (*code.Snapshot, []smell.Finding, error) {
+	snap, err := code.Load(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if repo, err := gitx.Open(dir); err == nil {
+		if churn, err := repo.Churn(ChurnWindow); err == nil {
+			applyChurn(snap, repo.Dir, churn)
+		}
+	}
+	return snap, smell.Find(snap), nil
+}
+
 // applyChurn copies per-path commit counts onto the snapshot's files. Churn
 // paths are relative to the repo root, file paths to the module root.
 func applyChurn(snap *code.Snapshot, repoDir string, churn map[string]int) {

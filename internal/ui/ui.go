@@ -1,5 +1,5 @@
-// Package ui serves codemesh's pages: the map, the dependency matrix and the
-// review queue. Pages render from the latest live.Analysis and re-render when
+// Package ui serves codemesh's pages: the map, the dependency matrix, the
+// review queue and the health diagnosis. Pages render from the latest live.Analysis and re-render when
 // a new one is published.
 package ui
 
@@ -17,6 +17,7 @@ import (
 	"github.com/go-via/via"
 	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/code"
+	"github.com/joaomdsg/codemesh/internal/fix"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/review"
 )
@@ -44,8 +45,9 @@ func assetURL(name string) string {
 }
 
 var (
-	d3URL    = assetURL("d3.min.js")
-	atlasURL = assetURL("atlas.js")
+	d3URL       = assetURL("d3.min.js")
+	atlasURL    = assetURL("atlas.js")
+	diagnoseURL = assetURL("diagnose.js")
 )
 
 func serveAssets(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +65,7 @@ var assetsRoot = func() fs.FS {
 
 // New returns the app's handler. origin is the URL the browser uses, such as
 // http://localhost:7777; actions from any other origin are refused.
-func New(src *live.Source, state *review.State, origin string) http.Handler {
+func New(src *live.Source, state *review.State, runs *fix.Runs, origin string) http.Handler {
 	r := via.NewRouter(
 		via.WithHead(via.Head{
 			Lang: "en",
@@ -71,15 +73,18 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 			Assets: via.Assets{
 				Styles: []via.Style{{Inline: css}},
 				// D3 and the island load before Datastar runs any effect.
-				Scripts: []via.Script{{Src: d3URL}, {Src: atlasURL}, {Inline: keysJS}},
+				Scripts: []via.Script{{Src: d3URL}, {Src: atlasURL}, {Src: diagnoseURL}, {Inline: keysJS}},
 			},
 		}),
 		via.WithTrustedOrigin(origin),
 	)
-	shell := shell{src: src, state: state}
+	shell := shell{src: src, state: state, runs: runs}
 	via.Mount(r, "/", MapPage{shell: shell})
 	via.Mount(r, "/deps", DepsPage{shell: shell})
 	via.Mount(r, "/review", ReviewPage{shell: shell})
+	via.Mount(r, "/diagnose", DiagnosePage{shell: shell})
+	via.Mount(r, "/diagnose/{lens}", DiagnosePage{shell: shell})
+	via.Mount(r, "/prognosis/{key}", DiagnosePage{shell: shell})
 	mux := http.NewServeMux()
 	// Browsers ask for a favicon on every page; answer instead of logging 404s.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
@@ -93,6 +98,7 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 type shell struct {
 	src   *live.Source
 	state *review.State
+	runs  *fix.Runs
 	Stamp via.State[string]
 }
 
@@ -119,6 +125,7 @@ const (
 	tabMap tab = iota
 	tabDeps
 	tabReview
+	tabDiagnose
 )
 
 func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
@@ -156,6 +163,7 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 				link(tabMap, "/", "Map", nil),
 				link(tabDeps, "/deps", "Dependencies", nil),
 				link(tabReview, "/review", "Review", pending),
+				link(tabDiagnose, "/diagnose", "Diagnose", nil),
 			),
 			h.Span(h.Class("stamp"), h.Aria("live", "polite"), s.Stamp.Display()),
 		),

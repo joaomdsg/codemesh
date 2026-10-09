@@ -6,8 +6,11 @@ codemesh is a local web tool for Go modules. It does two jobs:
 2. **Review**: make reading a change fast enough that review stops being the
    bottleneck.
 
+A third, **Diagnose**, is a spike on the `spike/diagnose` branch; see
+[Diagnose (spike)](#diagnose-spike).
+
 Run it in a module: `codemesh [-addr localhost:7777] [-base REF] [-poll 1s]
-[dir]`. It analyses the working tree, so it reviews uncommitted work as well
+[-agent claude] [dir]`. It analyses the working tree, so it reviews uncommitted work as well
 as branches.
 
 ## What we kept from the Intent Canvas, and what we dropped
@@ -30,7 +33,8 @@ We dropped:
   a side panel. It is cheap, deterministic and stable while the code is
   edited.
 - **Marks, fences, the dispatch gate and agent runs.** These are agent
-  orchestration, which is out of scope for v0.1.
+  orchestration, which is out of scope for v0.1. The Diagnose spike tries
+  one agent run per prognosis; it is not part of v0.1.
 - **PR-number history.** It is GitHub-specific. Churn comes from plain
   `git log`.
 
@@ -163,6 +167,55 @@ units**, one per declaration added, removed or modified.
 8. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
    next unreviewed unit, `n` skips to it, `o` shows or hides a diff.
 
+## Diagnose (spike)
+
+The diagnosis is for people who do not yet know what healthy code looks
+like, as well as for those who do. It shows the map with a marker on each
+place that needs attention, and says in plain words what is wrong, why it
+matters, what to do and how to check it.
+
+1. **Prognoses** come from rule templates over the snapshot, the smells and
+   churn (`internal/prognosis`), so every number in a text is a fact the
+   reader can click through to. There are four lenses:
+   - Health: complex functions, more urgent when their file keeps changing.
+   - Reach: declarations 50 or more places use.
+   - Structure: a package holding over half the code, and imports of less
+     stable packages.
+   - Tests & smells: complex code no test calls, untested packages, long
+     parameter lists (grouped when three or more share a package) and large
+     files.
+2. **Urgency** has three levels: fix first, fix soon, when convenient. Each
+   level differs in size and fill as well as colour.
+3. **The map** colours tiles by the lens. Each package and file carries a
+   tab with the hottest heat inside it, so a small hot function shows from
+   the module view. Hovering a marker shows the one-sentence prognosis.
+   Clicking a tile rings its callers up to three hops.
+4. **The prognosis** opens across the view. The map shrinks beside it,
+   framed on the place, with the related places listed below it and why
+   each matters.
+5. **Let Claude try** runs `claude -p` with `bypassPermissions` in a
+   throwaway worktree of the last commit (`internal/fix`); `-agent` names
+   another command called the same way. It may run any command there, so
+   the only guards are that `git push` is denied, the worktree is removed on
+   Discard or shutdown, and nothing is written back. Uncommitted edits are
+   not in the worktree.
+6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
+   target in a Makefile or justfile, else `go build ./... && go test ./...`
+   in the module. `go test ./...` alone stops at nested modules and skips
+   whatever else a gate runs. Claude is told to leave it passing, and
+   codemesh runs it before and after.
+7. **The replay** shows what Claude did over time. Each thought, read,
+   search, edit and command is a step, timed as the stream arrives. The map
+   colours the files touched up to the playhead: read in blue, edited in
+   green with an edit count, older touches fainter, the current file
+   outlined. Swimlanes, one per kind of step, have a brush to zoom into a
+   stretch. A list shows each step's text, diff or output. Scrubbing either
+   one, scrolling the list or pressing ← and → moves all three. While a run
+   is live the playhead follows the newest step until the reader moves it.
+8. **The result** shows whether the check passed before and after, the map
+   before and after with the changed code outlined, the prognoses fixed and
+   new, and the code changes ordered by review risk.
+
 ## Live
 
 codemesh watches the working tree. On change it re-analyses and pushes the
@@ -181,7 +234,8 @@ the map and the review queue follow your edits.
   never posted back with an action. via v0.9.0 has no server-side setter for
   a `SignalCS`, so the values ride on a hidden element's `data-signals`
   attributes, which Datastar applies on every morph. A Datastar effect hands
-  them to `atlas.js`, which only draws, zooms and links.
+  them to `atlas.js`, which only draws, zooms and links. The Diagnose
+  spike's island, `diagnose.js`, follows the same pattern.
 - Dependencies:
   - `golang.org/x/tools/go/packages` loads the code.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
@@ -197,6 +251,8 @@ internal/code       load a module: packages, files, decls, metrics, refs
 internal/smell      detectors over a code.Snapshot
 internal/gitx       git: merge-base, diff, show, churn, worktree
 internal/review     diff + base/head snapshots → ranked change units
+internal/prognosis  snapshot + smells → plain-language prognoses (spike)
+internal/fix        Claude Code in a throwaway worktree, before/after (spike)
 internal/live       re-analyse on change, keep the base worktree, publish
 internal/treemap    squarified layout, pure
 internal/ui         via pages
