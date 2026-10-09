@@ -535,7 +535,8 @@ kbd {
 .dx-compare figure { margin: 0; }
 .dx-compare figcaption { font-size: 12px; color: var(--muted); margin-bottom: var(--sp1); }
 .dx-cmp { border: 1px solid var(--line-soft); }
-.dx-claude { white-space: pre-wrap; }
+.dx-claude p, .dx-claude ul { margin: 0 0 var(--sp2); }
+.dx-claude code { font: 12px var(--mono); background: var(--bg); border-radius: 3px; padding: 0 3px; }
 .dx-out { max-height: 40vh; }
 .dx-result .unit { margin-top: var(--sp2); }
 
@@ -564,7 +565,7 @@ kbd {
 .rp-card header { display: flex; gap: var(--sp2); align-items: baseline; }
 .rp-no { color: var(--muted); font: 11px var(--mono); min-width: 2ch; text-align: right; }
 .rp-kind { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; min-width: 5ch; }
-.rp-title { font: 12px var(--mono); overflow-wrap: anywhere; flex: 1; }
+.rp-title { font: 12px var(--mono); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rp-time { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
 .rp-path { font: 11px var(--mono); color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
 .rp-text { margin: var(--sp1) 0 0; white-space: pre-wrap; }

@@ -57,10 +57,15 @@ type Step struct {
 	Path       string // the file it named, relative to the worktree when inside it
 	File       string // the same file relative to the module, when it is in it
 	Text       string // a thought
+	Command    string // a shell command
 	Old, New   string // the text an edit replaced, and its replacement
 	Output     string // the call's result, clipped
 	Failed     bool
 	Start, End time.Duration
+	// What the step did to the tree, whatever tool it used: the module files
+	// a shell command named, and the files that differ once it finished.
+	Reads   []string
+	Changes []Change
 }
 
 // Side is one analysed tree.
@@ -118,6 +123,7 @@ type Run struct {
 	events   []Event
 	steps    []Step
 	wt, mod  string
+	tree     *tree
 	err      error
 	cost     float64
 	summary  string
@@ -126,7 +132,9 @@ type Run struct {
 	check    Check
 	review   *review.Review
 	cleanup  func() error
-	cancel   context.CancelFunc
+	stop     context.CancelFunc // ends Claude's work; the run still checks the result
+	end      context.CancelFunc // ends every stage, for Discard and shutdown
+	done     chan struct{}
 	finished time.Time
 	updates  *topic.Topic[int64]
 }
@@ -159,7 +167,7 @@ func (r *Run) Snapshot() Snapshot {
 }
 
 // Stop ends Claude early; the run keeps what it had.
-func (r *Run) Stop() { r.cancel() }
+func (r *Run) Stop() { r.stop() }
 
 func (r *Run) set(f func()) {
 	r.mu.Lock()
@@ -213,10 +221,19 @@ func (rs *Runs) Start(p prognosis.Prognosis) *Run {
 	if r := rs.runs[p.Key]; r != nil {
 		return r
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	r := &Run{Key: p.Key, Started: time.Now(), state: Preparing, cancel: cancel, updates: rs.Updates}
+	life, end := context.WithCancel(context.Background())
+	work, stop := context.WithCancel(life)
+	r := &Run{Key: p.Key, Started: time.Now(), state: Preparing, stop: stop, end: end, done: make(chan struct{}), updates: rs.Updates}
 	rs.runs[p.Key] = r
-	go r.run(ctx, rs.Dir, rs.Agent, p)
+	go func() {
+		defer close(r.done)
+		r.run(life, work, rs.Dir, rs.Agent, p)
+		r.mu.Lock()
+		if r.finished.IsZero() {
+			r.finished = time.Now() // ended early; this also stops the heartbeat
+		}
+		r.mu.Unlock()
+	}()
 	go r.heartbeat()
 	return r
 }
@@ -260,8 +277,11 @@ func (rs *Runs) Close() {
 	}
 }
 
+// close ends the run and waits for it before removing the worktree, so a
+// worktree still being created is removed too, not left behind.
 func (r *Run) close() {
-	r.cancel()
+	r.end()
+	<-r.done
 	r.mu.Lock()
 	cleanup := r.cleanup
 	r.cleanup = nil
@@ -271,7 +291,7 @@ func (r *Run) close() {
 	}
 }
 
-func (r *Run) run(ctx context.Context, dir, agent string, p prognosis.Prognosis) {
+func (r *Run) run(life, ctx context.Context, dir, agent string, p prognosis.Prognosis) {
 	repo, err := gitx.Open(dir)
 	if err != nil {
 		r.fail(fmt.Errorf("not a git repository: %w", err))
@@ -289,6 +309,9 @@ func (r *Run) run(ctx context.Context, dir, agent string, p prognosis.Prognosis)
 		return
 	}
 	r.set(func() { r.cleanup = cleanup })
+	if life.Err() != nil {
+		return
+	}
 	abs, _ := filepath.Abs(dir)
 	rel, err := filepath.Rel(repo.Dir, abs)
 	if err != nil {
@@ -296,7 +319,7 @@ func (r *Run) run(ctx context.Context, dir, agent string, p prognosis.Prognosis)
 	}
 	mod := filepath.Join(wt, rel)
 	check := checkOf(wt, mod)
-	r.set(func() { r.check, r.wt, r.mod = check, wt, mod })
+	r.set(func() { r.check, r.wt, r.mod, r.tree = check, wt, mod, newTree(wt, mod) })
 
 	r.note("Analysing the starting point and running " + check.Name + " on it.")
 	before, err := analyse(ctx, mod, check)
@@ -319,7 +342,10 @@ func (r *Run) run(ctx context.Context, dir, agent string, p prognosis.Prognosis)
 		r.note("Analysing the result and running " + check.Name + ".")
 	}
 
-	after, err := analyse(context.Background(), mod, check)
+	if life.Err() != nil {
+		return
+	}
+	after, err := analyse(life, mod, check)
 	if err != nil {
 		r.fail(fmt.Errorf("the edited code did not load: %w", err))
 		return
@@ -397,6 +423,10 @@ func (r *Run) read(out io.Reader) {
 				st := *e.step
 				st.Start, st.End = at, at
 				st.Path, st.File = r.place(st.Path)
+				if st.Command != "" {
+					st.Reads = r.tree.named(st.Command)
+					st.Kind = shellKind(st.Command, st.Reads)
+				}
 				r.set(func() {
 					// A thought lasts until the next step begins.
 					if n := len(r.steps); n > 0 && r.steps[n-1].Kind == Think {
@@ -406,10 +436,15 @@ func (r *Run) read(out io.Reader) {
 				})
 			case e.result != nil:
 				res := *e.result
+				changes := r.tree.changes()
 				r.set(func() {
 					for i := len(r.steps) - 1; i >= 0; i-- {
 						if r.steps[i].ID == res.id {
-							r.steps[i].End, r.steps[i].Output, r.steps[i].Failed = at, res.output, res.failed
+							st := &r.steps[i]
+							st.End, st.Output, st.Failed, st.Changes = at, res.output, res.failed, changes
+							if len(changes) > 0 && st.Kind != Edit {
+								st.Kind = Edit
+							}
 							break
 						}
 					}
@@ -548,7 +583,7 @@ func toolStep(id, name string, input json.RawMessage) *Step {
 		} `json:"edits"`
 	}
 	_ = json.Unmarshal(input, &in)
-	st := &Step{ID: id, Tool: name, Kind: kinds[name], Path: cmp.Or(in.FilePath, in.NotebookPath)}
+	st := &Step{ID: id, Tool: name, Kind: kinds[name], Path: cmp.Or(in.FilePath, in.NotebookPath), Command: in.Command}
 	if st.Kind == "" {
 		st.Kind = Other
 	}
@@ -590,7 +625,17 @@ func resultText(raw json.RawMessage) string {
 	return b.String()
 }
 
-func firstLine(s string) string { return strings.TrimSpace(strings.SplitN(s, "\n", 2)[0]) }
+// firstLine is a text's first line, cut to a title's length at a word.
+func firstLine(s string) string {
+	l := strings.TrimSpace(strings.SplitN(s, "\n", 2)[0])
+	if len(l) <= 100 {
+		return l
+	}
+	if i := strings.LastIndexByte(l[:100], ' '); i > 60 {
+		return l[:i] + " …"
+	}
+	return l[:100] + "…"
+}
 
 // clip keeps the head of a text, or its tail for output, where a failure
 // usually shows last.

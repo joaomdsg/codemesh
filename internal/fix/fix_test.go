@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-via/via/topic"
+	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stretchr/testify/assert"
@@ -20,7 +21,7 @@ func TestParse_turnsClaudesStreamIntoSteps(t *testing.T) {
 	assert.Equal(t, Step{ID: "t1", Kind: Edit, Tool: "Edit", Title: "Edit a.go", Path: "/wt/m/a.go", Old: "f(a, b)", New: "f(p)"}, *thought[1].step)
 
 	run := parse([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"go test ./...\necho done"}}]}}`))
-	assert.Equal(t, Step{ID: "t2", Kind: Exec, Tool: "Bash", Title: "Bash go test ./..."}, *run[0].step)
+	assert.Equal(t, Step{ID: "t2", Kind: Exec, Tool: "Bash", Title: "Bash go test ./...", Command: "go test ./...\necho done"}, *run[0].step)
 
 	res := parse([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"FAIL a"}],"is_error":true}]}}`))
 	require.Len(t, res, 1)
@@ -62,4 +63,30 @@ func TestCheckOf_prefersTheReposOwnGate(t *testing.T) {
 	c := checkOf(root, filepath.Join(root, "sub"))
 	assert.Equal(t, "./ci.sh", c.Name)
 	assert.Equal(t, root, c.Dir, "a repo's gate runs from its root, not the module's")
+}
+
+func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
+	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n\nfunc A() int {\n\treturn 1\n}\n"}, nil)
+	tr := newTree(wt, wt)
+	assert.Empty(t, tr.changes(), "a clean tree changed nothing")
+
+	write := func(s string) { require.NoError(t, os.WriteFile(filepath.Join(wt, "sub/a.go"), []byte(s), 0o644)) }
+	write("package sub\n\nfunc A() int {\n\treturn 2\n}\n")
+	cs := tr.changes()
+	require.Len(t, cs, 1)
+	assert.Equal(t, Change{Path: "sub/a.go", File: "sub/a.go", Start: 2, Old: "\nfunc A() int {\n\treturn 1\n}\n", New: "\nfunc A() int {\n\treturn 2\n}\n"}, cs[0])
+	assert.Empty(t, tr.changes(), "the same edit is not reported twice")
+
+	write("package sub\n\nfunc A() int {\n\treturn 1\n}\n")
+	assert.Len(t, tr.changes(), 1, "putting the file back is a change too")
+}
+
+func TestTree_namesTheModuleFilesAShellCommandReads(t *testing.T) {
+	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n", "b.go": "package m\n"}, nil)
+	tr := newTree(wt, wt)
+	reads := tr.named(`sed -n 1,5p sub/a.go && cat "b.go" missing.go | head`)
+	assert.Equal(t, []string{"sub/a.go", "b.go"}, reads)
+	assert.Equal(t, Read, shellKind("sed -n 1,5p sub/a.go", reads))
+	assert.Equal(t, Search, shellKind(`grep -rn "A" .`, nil))
+	assert.Equal(t, Exec, shellKind("go test ./...", nil))
 }

@@ -49,17 +49,27 @@ type replay struct {
 }
 
 type replayStep struct {
-	Kind   string `json:"k"`
-	Title  string `json:"title"`
-	Path   string `json:"path,omitempty"`
-	File   string `json:"file,omitempty"`
-	Text   string `json:"text,omitempty"`
-	Old    string `json:"old,omitempty"`
-	New    string `json:"new,omitempty"`
-	Out    string `json:"out,omitempty"`
-	Failed bool   `json:"fail,omitempty"`
-	T0     int64  `json:"t0"`
-	T1     int64  `json:"t1"`
+	Kind   string         `json:"k"`
+	Title  string         `json:"title"`
+	Path   string         `json:"path,omitempty"`
+	File   string         `json:"file,omitempty"`
+	Text   string         `json:"text,omitempty"`
+	Old    string         `json:"old,omitempty"`
+	New    string         `json:"new,omitempty"`
+	Out    string         `json:"out,omitempty"`
+	Failed bool           `json:"fail,omitempty"`
+	T0     int64          `json:"t0"`
+	T1     int64          `json:"t1"`
+	Reads  []string       `json:"reads,omitempty"`
+	Diffs  []replayChange `json:"diffs,omitempty"`
+}
+
+type replayChange struct {
+	Path  string `json:"path"`
+	File  string `json:"file,omitempty"`
+	Start int    `json:"at"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
 }
 
 func replayOf(a *live.Analysis, s fix.Snapshot) replay {
@@ -72,8 +82,12 @@ func replayOf(a *live.Analysis, s fix.Snapshot) replay {
 	out := replay{Map: diagOf(base, nil, ""), Steps: []replayStep{}, Now: s.Took.Milliseconds(),
 		Live: s.State == fix.Preparing || s.State == fix.Working || s.State == fix.Checking}
 	for _, st := range s.Steps {
-		out.Steps = append(out.Steps, replayStep{Kind: st.Kind, Title: st.Title, Path: st.Path, File: st.File, Text: st.Text,
-			Old: st.Old, New: st.New, Out: st.Output, Failed: st.Failed, T0: st.Start.Milliseconds(), T1: st.End.Milliseconds()})
+		rs := replayStep{Kind: st.Kind, Title: st.Title, Path: st.Path, File: st.File, Text: st.Text,
+			Old: st.Old, New: st.New, Out: st.Output, Failed: st.Failed, T0: st.Start.Milliseconds(), T1: st.End.Milliseconds(), Reads: st.Reads}
+		for _, c := range st.Changes {
+			rs.Diffs = append(rs.Diffs, replayChange{Path: c.Path, File: c.File, Start: c.Start, Old: c.Old, New: c.New})
+		}
+		out.Steps = append(out.Steps, rs)
 	}
 	return out
 }
@@ -436,8 +450,10 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		),
 		delta2("Fixed", "gone", fixed),
 		delta2("New", "new", added),
+		smellDelta("New smells", "new", s.Review.Introduced),
+		smellDelta("Smells fixed", "gone", s.Review.Fixed),
 		via.When(s.Summary != "", func() h.H {
-			return group([]h.H{h.H3(h.Str("Claude's summary")), h.P(h.Class("dx-claude"), h.Str(s.Summary))})
+			return group([]h.H{h.H3(h.Str("Claude's summary")), h.Div(h.Class("dx-claude"), markdown(s.Summary))})
 		}),
 		via.When(!s.After.CheckOK, func() h.H {
 			return h.Details(h.Class("dx-fold"), h.Summary(h.Str(s.Check.Name+" output")), h.Pre(h.Class("code dx-out"), h.Str(s.After.Output)))
@@ -485,6 +501,73 @@ func delta2(title, cls string, gs []prognosis.Prognosis) h.H {
 		rows = append(rows, h.Li(h.Class("finding "+cls), levelMark(g.Level), h.Span(h.Class("rule"), h.Str(g.Title)), h.Span(h.Class("detail"), h.Str(g.Name))))
 	}
 	return group([]h.H{h.H3(h.Str(fmt.Sprintf("%s · %d", title, len(gs)))), h.Ul(append([]h.H{h.Class("findings")}, rows...)...)})
+}
+
+func smellDelta(title, cls string, fs []smell.Finding) h.H {
+	if len(fs) == 0 {
+		return nil
+	}
+	var rows []h.H
+	for _, f := range fs {
+		rows = append(rows, h.Li(h.Class("finding "+cls), sevMark(f.Severity), h.Span(h.Class("rule"), h.Str(ruleLabel(f.Rule))),
+			h.Span(h.Class("detail"), h.Str(f.Subject+" · "+f.Detail))))
+	}
+	return group([]h.H{h.H3(h.Str(fmt.Sprintf("%s · %d", title, len(fs)))), h.Ul(append([]h.H{h.Class("findings")}, rows...)...)})
+}
+
+// markdown renders the little markdown an agent's summary uses: paragraphs,
+// "- " bullets, **bold** and `code`. Anything else stays as text.
+func markdown(text string) h.H {
+	var out, items []h.H
+	var para []string
+	flush := func() {
+		if len(para) > 0 {
+			out = append(out, h.P(inline(strings.Join(para, " "))))
+			para = nil
+		}
+		if len(items) > 0 {
+			out = append(out, h.Ul(items...))
+			items = nil
+		}
+	}
+	for _, l := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(l)
+		switch {
+		case t == "":
+			flush()
+		case strings.HasPrefix(t, "- ") || strings.HasPrefix(t, "* "):
+			if len(para) > 0 {
+				out = append(out, h.P(inline(strings.Join(para, " "))))
+				para = nil
+			}
+			items = append(items, h.Li(inline(t[2:])))
+		default:
+			if len(items) > 0 {
+				flush()
+			}
+			para = append(para, t)
+		}
+	}
+	flush()
+	return group(out)
+}
+
+func inline(s string) h.H {
+	var out []h.H
+	for i, part := range strings.Split(s, "`") {
+		if i%2 == 1 {
+			out = append(out, h.Code(h.Str(part)))
+			continue
+		}
+		for j, b := range strings.Split(part, "**") {
+			if j%2 == 1 {
+				out = append(out, h.Strong(h.Str(b)))
+			} else if b != "" {
+				out = append(out, h.Str(b))
+			}
+		}
+	}
+	return group(out)
 }
 
 func changeCard(u *review.Unit) h.H {

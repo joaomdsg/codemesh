@@ -389,22 +389,40 @@
       });
   }
 
+  // A step that changed files is titled by them, not by the command that
+  // made the change: the diff is what the reader came for.
+  const titleOf = (st) => {
+    const ds = st.diffs || [];
+    if (!ds.length) return st.title;
+    const names = [...new Set(ds.map((d) => d.path.split("/").pop()))];
+    return "Edit " + names.join(", ");
+  };
+
   function card(c, st, i) {
     const h = c.append("header");
     h.append("span").attr("class", "rp-no").text(i + 1);
     h.append("span").attr("class", "rp-kind").text(st.k);
-    h.append("span").attr("class", "rp-title").text(st.title);
+    h.append("span").attr("class", "rp-title").attr("title", titleOf(st)).text(titleOf(st));
     h.append("span").attr("class", "rp-time").text(clock(st.t0) + (span(st) >= 1000 ? " · " + clock(span(st)) : ""));
     if (st.path && st.k !== "edit") c.append("div").attr("class", "rp-path").text(st.path);
-    if (st.k === "think") c.append("p").attr("class", "rp-text").text(st.text);
-    if (st.k === "edit") {
+    if (st.reads && st.reads.length) c.append("div").attr("class", "rp-path").text("reads " + st.reads.join(", "));
+    // A thought whose title already says it all needs no body.
+    if (st.k === "think" && st.text !== st.title) c.append("p").attr("class", "rp-text").text(st.text);
+    for (const ch of st.diffs || []) {
+      c.append("div").attr("class", "rp-path").text(ch.path + ":" + ch.at + (ch.file ? "" : " · outside the module"));
+      const pre = c.append("pre").attr("class", "rp-diff");
+      for (const [op, line] of diffLines(ch.old || "", ch.new || "")) {
+        pre.append("span").attr("class", "rp-dl rp-dl-" + (op === "+" ? "add" : op === "-" ? "del" : "ctx")).text(op + " " + line + "\n");
+      }
+    }
+    if (st.k === "edit" && !(st.diffs && st.diffs.length) && (st.old || st.new)) {
       c.append("div").attr("class", "rp-path").text(st.path + (st.file ? "" : " · outside the module"));
       const pre = c.append("pre").attr("class", "rp-diff");
       for (const [op, line] of diffLines(st.old || "", st.new || "")) {
         pre.append("span").attr("class", "rp-dl rp-dl-" + (op === "+" ? "add" : op === "-" ? "del" : "ctx")).text(op + " " + line + "\n");
       }
     }
-    if (st.out) {
+    if (st.out && !(st.diffs && st.diffs.length)) {
       const det = c.append("details").attr("class", "rp-out").property("open", st.k === "run" && st.fail);
       det.append("summary").text(st.fail ? "Output · failed" : "Output");
       det.append("pre").text(st.out);
@@ -452,13 +470,19 @@
   function footprint(s) {
     const steps = s.r.steps.slice(0, s.i + 1);
     const last = new Map(), edits = new Map(), outside = new Set();
+    // A step touches the file its tool named, the files its command names,
+    // and the files the tree shows it changed.
+    const touch = (j, file, path, edit) => {
+      if (!file || !s.fileTile.has(file)) { if (edit && (file || path)) outside.add(file || path); return; }
+      const prev = last.get(file) || { j: -1, edit: false };
+      last.set(file, { j, edit: prev.edit || edit });
+      if (edit) edits.set(file, (edits.get(file) || 0) + 1);
+    };
     steps.forEach((st, j) => {
-      if (!st.file && st.k === "edit" && st.path) outside.add(st.path);
-      if (!st.file) return;
-      if (!s.fileTile.has(st.file)) { if (st.k === "edit") outside.add(st.file); return; }
-      const prev = last.get(st.file) || { j: -1, edit: false };
-      last.set(st.file, { j, edit: prev.edit || st.k === "edit" });
-      if (st.k === "edit") edits.set(st.file, (edits.get(st.file) || 0) + 1);
+      const diffs = st.diffs || [];
+      if (st.file || st.path) touch(j, st.file, st.path, st.k === "edit" && !diffs.length);
+      for (const f of st.reads || []) touch(j, f, f, false);
+      for (const ch of diffs) touch(j, ch.file, ch.path, true);
     });
     const tone = new Map();
     for (const [f, v] of last) {
@@ -472,7 +496,8 @@
     const counted = [...edits].map(([f, n]) => [s.d.tiles[s.fileTile.get(f)], n]);
     s.counts.selectAll("text").data(counted).join("text").attr("class", "rp-count").text(([, n]) => n + "×");
     const cur = s.r.steps[s.i];
-    const ct = cur && cur.file && s.fileTile.has(cur.file) ? s.d.tiles[s.fileTile.get(cur.file)] : null;
+    const curFile = cur && [cur.file, ...((cur.diffs || []).map((c) => c.file)), ...(cur.reads || [])].find((f) => f && s.fileTile.has(f));
+    const ct = curFile ? s.d.tiles[s.fileTile.get(curFile)] : null;
     s.cur.attr("display", ct ? null : "none");
     if (ct) s.cur.datum(ct).attr("x", ct[X]).attr("y", ct[Y]).attr("width", ct[W]).attr("height", ct[H]).raise();
     s.newFiles.text(outside.size ? "Outside the map: " + [...outside].join(", ") : "");

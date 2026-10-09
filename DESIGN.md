@@ -205,7 +205,12 @@ matters, what to do and how to check it.
    whatever else a gate runs. Claude is told to leave it passing, and
    codemesh runs it before and after.
 7. **The replay** shows what Claude did over time. Each thought, read,
-   search, edit and command is a step, timed as the stream arrives. The map
+   search, edit and command is a step, timed as the stream arrives. Claude
+   reads and edits through the shell as often as through its own tools, so
+   after each step codemesh compares the worktree with git: a step that
+   changed files is an edit, shown as its diffs, not its command. A shell
+   command reads the module files it names as arguments; a path built at
+   run time is missed. The map
    colours the files touched up to the playhead: read in blue, edited in
    green with an edit count, older touches fainter, the current file
    outlined. Swimlanes, one per kind of step, have a brush to zoom into a
