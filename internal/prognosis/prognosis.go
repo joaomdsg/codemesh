@@ -62,6 +62,8 @@ const (
 	dominantShare = 50   // percent of the module's lines in one package
 	dominantLines = 1000 // smaller modules may well be one package
 	clusterMin    = 3    // many-params functions in one package that read as one problem
+	wideShare     = 60   // percent of a package's declarations it exports
+	wideMin       = 8    // declarations below which a package's surface is too small to judge
 	// hotLimit is the complexity past which a busy function is worth fixing
 	// soon rather than when next touched: halfway to the high limit.
 	hotLimit   = (smell.ComplexFuncLimit + smell.ComplexFuncHighLimit) / 2
@@ -288,6 +290,7 @@ func structure(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 			Related: rel,
 		})
 	}
+	out = append(out, wide(s)...)
 	for _, f := range fs {
 		if f.Rule != smell.UnstableDep {
 			continue
@@ -305,6 +308,66 @@ func structure(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 			Check:   "The import is gone, or the imported package is now the more stable of the two.",
 			Facts:   []Fact{{"instability of the imported package, %", f.Measure, 0}, {"instability of this package, %", f.Limit, 0}},
 			Related: []Ref{{ID: f.Target, Name: pkgShort(s, f.Target), Why: "the less stable package it imports"}},
+		})
+	}
+	return out
+}
+
+// wide flags packages that export most of what they hold. Only packages
+// other packages of the module import are judged: a package nothing imports
+// is a command or the module's public face, where exports serve outsiders.
+func wide(s *code.Snapshot) []Prognosis {
+	var out []Prognosis
+	for _, p := range s.Packages {
+		if len(s.ImportedBy(p.Path)) == 0 {
+			continue
+		}
+		var all, exp []*code.Decl
+		for _, f := range p.Files {
+			if f.Test {
+				continue
+			}
+			for _, d := range f.Decls {
+				all = append(all, d)
+				if d.Exported {
+					exp = append(exp, d)
+				}
+			}
+		}
+		if len(all) < wideMin || len(exp)*100 <= len(all)*wideShare {
+			continue
+		}
+		outside := map[*code.Decl]int{}
+		for _, d := range exp {
+			for _, c := range prod(s, d.Callers) {
+				if c.Package != p.Path {
+					outside[d]++
+				}
+			}
+		}
+		slices.SortStableFunc(exp, func(a, b *code.Decl) int { return cmp.Compare(outside[a], outside[b]) })
+		var rel []Ref
+		for _, d := range exp[:min(len(exp), maxRelated)] {
+			why := "no caller in other packages of the module"
+			if n := outside[d]; n > 0 {
+				why = "used " + plural(n, "time") + " from other packages"
+			}
+			rel = append(rel, Ref{ID: d.ID, Name: d.Name, Why: why})
+		}
+		share := len(exp) * 100 / len(all)
+		out = append(out, Prognosis{
+			Key: "wide:" + p.Path, Lens: Structure, Level: 1, Target: p.Path, Name: pkgShort(s, p.Path),
+			Title:   "Exports most of what it holds",
+			Summary: fmt.Sprintf("%s exports %d of its %d declarations. Other packages can come to depend on any of them.", pkgShort(s, p.Path), len(exp), len(all)),
+			Why:     "What a package exports is a promise: other packages may use it, so changing it means changing them too. A package that exports most of what it holds makes nearly every change a public one. Exporting only what callers need leaves the rest free to change.",
+			Do: []string{
+				"Find the exported names no other package uses; the list below starts with them.",
+				"Unexport them (lowercase the first letter) and build.",
+				"If callers need many small pieces, give them one entry point and keep the pieces inside.",
+			},
+			Check:   fmt.Sprintf("The package exports at most %d%% of its declarations, and other packages use each name it exports.", wideShare),
+			Facts:   []Fact{{"declarations exported, %", share, wideShare}, {"exported", len(exp), 0}, {"declarations", len(all), 0}},
+			Related: rel,
 		})
 	}
 	return out

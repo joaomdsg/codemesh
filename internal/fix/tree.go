@@ -1,11 +1,14 @@
 package fix
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 )
 
 // Change is one file a step left different, as the lines it replaced and
@@ -72,29 +75,55 @@ func (t *tree) diff(p string) []Change {
 		return nil
 	}
 	t.seen[p] = after
-	start, old, new := hunk(before, after)
-	c := Change{Path: p, Start: start, Old: clip(old, false), New: clip(new, false)}
+	file := ""
 	if rel, err := filepath.Rel(t.mod, filepath.Join(t.wt, p)); err == nil && !strings.HasPrefix(rel, "..") {
-		c.File = filepath.ToSlash(rel)
+		file = filepath.ToSlash(rel)
 	}
-	return []Change{c}
+	var cs []Change
+	for _, h := range hunks(before, after) {
+		cs = append(cs, Change{Path: p, File: file, Start: h.start, Old: clip(h.old, false), New: clip(h.new, false)})
+	}
+	return cs
 }
 
-// hunk trims the lines two versions share at both ends, keeping two of them
-// as context, and returns the first kept line's number with what is left.
-func hunk(a, b string) (start int, old, new string) {
-	A, B := strings.Split(a, "\n"), strings.Split(b, "\n")
-	p := 0
-	for p < len(A) && p < len(B) && A[p] == B[p] {
-		p++
+type hunk struct {
+	start    int // first line of the old side shown
+	old, new string
+}
+
+// hunks diffs two versions of a file with git, one hunk per separate change
+// with two lines of context: one region from the first change to the last
+// would bury two small edits far apart in everything between them.
+func hunks(a, b string) []hunk {
+	dir, err := os.MkdirTemp("", "codemesh-diff-")
+	if err != nil {
+		return nil
 	}
-	q := 0
-	for q < len(A)-p && q < len(B)-p && A[len(A)-1-q] == B[len(B)-1-q] {
-		q++
+	defer os.RemoveAll(dir)
+	old, new := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	if os.WriteFile(old, []byte(a), 0o600) != nil || os.WriteFile(new, []byte(b), 0o600) != nil {
+		return nil
 	}
-	from := max(0, p-2)
-	q = max(0, q-2)
-	return from + 1, strings.Join(A[from:len(A)-q], "\n"), strings.Join(B[from:len(B)-q], "\n")
+	// --no-index exits 1 when the files differ; the diff is still on stdout.
+	out, _ := exec.Command("git", "diff", "--no-index", "--no-color", "-U2", old, new).Output()
+	files, _, err := gitdiff.Parse(bytes.NewReader(out))
+	if err != nil || len(files) == 0 {
+		return nil
+	}
+	var hs []hunk
+	for _, f := range files[0].TextFragments {
+		var o, n strings.Builder
+		for _, l := range f.Lines {
+			if l.Op != gitdiff.OpAdd {
+				o.WriteString(l.Line)
+			}
+			if l.Op != gitdiff.OpDelete {
+				n.WriteString(l.Line)
+			}
+		}
+		hs = append(hs, hunk{start: int(f.OldPosition), old: o.String(), new: n.String()})
+	}
+	return hs
 }
 
 // named lists the module files a shell command names, so a `cat` or `sed -n`

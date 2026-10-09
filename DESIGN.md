@@ -179,17 +179,22 @@ matters, what to do and how to check it.
    reader can click through to. There are four lenses:
    - Health: complex functions, more urgent when their file keeps changing.
    - Reach: declarations 50 or more places use.
-   - Structure: a package holding over half the code, and imports of less
-     stable packages.
+   - Structure: a package holding over half the code, imports of less
+     stable packages, and a package other packages import that exports
+     over 60% of its declarations (from 8 up; a package nothing imports is a
+     command or the module's public face, where exports serve outsiders).
    - Tests & smells: complex code no test calls, untested packages, long
      parameter lists (grouped when three or more share a package) and large
      files.
 2. **Urgency** has three levels: fix first, fix soon, when convenient. Each
    level differs in size and fill as well as colour.
-3. **The map** colours tiles by the lens. Each package and file carries a
+3. **The map** colours tiles by the lens, with a ramp under it naming what
+   its coldest and hottest colours mean. Each package and file carries a
    tab with the hottest heat inside it, so a small hot function shows from
    the module view. Hovering a marker shows the one-sentence prognosis.
-   Clicking a tile rings its callers up to three hops.
+   Clicking a tile rings its callers up to three hops. Every map marks an
+   exported declaration with a strip along its top edge and a bold label:
+   it is a promise other packages may rely on.
 4. **The prognosis** opens across the view. The map shrinks beside it,
    framed on the place, with the related places listed below it and why
    each matters.
@@ -197,7 +202,8 @@ matters, what to do and how to check it.
    throwaway worktree of the last commit (`internal/fix`); `-agent` names
    another command called the same way. It may run any command there, so
    the only guards are that `git push` is denied, the worktree is removed on
-   Discard or shutdown, and nothing is written back. Uncommitted edits are
+   Discard or shutdown, and nothing is written back unless the reader opens
+   a pull request (9). Uncommitted edits are
    not in the worktree.
    The prompt asks for the whole fix: restructuring, moving code to other
    or new files and changing unexported code are in scope; exported names,
@@ -206,6 +212,12 @@ matters, what to do and how to check it.
    `codemesh prognoses <worktree>` no longer lists the problem and the
    check passes: judged by its own reading, an agent stops at the first
    improvement.
+   The run's head names the model, the models of any helper agents, the
+   API calls, the tokens and Claude Code's version, with a table per model
+   in a fold. Its cost meter moves with each reply: an estimate, marked ≈,
+   from the reply's tokens at list price (`internal/fix/usage.go`, which a
+   price change must update), until Claude's own tally replaces it at the
+   end.
 6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
    target in a Makefile or justfile, else `go build ./... && go test ./...`
    in the module. `go test ./...` alone stops at nested modules and skips
@@ -215,18 +227,34 @@ matters, what to do and how to check it.
    search, edit and command is a step, timed as the stream arrives. Claude
    reads and edits through the shell as often as through its own tools, so
    after each step codemesh compares the worktree with git: a step that
-   changed files is an edit, shown as its diffs, not its command. A shell
-   command reads the module files it names as arguments; a path built at
-   run time is missed. The map
-   colours the files touched up to the playhead: read in blue, edited in
-   green with an edit count, older touches fainter, the current file
-   outlined. Swimlanes, one per kind of step, have a brush to zoom into a
+   changed files is an edit, shown as its diffs (one per separate change),
+   not its command. A shell command reads the module files it names as
+   arguments; a path built at run time is missed. The map colours what was
+   touched up to the playhead: files read in blue; in an edited file each
+   declaration's green deepens with the lines changed in it, and the rest
+   of the file keeps a faint tint; older touches fade, and the file edited
+   by the current step is outlined, with an edit count. A legend names each colour. The map is the
+   tree the run started from, then the tree it left once that is analysed,
+   so files Claude created get tiles at the end; until then their edits are
+   listed beside the map. Swimlanes, one per kind of step, have a brush to zoom into a
    stretch. A list shows each step's text, diff or output. Scrubbing either
    one, scrolling the list or pressing ← and → moves all three. While a run
    is live the playhead follows the newest step until the reader moves it.
 8. **The result** shows whether the check passed before and after, the map
    before and after with the changed code outlined, the prognoses fixed and
-   new, and the code changes ordered by review risk.
+   new, and the code changes ordered by review risk. The two maps share one
+   coordinate space, so panning or zooming either moves both; where the
+   change added or removed declarations, the tiles there shift. An exported
+   declaration the change re-signed (after) or removed (before) is outlined
+   in red: its callers may break.
+9. **Open a draft PR** is offered once Claude finished and the check passes
+   on the result. codemesh folds the change since the starting commit into
+   one commit titled after the prognosis, pushes it to origin as
+   `codemesh/<rule>-<place>-<time>` and runs `gh pr create --draft` against the
+   branch the repository was on when the run started. It refuses when that
+   was a detached HEAD, or when origin's branch lacks the starting commit, so
+   the PR holds only the change. Git never prompts; the commit carries the
+   repository's own identity. The local branch goes with the worktree.
 
 ## Live
 

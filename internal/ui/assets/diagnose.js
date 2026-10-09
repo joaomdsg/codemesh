@@ -7,12 +7,12 @@
 // outlines its related places; "compare" frames it and outlines changed code.
 (() => {
   const cm = (window.codemesh = window.codemesh || {});
-  const K = 0, X = 1, Y = 2, W = 3, H = 4, NAME = 5, ID = 8;
+  const K = 0, X = 1, Y = 2, W = 3, H = 4, NAME = 5, ID = 8, EXP = 9;
   const levelWord = { 3: "Fix first", 2: "Fix soon", 1: "When convenient" };
 
   cm.diag = (el, d, opts) => {
     if (!window.d3 || !d || !d.tiles) return;
-    const sig = [d.at, d.lens, d.focus, (d.ring || []).join("|")].join("/");
+    const sig = [d.at, d.lens, d.focus, (d.ring || []).join("|"), (d.broke || []).join("|")].join("/");
     if (el.__dx && el.__dx.sig === sig) return;
     el.replaceChildren();
     el.__dx = draw(el, d, opts.mode || "full");
@@ -52,13 +52,14 @@
       .attr("x", (t) => t[X]).attr("y", (t) => t[Y])
       .attr("width", (t) => t[W]).attr("height", (t) => t[H]);
     s.rects.append("title").text((t) => t[NAME]);
+    s.bars = bars(g, d.tiles);
 
     const framed = d.tiles.map((t, i) => [t, i]).filter(([t, i]) => t[K] !== "d" && worst[i] >= 3);
     s.tabs = g.selectAll("rect.dx-tab").data(framed).join("rect")
       .attr("class", ([, i]) => "dx-tab h" + worst[i]);
 
-    s.labels = g.selectAll("text").data(d.tiles.filter((t) => t[K] !== "d" || mode === "full")).join("text")
-      .attr("class", (t) => "atlas-label l-" + t[K])
+    s.labels = g.selectAll("text").data(d.tiles).join("text")
+      .attr("class", labelClass)
       .text((t) => t[NAME]);
 
     const marks = d.marks.filter((m) => m.lens === d.lens);
@@ -100,11 +101,29 @@
 
     const ringSet = new Set((d.ring || []).map((id) => byId.get(id)).filter((i) => i !== undefined));
     s.rects.classed(mode === "compare" ? "chg" : "rel", (t, i) => ringSet.has(i));
+    const broke = new Set((d.broke || []).map((id) => byId.get(id)));
+    s.rects.classed("broke", (t, i) => broke.has(i));
+    // The red outline already says exported; a strip would hide its top edge.
+    const unbarred = (t) => broke.has(byId.get(t[ID]));
+    s.bars.filter(unbarred).remove();
+    s.bars = s.bars.filter((t) => !unbarred(t));
     const focus = byId.get(d.focus);
     s.rects.classed("focus", (t, i) => i === focus);
+    // A stroke is centred on the edge, so tiles and strips drawn later would
+    // cover half of an outline: outlines are drawn again, unfilled, above them.
+    const lined = s.rects.filter((t, i) => broke.has(i) || ringSet.has(i) || i === focus).nodes();
+    g.insert("g", "rect.dx-tab, text").attr("class", "dx-lines").selectAll("rect")
+      .data(lined).join("rect")
+      .attr("class", (n) => n.getAttribute("class"))
+      .attr("x", (n) => n.getAttribute("x")).attr("y", (n) => n.getAttribute("y"))
+      .attr("width", (n) => n.getAttribute("width")).attr("height", (n) => n.getAttribute("height"));
 
     s.zoom = d3.zoom().scaleExtent([1, 80]).translateExtent([[0, 0], [d.w, d.h]])
-      .on("zoom", (e) => { g.attr("transform", e.transform); s.k = e.transform.k; scale(s, d); });
+      .on("zoom", (e) => {
+        g.attr("transform", e.transform); s.k = e.transform.k; scale(s, d);
+        if (mode === "compare" && e.sourceEvent) follow(s, e.transform);
+      });
+    if (mode === "compare") compared.add(s);
     svg.call(s.zoom).on("dblclick.zoom", null);
     svg.on("dblclick", () => svg.transition().duration(300).call(s.zoom.transform, d3.zoomIdentity));
     scale(s, d);
@@ -121,6 +140,17 @@
       });
     }
     return s;
+  }
+
+  // The before and after maps share one coordinate space, so a pan or zoom on
+  // either is applied to the other: the reader compares the same place. Where
+  // the change added or removed declarations, the tiles there shift.
+  const compared = new Set();
+  function follow(from, t) {
+    for (const o of compared) {
+      if (!o.svg.node().isConnected) { compared.delete(o); continue; }
+      if (o !== from) o.svg.call(o.zoom.transform, t);
+    }
   }
 
   // ring marks the selection's callers by hop and fades the rest.
@@ -154,12 +184,34 @@
     s.tabs
       .attr("x", ([t]) => t[X] + t[W] - u(14)).attr("y", ([t]) => t[Y] + u(2))
       .attr("width", u(10)).attr("height", u(6));
-    const px = u(11);
+    placeBars(s.bars, u);
+    labels(s.labels, ppu);
+  }
+
+  // bars marks exported declarations with a strip along their top edge.
+  function bars(g, tiles) {
+    return g.selectAll("rect.exp-bar").data(tiles.filter((t) => t[EXP])).join("rect").attr("class", "exp-bar");
+  }
+
+  function placeBars(sel, u) {
+    sel.attr("x", (t) => t[X]).attr("y", (t) => t[Y]).attr("width", (t) => t[W])
+      .attr("height", (t) => Math.min(u(3), t[H] / 3));
+  }
+
+  function labelClass(t) {
+    return "atlas-label l-" + t[K] + (t[EXP] ? " exp" : "");
+  }
+
+  // labels sizes text to 11 screen pixels and shows a label only when it fits
+  // its tile on screen and clears the package and file labels around it.
+  // Tiles come in layout order, each frame before what it holds.
+  function labels(sel, ppu) {
+    const u = (px) => px / ppu, px = u(11);
     let pkg = null, file = null;
     const box = (t) => ({ x0: t[X], y0: t[Y], x1: t[X] + u(t[NAME].length * 7 + 6), y1: t[Y] + px + u(5) });
     const clear = (b, o) => !o || b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0;
     const shown = new Map();
-    s.labels.each((t) => {
+    sel.each((t) => {
       const fits = t[W] * ppu > t[NAME].length * 7 + 22 && t[H] * ppu > 16;
       const b = box(t);
       const ok = fits && clear(b, pkg) && (t[K] === "p" || clear(b, file));
@@ -167,7 +219,7 @@
       if (t[K] === "f") file = ok ? b : null;
       shown.set(t, ok);
     });
-    s.labels.attr("font-size", px).attr("x", (t) => t[X] + u(3)).attr("y", (t) => t[Y] + px + u(2))
+    sel.attr("font-size", px).attr("x", (t) => t[X] + u(3)).attr("y", (t) => t[Y] + px + u(2))
       .attr("display", (t) => (shown.get(t) ? null : "none"));
   }
 
@@ -199,9 +251,12 @@
   cm.replay = (el, r) => {
     if (!window.d3 || !r || !r.map || !r.map.tiles) return;
     let s = el.__rp;
-    if (!s || s.at !== r.map.at) {
+    if (!s) {
       el.replaceChildren();
       s = el.__rp = mountReplay(el, r.map);
+      s.at = r.map.at;
+    } else if (s.at !== r.map.at) {
+      drawMap(s, r.map);
       s.at = r.map.at;
     }
     s.r = r;
@@ -212,23 +267,21 @@
     show(s, "data");
   };
 
-  function mountReplay(el, d) {
-    const root = d3.select(el);
-    const top = root.append("div").attr("class", "rp-top");
-    const mapBox = top.append("div").attr("class", "rp-map atlas atlas-map");
-    const listBox = top.append("div").attr("class", "rp-list");
-    const bar = root.append("div").attr("class", "rp-bar");
-    const lanesBox = root.append("div").attr("class", "rp-lanes");
-    const s = { el, d, i: -1, follow: true, mapBox, listBox, bar, lanesBox, k: 1 };
-
-    // The map: neutral tiles, so the footprint is the only colour on it.
-    const svg = mapBox.append("svg").attr("class", "atlas-svg").attr("viewBox", `0 0 ${d.w} ${d.h}`)
+  // drawMap draws the map the footprint goes on: neutral tiles, so the
+  // footprint is the only colour on it. A redraw for a tree with new files
+  // keeps the reader's zoom.
+  function drawMap(s, d) {
+    const was = s.svg && d3.zoomTransform(s.svg.node());
+    s.mapBox.selectAll("svg").remove();
+    s.d = d;
+    const svg = s.mapBox.append("svg").attr("class", "atlas-svg").attr("viewBox", `0 0 ${d.w} ${d.h}`)
       .attr("role", "img").attr("aria-label", "Map of the module; files Claude read and edited are coloured.");
     const g = svg.append("g");
     s.rects = g.selectAll("rect").data(d.tiles).join("rect")
       .attr("class", (t) => "t-" + t[K] + (t[K] === "d" ? " h0" : ""))
       .attr("x", (t) => t[X]).attr("y", (t) => t[Y]).attr("width", (t) => t[W]).attr("height", (t) => t[H]);
     s.rects.append("title").text((t) => t[NAME]);
+    s.bars = bars(g, d.tiles);
     // Each file's declarations take its footprint colour; the file tile
     // itself sits under them.
     s.declsOf = new Map();
@@ -238,9 +291,10 @@
       else if (t[K] === "d" && file) s.declsOf.get(file).push(i);
       else if (t[K] === "p") file = null;
     });
+    s.byId = new Map(d.tiles.map((t, i) => [t[ID], i]));
     s.fileTile = new Map(d.tiles.map((t, i) => [t, i]).filter(([t]) => t[K] === "f").map(([t, i]) => [t[ID], i]));
-    s.labels = g.selectAll("text.atlas-label").data(d.tiles.filter((t) => t[K] !== "d")).join("text")
-      .attr("class", (t) => "atlas-label l-" + t[K]).text((t) => t[NAME]);
+    s.labels = g.selectAll("text.atlas-label").data(d.tiles).join("text")
+      .attr("class", labelClass).text((t) => t[NAME]);
     s.counts = g.append("g").attr("class", "rp-counts");
     s.cur = g.append("rect").attr("class", "rp-cur").attr("display", "none");
     s.svg = svg; s.g = g; s.w = d.w;
@@ -248,12 +302,36 @@
       .on("zoom", (e) => { g.attr("transform", e.transform); s.k = e.transform.k; rescale(s); });
     svg.call(s.zoom).on("dblclick.zoom", null);
     svg.on("dblclick", () => svg.transition().duration(300).call(s.zoom.transform, d3.zoomIdentity));
+    if (was) svg.call(s.zoom.transform, was);
+  }
+
+  function mountReplay(el, d) {
+    const root = d3.select(el);
+    const top = root.append("div").attr("class", "rp-top");
+    const mapBox = top.append("div").attr("class", "rp-map atlas atlas-map");
+    const listBox = top.append("div").attr("class", "rp-list");
+    const bar = root.append("div").attr("class", "rp-bar");
+    const lanesBox = root.append("div").attr("class", "rp-lanes");
+    const s = { el, d, i: -1, follow: true, mapBox, listBox, bar, lanesBox, k: 1 };
+    drawMap(s, d);
+
 
     // The bar: where the playhead is, the follow switch, and new files.
     s.where = bar.append("span").attr("class", "rp-where");
     s.followBtn = bar.append("button").attr("class", "btn rp-follow").text("Follow live")
       .on("click", () => { s.follow = true; s.i = s.r.steps.length - 1; show(s, "follow"); });
     s.newFiles = bar.append("span").attr("class", "rp-new");
+    // The footprint's legend: what each colour on this map means.
+    const key = bar.append("span").attr("class", "rp-key").attr("aria-hidden", "true");
+    const item = (cls, text) => { const i = key.append("span").attr("class", "ramp-end"); i.append("span").attr("class", "sw " + cls); i.append("span").text(text); };
+    item("sw-read", "read");
+    const ed = key.append("span").attr("class", "ramp-end");
+    ed.append("span").text("edited: 1 line");
+    const sws = ed.append("span").attr("class", "ramp-sw");
+    for (const n of [1, 2, 3, 4]) sws.append("span").attr("class", "sw sw-edit" + n);
+    ed.append("span").text("most lines");
+    item("sw-file", "rest of an edited file");
+    item("sw-cur", "this step");
 
     // Lanes and their overview.
     s.lsvg = lanesBox.append("svg").attr("class", "rp-lsvg");
@@ -409,7 +487,7 @@
     // A thought whose title already says it all needs no body.
     if (st.k === "think" && st.text !== st.title) c.append("p").attr("class", "rp-text").text(st.text);
     for (const ch of st.diffs || []) {
-      c.append("div").attr("class", "rp-path").text(ch.path + ":" + ch.at + (ch.file ? "" : " · outside the module"));
+      c.append("div").attr("class", "rp-path").text(ch.path + ":" + Math.max(1, ch.at) + (ch.file ? "" : " · outside the module"));
       const pre = c.append("pre").attr("class", "rp-diff");
       for (const [op, line] of diffLines(ch.old || "", ch.new || "")) {
         pre.append("span").attr("class", "rp-dl rp-dl-" + (op === "+" ? "add" : op === "-" ? "del" : "ctx")).text(op + " " + line + "\n");
@@ -484,14 +562,30 @@
       for (const f of st.reads || []) touch(j, f, f, false);
       for (const ch of diffs) touch(j, ch.file, ch.path, true);
     });
+    // Changed lines per declaration up to the playhead: the green deepens with
+    // them, so the parts of a file that took the work stand out from the
+    // rest of it, which keeps only a faint tint.
+    const lines = new Map(), now = new Set();
+    steps.forEach((st, j) => {
+      for (const ch of st.diffs || []) {
+        for (const [id, n] of Object.entries(ch.decls || {})) {
+          const di = s.byId.get(id);
+          if (di === undefined) continue;
+          lines.set(di, (lines.get(di) || 0) + n);
+          if (j === s.i) now.add(di);
+        }
+      }
+    });
+    const most = Math.max(1, ...lines.values());
     const tone = new Map();
     for (const [f, v] of last) {
       const age = s.i - v.j;
       const op = Math.max(0.35, 1 - age / Math.max(8, steps.length));
-      for (const di of s.declsOf.get(f) || []) tone.set(di, { cls: v.edit ? "fp-edit" : "fp-read", op });
+      for (const di of s.declsOf.get(f) || []) tone.set(di, { cls: v.edit ? "fp-file" : "fp-read", op: v.edit ? 1 : op });
     }
+    for (const [di, n] of lines) tone.set(di, { cls: "fp-edit", op: 0.3 + 0.7 * Math.log1p(n) / Math.log1p(most) });
     s.rects
-      .attr("class", (t, i) => "t-" + t[K] + (t[K] === "d" ? " " + (tone.has(i) ? tone.get(i).cls : "h0") : ""))
+      .attr("class", (t, i) => "t-" + t[K] + (t[K] === "d" ? " " + (tone.has(i) ? tone.get(i).cls : "h0") + (now.has(i) ? " fp-now" : "") : ""))
       .attr("opacity", (t, i) => (tone.has(i) ? tone.get(i).op : null));
     const counted = [...edits].map(([f, n]) => [s.d.tiles[s.fileTile.get(f)], n]);
     s.counts.selectAll("text").data(counted).join("text").attr("class", "rp-count").text(([, n]) => n + "×");
@@ -508,10 +602,9 @@
     const ppu = (s.svg.node().clientWidth || s.w) / s.w * s.k;
     const u = (px) => px / ppu;
     s.cur.attr("stroke-width", u(3));
+    placeBars(s.bars, u);
     s.counts.selectAll("text").attr("font-size", u(11))
       .attr("x", ([t]) => t[X] + t[W] - u(4)).attr("y", ([t]) => t[Y] + u(12));
-    const px = u(11);
-    s.labels.attr("font-size", px).attr("x", (t) => t[X] + u(3)).attr("y", (t) => t[Y] + px + u(2))
-      .attr("display", (t) => (t[W] * ppu > t[NAME].length * 7 + 22 && t[H] * ppu > 16 ? null : "none"));
+    labels(s.labels, ppu);
   }
 })();

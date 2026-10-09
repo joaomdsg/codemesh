@@ -7,7 +7,7 @@
 // selected tile's id, and a click opens that tile on the map page.
 (() => {
   const cm = (window.codemesh = window.codemesh || {});
-  const K = 0, X = 1, Y = 2, W = 3, H = 4, NAME = 5, UNIT = 6, HEAT = 7, ID = 8;
+  const K = 0, X = 1, Y = 2, W = 3, H = 4, NAME = 5, UNIT = 6, HEAT = 7, ID = 8, EXP = 9;
 
   cm.atlas = (el, atlas, opts) => {
     if (!window.d3 || !atlas || !atlas.tiles) return;
@@ -81,12 +81,14 @@
       });
     }
     s.decls = s.rects.filter((d) => d[K] === "d");
+    // The map marks exported declarations with a strip along their top edge.
+    s.bars = s.g.selectAll("rect.exp-bar").data(atlas.lens ? tiles.filter((d) => d[EXP]) : []).join("rect").attr("class", "exp-bar");
     // The review labels only lit declarations; the rest would be thousands of
     // nodes nobody reads there.
     s.labels = s.g.selectAll("text")
       .data(tiles.filter((d) => d[K] !== "d" || atlas.lens || d[UNIT]))
       .join("text")
-      .attr("class", (d) => "atlas-label l-" + d[K] + (atlas.lens && d[K] === "d" && d[HEAT] >= 4 ? " hot" : ""))
+      .attr("class", (d) => "atlas-label l-" + d[K] + (atlas.lens && d[K] === "d" && d[HEAT] >= 4 ? " hot" : "") + (atlas.lens && d[EXP] ? " exp" : ""))
       .text((d) => d[NAME]);
     label(s);
   }
@@ -123,6 +125,8 @@
       if (d[K] === "f") file = ok ? b : null;
       shown.set(d, ok);
     });
+    s.bars.attr("x", (d) => d[X]).attr("y", (d) => d[Y]).attr("width", (d) => d[W])
+      .attr("height", (d) => Math.min(3 / ppu, d[H] / 3));
     s.labels
       .attr("font-size", px)
       .attr("x", (d) => d[X] + 3 / ppu)

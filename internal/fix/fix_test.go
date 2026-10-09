@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,12 +30,49 @@ func TestParse_turnsClaudesStreamIntoSteps(t *testing.T) {
 	assert.Equal(t, "FAIL a", res[0].result.output)
 	assert.True(t, res[0].result.failed)
 
-	final := parse([]byte(`{"type":"result","result":"Grouped them.","total_cost_usd":0.42}`))
+	final := parse([]byte(`{"type":"result","result":"Grouped them.","modelUsage":{"claude-haiku-5-5":{"inputTokens":2,"costUSD":0.42}}}`))
 	assert.Equal(t, "Grouped them.", final[0].final.summary)
-	assert.Equal(t, 0.42, final[0].final.cost)
+	assert.Equal(t, 0.42, final[0].final.by["claude-haiku-5-5"].USD)
 
-	assert.Empty(t, parse([]byte(`{"type":"system","subtype":"init"}`)), "setup lines are not steps")
+	init := parse([]byte(`{"type":"system","subtype":"init","model":"claude-haiku-5-5","claude_code_version":"2.1.294","session_id":"s1"}`))
+	require.Len(t, init, 1)
+	assert.Nil(t, init[0].step, "setup lines are not steps")
+	assert.Equal(t, "claude-haiku-5-5", init[0].init.model)
 	assert.Empty(t, parse([]byte(`not json`)))
+}
+
+// The numbers are a real one-reply run, whose result reported
+// total_cost_usd 0.0038114.
+func TestUsage_estimatesEachReplyOnceThenTakesClaudesTally(t *testing.T) {
+	reply := []byte(`{"type":"assistant","message":{"id":"m1","model":"claude-haiku-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":19046,"cache_read_input_tokens":0,"output_tokens":4,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":19046}},"content":[{"type":"text","text":"ok"}]}}`)
+	var u Usage
+	for range 2 { // stream-json repeats a reply per content block
+		for _, e := range parse(reply) {
+			if e.use != nil {
+				u.add(e.use.id, e.use.model, e.use.t)
+			}
+		}
+	}
+	usd, all := u.USD()
+	assert.InDelta(t, 0.0038114, usd, 1e-9)
+	assert.True(t, all)
+	assert.Equal(t, 1, u.Calls())
+
+	u.add("m2", "claude-unknown-9", tokens{Input: 10})
+	_, all = u.USD()
+	assert.False(t, all, "a model with no price leaves the estimate open")
+
+	u.settle(map[string]tally{"claude-haiku-5-5": {USD: 0.5}, "claude-unknown-9": {USD: 0.25}})
+	usd, all = u.USD()
+	assert.InDelta(t, 0.75, usd, 1e-9)
+	assert.True(t, all && u.Exact)
+	assert.Equal(t, 1, u.Models["claude-haiku-5-5"].Calls, "the tally keeps the counted calls")
+
+	long := tokens{CacheRead: 200_000}
+	p, _ := priceOf("claude-haiku-5-5")
+	assert.InDelta(t, 5*200_000*0.01/1e6, p.of(long), 1e-12, "past 100k tokens Haiku 5.5 costs five times as much")
+	_, ok := priceOf("claude-haiku-4-5-20251001")
+	assert.True(t, ok, "a dated ID takes its model's price")
 }
 
 func TestRead_timesStepsAndPlacesTheirFilesInTheModule(t *testing.T) {
@@ -89,4 +127,19 @@ func TestTree_namesTheModuleFilesAShellCommandReads(t *testing.T) {
 	assert.Equal(t, Read, shellKind("sed -n 1,5p sub/a.go", reads))
 	assert.Equal(t, Search, shellKind(`grep -rn "A" .`, nil))
 	assert.Equal(t, Exec, shellKind("go test ./...", nil))
+}
+
+func TestHunks_keepsEditsFarApartSeparate(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	a := strings.Join(lines, "\n") + "\n"
+	lines[2], lines[35] = "changed 3", "changed 36"
+	hs := hunks(a, strings.Join(lines, "\n")+"\n")
+	require.Len(t, hs, 2, "two edits 33 lines apart are two hunks, not one region")
+	assert.Equal(t, 1, hs[0].start)
+	assert.Equal(t, "line 1\nline 2\nline 3\nline 4\nline 5\n", hs[0].old)
+	assert.Equal(t, "line 1\nline 2\nchanged 3\nline 4\nline 5\n", hs[0].new)
+	assert.Equal(t, 34, hs[1].start)
 }

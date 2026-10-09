@@ -1,6 +1,7 @@
 // Package fix asks Claude Code to treat one prognosis in a throwaway git
 // worktree, then analyses the result against the tree it started from. The
-// user's checkout is never written: the worktree is removed on Close.
+// user's checkout is never written: the worktree is removed on Close. On
+// request a finished run becomes a draft pull request (OpenPR).
 package fix
 
 import (
@@ -125,12 +126,23 @@ type Run struct {
 	wt, mod  string
 	tree     *tree
 	err      error
-	cost     float64
+	usage    Usage
 	summary  string
 	before   *Side
+	now      *code.Snapshot // the worktree mid-run, once Claude adds files
+	nowN     int
+	remap    chan struct{}
 	after    *Side
 	check    Check
 	review   *review.Review
+	p        prognosis.Prognosis
+	repo     string // the user's repository
+	head     string // the commit the worktree started from
+	base     string // the branch checked out then; "" when detached
+	gh       string
+	pr       PR
+	bg       sync.WaitGroup // OpenPR's work, which close waits for
+	life     context.Context
 	cleanup  func() error
 	stop     context.CancelFunc // ends Claude's work; the run still checks the result
 	end      context.CancelFunc // ends every stage, for Discard and shutdown
@@ -146,12 +158,18 @@ type Snapshot struct {
 	Events        []Event
 	Steps         []Step
 	Err           error
-	Cost          float64
+	Usage         Usage
 	Summary       string
 	Took          time.Duration
 	Before, After *Side
-	Review        *review.Review
-	Check         Check
+	// Now is the worktree analysed while Claude works, after it adds or
+	// writes a file the starting tree lacks; NowN counts those analyses.
+	Now    *code.Snapshot
+	NowN   int
+	Review *review.Review
+	Check  Check
+	Base   string // the branch a pull request targets; "" when detached
+	PR     PR
 }
 
 // Snapshot returns the run's progress so far.
@@ -163,7 +181,7 @@ func (r *Run) Snapshot() Snapshot {
 		took = r.finished.Sub(r.Started)
 	}
 	return Snapshot{Key: r.Key, State: r.state, Events: append([]Event(nil), r.events...), Steps: append([]Step(nil), r.steps...), Err: r.err,
-		Cost: r.cost, Summary: r.summary, Took: took, Before: r.before, After: r.after, Review: r.review, Check: r.check}
+		Usage: r.usage.clone(), Summary: r.summary, Took: took, Before: r.before, After: r.after, Now: r.now, NowN: r.nowN, Review: r.review, Check: r.check, Base: r.base, PR: r.pr}
 }
 
 // Stop ends Claude early; the run keeps what it had.
@@ -199,6 +217,8 @@ type Runs struct {
 	// Self is this program, which the agent runs to list the prognoses of
 	// its worktree; "" leaves that step out.
 	Self string
+	// Gh is the GitHub CLI that opens pull requests.
+	Gh string
 
 	mu   sync.Mutex
 	runs map[string]*Run
@@ -206,7 +226,7 @@ type Runs struct {
 
 // NewRuns returns the registry for the module in dir.
 func NewRuns(dir string) *Runs {
-	return &Runs{Dir: dir, Updates: topic.New[int64](), Agent: "claude", runs: map[string]*Run{}}
+	return &Runs{Dir: dir, Updates: topic.New[int64](), Agent: "claude", Gh: "gh", runs: map[string]*Run{}}
 }
 
 // Get returns the run for a prognosis key, or nil.
@@ -226,7 +246,7 @@ func (rs *Runs) Start(p prognosis.Prognosis) *Run {
 	}
 	life, end := context.WithCancel(context.Background())
 	work, stop := context.WithCancel(life)
-	r := &Run{Key: p.Key, Started: time.Now(), state: Preparing, stop: stop, end: end, done: make(chan struct{}), updates: rs.Updates}
+	r := &Run{Key: p.Key, Started: time.Now(), state: Preparing, remap: make(chan struct{}, 1), p: p, gh: rs.Gh, life: life, stop: stop, end: end, done: make(chan struct{}), updates: rs.Updates}
 	rs.runs[p.Key] = r
 	go func() {
 		defer close(r.done)
@@ -285,12 +305,18 @@ func (rs *Runs) Close() {
 func (r *Run) close() {
 	r.end()
 	<-r.done
+	r.bg.Wait()
 	r.mu.Lock()
-	cleanup := r.cleanup
+	cleanup, branch := r.cleanup, r.pr.Branch
 	r.cleanup = nil
 	r.mu.Unlock()
 	if cleanup != nil {
 		_ = cleanup()
+	}
+	// The worktree shares the repository's refs; the branch lives on in the
+	// remote, so the local copy goes with the worktree.
+	if branch != "" {
+		_, _ = command(context.Background(), r.repo, nil, "git", "branch", "-D", branch)
 	}
 }
 
@@ -305,6 +331,12 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 		r.fail(errors.New("the repository has no commits to start from"))
 		return
 	}
+	base, err := repo.Branch()
+	if err != nil {
+		r.fail(err)
+		return
+	}
+	r.set(func() { r.repo, r.head, r.base = repo.Dir, head, base })
 	r.note("Copying the last commit (" + head[:7] + ") into a throwaway worktree. Uncommitted edits are not included.")
 	wt, cleanup, err := repo.Worktree(head)
 	if err != nil {
@@ -337,7 +369,11 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 	if self != "" {
 		brief.List = self + " prognoses " + mod
 	}
-	if err := r.claude(ctx, agent, mod, p.Prompt(brief)); err != nil && ctx.Err() == nil {
+	working, worked := context.WithCancel(ctx)
+	go r.remapping(working, mod)
+	err = r.claude(ctx, agent, mod, p.Prompt(brief))
+	worked()
+	if err != nil && ctx.Err() == nil {
 		r.fail(err)
 		return
 	}
@@ -370,6 +406,53 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 		}
 		r.finished = time.Now()
 	})
+}
+
+// addsFiles reports whether changes write a Go file the starting tree lacks.
+func (r *Run) addsFiles(changes []Change) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.before == nil {
+		return false
+	}
+	for _, c := range changes {
+		if !strings.HasSuffix(c.File, ".go") || strings.HasSuffix(c.File, "_test.go") {
+			continue
+		}
+		if !hasFile(r.before.Snap, c.File) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasFile(s *code.Snapshot, path string) bool {
+	for _, p := range s.Packages {
+		for _, f := range p.Files {
+			if f.Path == path {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// remapping re-analyses the worktree each time Claude adds or writes a new
+// file, so the replay map gains its tile while the run is live. A tree that
+// does not load mid-edit keeps the last map.
+func (r *Run) remapping(ctx context.Context, mod string) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.remap:
+		}
+		snap, err := code.Load(mod)
+		if err != nil || ctx.Err() != nil {
+			continue
+		}
+		r.set(func() { r.now, r.nowN = snap, r.nowN+1 })
+	}
 }
 
 // analyse loads a tree and runs its check. The check is capped: a hung test
@@ -456,8 +539,21 @@ func (r *Run) read(out io.Reader) {
 						}
 					}
 				})
+				if r.addsFiles(changes) {
+					select {
+					case r.remap <- struct{}{}:
+					default: // an analysis is already due; it will see this change too
+					}
+				}
 			case e.final != nil:
-				r.set(func() { r.summary, r.cost = e.final.summary, e.final.cost })
+				r.set(func() {
+					r.summary = e.final.summary
+					r.usage.settle(e.final.by)
+				})
+			case e.init != nil:
+				r.set(func() { r.usage.Model, r.usage.Version, r.usage.Session = e.init.model, e.init.version, e.init.session })
+			case e.use != nil:
+				r.set(func() { r.usage.add(e.use.id, e.use.model, e.use.t) })
 			}
 		}
 	}
@@ -514,18 +610,31 @@ type parsed struct {
 	}
 	final *struct {
 		summary string
-		cost    float64
+		by      map[string]tally
+	}
+	init *struct{ model, version, session string }
+	use  *struct {
+		id, model string
+		t         tokens
 	}
 }
 
 // parse reads one stream-json line into steps: the assistant's thoughts and
-// tool calls, the results of those calls, and the final summary with its cost.
+// tool calls, the results of those calls, and the final summary with its
+// tally; and what each reply used, for the cost meter.
 func parse(line []byte) []parsed {
 	var m struct {
-		Type    string  `json:"type"`
-		Result  string  `json:"result"`
-		Cost    float64 `json:"total_cost_usd"`
-		Message struct {
+		Type       string           `json:"type"`
+		Subtype    string           `json:"subtype"`
+		Model      string           `json:"model"`
+		Version    string           `json:"claude_code_version"`
+		Session    string           `json:"session_id"`
+		Result     string           `json:"result"`
+		ModelUsage map[string]tally `json:"modelUsage"`
+		Message    struct {
+			ID      string          `json:"id"`
+			Model   string          `json:"model"`
+			Usage   *tokens         `json:"usage"`
 			Content json.RawMessage `json:"content"`
 		} `json:"message"`
 	}
@@ -545,12 +654,22 @@ func parse(line []byte) []parsed {
 	_ = json.Unmarshal(m.Message.Content, &blocks)
 	var out []parsed
 	switch m.Type {
+	case "system":
+		if m.Subtype == "init" {
+			out = append(out, parsed{init: &struct{ model, version, session string }{m.Model, m.Version, m.Session}})
+		}
 	case "result":
 		out = append(out, parsed{final: &struct {
 			summary string
-			cost    float64
-		}{m.Result, m.Cost}})
+			by      map[string]tally
+		}{m.Result, m.ModelUsage}})
 	case "assistant":
+		if m.Message.Usage != nil {
+			out = append(out, parsed{use: &struct {
+				id, model string
+				t         tokens
+			}{m.Message.ID, m.Message.Model, *m.Message.Usage}})
+		}
 		for _, b := range blocks {
 			switch b.Type {
 			case "text":

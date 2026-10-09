@@ -86,3 +86,18 @@ func TestNearby_isTheRestOfTheFile(t *testing.T) {
 	assert.False(t, keys["complex:"+mod+".Knotty"], "quiet.go is another file")
 	assert.False(t, keys[g.Key], "not itself")
 }
+
+func TestFind_flagsAnImportedPackageThatExportsMostOfWhatItHolds(t *testing.T) {
+	s, err := code.Load("testdata/wide")
+	require.NoError(t, err)
+	gs := map[string]prognosis.Prognosis{}
+	for _, g := range prognosis.Find(s, smell.Find(s)) {
+		gs[g.Key] = g
+	}
+
+	g, ok := gs["wide:example.com/wide/api"]
+	require.True(t, ok, "api exports 7 of its 8 declarations")
+	assert.NotEqual(t, "Open", g.Related[0].Name, "names no other package uses come first")
+	assert.Equal(t, "Open", g.Related[len(g.Related)-1].Name)
+	assert.NotContains(t, gs, "wide:example.com/wide/pub", "nothing imports pub, so its exports serve outsiders")
+}

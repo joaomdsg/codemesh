@@ -18,7 +18,8 @@ go install github.com/joaomdsg/codemesh/cmd/codemesh@latest
 ```
 
 It needs Go 1.27 or newer and `git` on the PATH. The Diagnose spike's
-"Try a fix" also needs `claude` (Claude Code) on the PATH.
+"Try a fix" also needs `claude` (Claude Code) on the PATH, and "Open a
+draft PR" needs `gh`, logged in, and push access to `origin`.
 
 ## Run
 

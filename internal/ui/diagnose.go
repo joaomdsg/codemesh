@@ -3,6 +3,7 @@ package ui
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"slices"
@@ -65,19 +66,31 @@ type replayStep struct {
 }
 
 type replayChange struct {
-	Path  string `json:"path"`
-	File  string `json:"file,omitempty"`
-	Start int    `json:"at"`
-	Old   string `json:"old"`
-	New   string `json:"new"`
+	Path  string         `json:"path"`
+	File  string         `json:"file,omitempty"`
+	Start int            `json:"at"`
+	Old   string         `json:"old"`
+	New   string         `json:"new"`
+	Decls map[string]int `json:"decls,omitempty"` // declaration ID → lines changed in it
 }
 
 func replayOf(a *live.Analysis, s fix.Snapshot) replay {
-	// The map is the tree Claude started from; until it is analysed, the
-	// live one stands in.
+	// The map is the tree Claude started from, redrawn from the worktree as
+	// it adds files and from the tree it left at the end, so new files get
+	// tiles as they are written. Until the start is analysed the live one
+	// stands in. At changes with the tree so the page redraws the map.
 	base := a
-	if s.Before != nil {
+	switch {
+	case s.After != nil:
+		base = &live.Analysis{At: time.UnixMilli(2), Snap: s.After.Snap}
+	case s.Now != nil:
+		base = &live.Analysis{At: time.UnixMilli(int64(10 + s.NowN)), Snap: s.Now}
+	case s.Before != nil:
 		base = &live.Analysis{At: time.UnixMilli(1), Snap: s.Before.Snap}
+	}
+	decls := map[string][]*code.Decl{}
+	for _, d := range base.Snap.Decls() {
+		decls[d.File] = append(decls[d.File], d)
 	}
 	out := replay{Map: diagOf(base, nil, ""), Steps: []replayStep{}, Now: s.Took.Milliseconds(),
 		Live: s.State == fix.Preparing || s.State == fix.Working || s.State == fix.Checking}
@@ -85,9 +98,47 @@ func replayOf(a *live.Analysis, s fix.Snapshot) replay {
 		rs := replayStep{Kind: st.Kind, Title: st.Title, Path: st.Path, File: st.File, Text: st.Text,
 			Old: st.Old, New: st.New, Out: st.Output, Failed: st.Failed, T0: st.Start.Milliseconds(), T1: st.End.Milliseconds(), Reads: st.Reads}
 		for _, c := range st.Changes {
-			rs.Diffs = append(rs.Diffs, replayChange{Path: c.Path, File: c.File, Start: c.Start, Old: c.Old, New: c.New})
+			rs.Diffs = append(rs.Diffs, replayChange{Path: c.Path, File: c.File, Start: c.Start, Old: c.Old, New: c.New, Decls: changedDecls(decls[c.File], c)})
 		}
 		out.Steps = append(out.Steps, rs)
+	}
+	return out
+}
+
+// changedDecls spreads a change's lines over the declarations they fall in,
+// by the lines the declarations held when the run started. Edits earlier in
+// the run shift later lines, so on a file edited many times this is near,
+// not exact.
+func changedDecls(ds []*code.Decl, c fix.Change) map[string]int {
+	if len(ds) == 0 {
+		return nil
+	}
+	old, new := strings.Split(c.Old, "\n"), strings.Split(c.New, "\n")
+	pre := 0
+	for pre < len(old) && pre < len(new) && old[pre] == new[pre] {
+		pre++
+	}
+	suf := 0
+	for suf < len(old)-pre && suf < len(new)-pre && old[len(old)-1-suf] == new[len(new)-1-suf] {
+		suf++
+	}
+	from := c.Start + pre
+	gone, added := len(old)-pre-suf, len(new)-pre-suf
+	out := map[string]int{}
+	var host *code.Decl // where added lines land: the declaration holding the point, else the one before it
+	for _, d := range ds {
+		if n := min(d.End, from+gone-1) - max(d.Start, from) + 1; n > 0 {
+			out[d.ID] += n
+		}
+		if d.Start <= from && (host == nil || d.Start > host.Start) {
+			host = d
+		}
+	}
+	if added > 0 && host != nil {
+		out[host.ID] += added
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -124,6 +175,13 @@ func (p *DiagnosePage) Fix(_ *via.Ctx, key string) {
 func (p *DiagnosePage) Stop(_ *via.Ctx, key string) {
 	if r := p.runs.Get(key); r != nil {
 		r.Stop()
+	}
+}
+
+// PR opens a draft pull request with a finished run's change.
+func (p *DiagnosePage) PR(_ *via.Ctx, key string) {
+	if r := p.runs.Get(key); r != nil {
+		r.OpenPR()
 	}
 }
 
@@ -245,14 +303,36 @@ func (p *DiagnosePage) lensBar() h.H {
 }
 
 func legend(l string) h.H {
-	for _, x := range diagLenses {
-		if x.key == l {
-			return h.P(h.Class("hint dx-legend"),
-				h.Str("Area is lines of code. Colour: "+x.help+". "),
-				levelMark(3), h.Str(" fix first "), levelMark(2), h.Str(" fix soon "), levelMark(1), h.Str(" when convenient. Hover a marker for the short version; click it for the full one. Click any tile to see what calls it."))
-		}
+	return group([]h.H{
+		ramp(l),
+		h.P(h.Class("hint dx-legend"),
+			h.Str("Area is lines of code. "),
+			levelMark(3), h.Str(" fix first "), levelMark(2), h.Str(" fix soon "), levelMark(1), h.Str(" when convenient. Hover a marker for the short version; click it for the full one. Click any tile to see what calls it.")),
+	})
+}
+
+// rampEnds names what the coldest and hottest colours mean in each lens, by
+// the bands declHeats uses.
+var rampEnds = map[string][2]string{
+	string(prognosis.Health):    {"simple", "complexity 20+, or 10+ and changing often"},
+	string(prognosis.Reach):     {"no callers", "100+ callers"},
+	string(prognosis.Structure): {"depends on little", "depends on much"},
+	string(prognosis.Tests):     {"tested or simple", "complex, and no test calls it"},
+}
+
+// ramp is the lens's colour scale, cold to hot, with what its ends mean.
+func ramp(l string) h.H {
+	ends, ok := rampEnds[l]
+	if !ok {
+		return nil
 	}
-	return nil
+	sw := []h.H{h.Class("ramp-sw"), h.Aria("hidden", "true")}
+	for i := range 6 {
+		sw = append(sw, h.Span(h.Class(fmt.Sprintf("sw h%d", i))))
+	}
+	return h.P(h.Class("ramp"),
+		h.Span(h.Class("ramp-end"), h.Str(ends[0])), h.Span(sw...), h.Span(h.Class("ramp-end"), h.Str(ends[1])),
+		h.Span(h.Class("ramp-end"), h.Span(h.Class("sw sw-exp"), h.Aria("hidden", "true")), h.Str("exported: other packages can use it")))
 }
 
 func levelMark(l prognosis.Level) h.H {
@@ -300,6 +380,7 @@ func (p *DiagnosePage) panel(a *live.Analysis, gs []prognosis.Prognosis, g *prog
 			feed(map[expr.Expr]any{p.Diag.Ref(): diagOf(a, gs, string(g.Lens)).around(g.Target, refIDs(g.Related))}),
 			h.Div(h.Class("dx-map dx-mini atlas atlas-map"), h.DataIgnoreMorph(),
 				h.DataEffect(expr.Rawf("codemesh.diag(el, %s, {mode: 'mini'})", p.Diag.Ref()))),
+			ramp(string(g.Lens)),
 			via.When(len(related) > 0, func() h.H {
 				return group([]h.H{h.H3(h.Str("Related")), h.Ul(append([]h.H{h.Class("dx-refs")}, related...)...)})
 			}),
@@ -353,15 +434,18 @@ func (p *DiagnosePage) treat(a *live.Analysis, g *prognosis.Prognosis, run *fix.
 	head := h.Div(h.Class("dx-run-head"),
 		h.H3(h.Str(runTitle(s))),
 		h.Span(h.Class("hint"), h.Str(runMeta(s))),
-		via.When(s.State == fix.Preparing || s.State == fix.Working, func() h.H {
-			return h.Button(h.Class("btn"), on.Click(on.Bind(p.Stop, g.Key)), h.Str("Stop"))
-		}),
-		via.When(!live, func() h.H {
-			return h.Button(h.Class("btn"), on.Click(on.Bind(p.Discard, g.Key)), h.Str("Discard"))
-		}),
+		h.Div(h.Class("dx-acts"),
+			via.When(s.State == fix.Preparing || s.State == fix.Working, func() h.H {
+				return h.Button(h.Class("btn"), on.Click(on.Bind(p.Stop, g.Key)), h.Str("Stop"))
+			}),
+			p.prAct(g, s),
+			via.When(!live, func() h.H {
+				return h.Button(h.Class("btn"), on.Click(on.Bind(p.Discard, g.Key)), h.Str("Discard"))
+			}),
+		),
 		via.When(note != "", func() h.H { return h.Span(h.Class("hint dx-run-note"), h.Str(note)) }),
 	)
-	body := []h.H{h.Class("dx-treat"), head,
+	body := []h.H{h.Class("dx-treat"), head, runInfo(s),
 		feed(map[expr.Expr]any{p.Replay.Ref(): replayOf(a, s)}),
 		h.Div(h.Class("rp"), h.DataIgnoreMorph(), h.TabIndex(0), h.Aria("label", "Replay of what Claude did. Left and right arrows step through it."),
 			h.DataEffect(expr.Rawf("codemesh.replay(el, %s)", p.Replay.Ref()))),
@@ -369,10 +453,30 @@ func (p *DiagnosePage) treat(a *live.Analysis, g *prognosis.Prognosis, run *fix.
 	if s.Err != nil {
 		body = append(body, h.P(h.Class("banner err"), h.Str("It did not finish: "+s.Err.Error()+". Nothing in your files changed. Discard and try again.")))
 	}
+	if s.PR.Err != nil {
+		body = append(body, h.P(h.Class("banner err"), h.Str("The pull request did not open: "+s.PR.Err.Error()+". The change is still here; you can try again.")))
+	}
 	if s.After != nil && s.Before != nil {
 		body = append(body, p.result(g, s))
 	}
 	return h.Section(body...)
+}
+
+// prAct offers a finished run as a draft pull request, or says why not.
+func (p *DiagnosePage) prAct(g *prognosis.Prognosis, s fix.Snapshot) h.H {
+	switch {
+	case s.PR.URL != "":
+		return h.A(h.Class("btn"), h.Href(s.PR.URL), h.Target("_blank"), h.Rel("noopener"), h.Str("Draft PR ↗"))
+	case s.PR.Opening:
+		return h.Span(h.Class("hint"), h.Str("Opening a draft PR…"))
+	case s.CanPR():
+		return h.Button(h.Class("btn"), on.Click(on.Bind(p.PR, g.Key)), h.Str("Open a draft PR"))
+	case s.State != fix.Done || s.After == nil:
+		return nil
+	case s.Base == "":
+		return h.Span(h.Class("hint"), h.Str("No PR: the repository was on no branch when the run started."))
+	}
+	return h.Span(h.Class("hint"), h.Str("A PR needs "+s.Check.Name+" to pass."))
 }
 
 func runTitle(s fix.Snapshot) string {
@@ -391,12 +495,98 @@ func runTitle(s fix.Snapshot) string {
 	return "Claude's attempt"
 }
 
+// broken lists the exported declarations of a that b removed, and those b
+// re-signed.
+func broken(a, b *code.Snapshot) (gone, resigned []string) {
+	for _, d := range a.Decls() {
+		if !d.Exported || d.Test {
+			continue
+		}
+		switch n := b.Decl(d.ID); {
+		case n == nil:
+			gone = append(gone, d.ID)
+		case n.Signature != d.Signature:
+			resigned = append(resigned, d.ID)
+		}
+	}
+	return gone, resigned
+}
+
+// runMeta is the run's clock and cost: an estimate, marked ≈, while Claude
+// works, and Claude's own tally once it ends.
 func runMeta(s fix.Snapshot) string {
 	meta := s.Took.Round(time.Second).String()
-	if s.Cost > 0 {
-		meta += fmt.Sprintf(" · $%.2f", s.Cost)
+	usd, all := s.Usage.USD()
+	if usd == 0 {
+		return meta
 	}
-	return meta
+	cost := fmt.Sprintf("$%.2f", usd)
+	if !s.Usage.Exact {
+		cost = "≈ " + cost
+	}
+	if !all {
+		cost += " + unpriced models"
+	}
+	return meta + " · " + cost
+}
+
+// runInfo says who did the work and what it took, with a fold per model.
+func runInfo(s fix.Snapshot) h.H {
+	u := s.Usage
+	if u.Model == "" && len(u.Models) == 0 {
+		return nil
+	}
+	names := slices.Sorted(maps.Keys(u.Models))
+	var helpers []string
+	for _, m := range names {
+		if m != u.Model {
+			helpers = append(helpers, m)
+		}
+	}
+	var in, write, read, out int
+	rows := []h.H{h.Tr(h.Th(h.Str("Model")), h.Th(h.Str("Calls")), h.Th(h.Str("Input")), h.Th(h.Str("Cache written")),
+		h.Th(h.Str("Cache read")), h.Th(h.Str("Output")), h.Th(h.Str("Cost")))}
+	for _, name := range names {
+		m := u.Models[name]
+		in, write, read, out = in+m.Input, write+m.CacheWrite, read+m.CacheRead, out+m.Output
+		cost := "no price"
+		if m.Priced {
+			cost = fmt.Sprintf("$%.2f", m.USD)
+		}
+		rows = append(rows, h.Tr(h.Td(h.Str(name)), h.Td(h.Str(m.Calls)), h.Td(h.Str(toks(m.Input))), h.Td(h.Str(toks(m.CacheWrite))),
+			h.Td(h.Str(toks(m.CacheRead))), h.Td(h.Str(toks(m.Output))), h.Td(h.Str(cost))))
+	}
+	facts := []string{cmp.Or(u.Model, "model not reported")}
+	if len(helpers) > 0 {
+		facts = append(facts, "helpers on "+strings.Join(helpers, ", "))
+	}
+	facts = append(facts, plural(u.Calls(), "API call"))
+	facts = append(facts, fmt.Sprintf("tokens: %s in, %s cache written, %s cache read, %s out", toks(in), toks(write), toks(read), toks(out)))
+	if u.Version != "" {
+		facts = append(facts, "Claude Code "+u.Version)
+	}
+	how := "Costs are estimated from list prices while Claude works; Claude's own tally replaces them when it ends."
+	if u.Exact {
+		how = "Costs are Claude's own tally."
+	}
+	return h.Details(h.Class("dx-fold dx-runinfo"),
+		h.Summary(h.Str(strings.Join(facts, " · "))),
+		h.Table(h.Class("dx-usage"), h.Tbody(rows...)),
+		h.P(h.Class("hint"), h.Str(how), via.When(u.Session != "", func() h.H { return h.Str(" Session " + u.Session + ".") })),
+	)
+}
+
+// toks writes a token count short: 950, 12k, 6.4M.
+func toks(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 10_000:
+		return fmt.Sprintf("%dk", n/1000)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1e3)
+	}
+	return fmt.Sprint(n)
 }
 
 // result shows the attempt as the map before and after, what the change
@@ -429,8 +619,11 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		changed = append(changed, u.ID)
 		cards = append(cards, changeCard(u))
 	}
+	gone, resigned := broken(s.Before.Snap, s.After.Snap)
 	a := &live.Analysis{At: time.Now(), Snap: s.Before.Snap}
 	b := &live.Analysis{At: time.Now(), Snap: s.After.Snap}
+	was, now := diagOf(a, s.Before.Prognoses, string(g.Lens)).around(g.Target, nil), diagOf(b, s.After.Prognoses, string(g.Lens)).around(g.Target, changed)
+	was.Broke, now.Broke = gone, resigned
 	return h.Div(h.Class("dx-result"),
 		verdict,
 		h.Div(h.Class("dx-scores"),
@@ -439,8 +632,8 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 			count("Smells", len(s.Before.Findings), len(s.After.Findings)),
 		),
 		feed(map[expr.Expr]any{
-			p.Before.Ref(): diagOf(a, s.Before.Prognoses, string(g.Lens)).around(g.Target, nil),
-			p.After.Ref():  diagOf(b, s.After.Prognoses, string(g.Lens)).around(g.Target, changed),
+			p.Before.Ref(): was,
+			p.After.Ref():  now,
 		}),
 		h.Div(h.Class("dx-compare"),
 			h.Figure(h.Figcaption(h.Str("Before")), h.Div(h.Class("dx-map dx-cmp atlas atlas-map"), h.DataIgnoreMorph(),
@@ -448,6 +641,9 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 			h.Figure(h.Figcaption(h.Str("After · changed code outlined")), h.Div(h.Class("dx-map dx-cmp atlas atlas-map"), h.DataIgnoreMorph(),
 				h.DataEffect(expr.Rawf("codemesh.diag(el, %s, {mode: 'compare'})", p.After.Ref())))),
 		),
+		h.Div(h.Class("dx-cmp-key"), ramp(string(g.Lens)),
+			h.P(h.Class("ramp"), h.Span(h.Class("sw sw-chg"), h.Aria("hidden", "true")), h.Span(h.Class("ramp-end"), h.Str("code the change touched"))),
+			h.P(h.Class("ramp"), h.Span(h.Class("sw sw-broke"), h.Aria("hidden", "true")), h.Span(h.Class("ramp-end"), h.Str("exported, and its signature changed or it was removed: callers may break")))),
 		delta2("Fixed", "gone", fixed),
 		delta2("New", "new", added),
 		smellDelta("New smells", "new", s.Review.Introduced),
@@ -609,6 +805,9 @@ type diag struct {
 	// outline, which are its related places or the code a change touched.
 	Focus string   `json:"focus,omitempty"`
 	Ring  []string `json:"ring,omitempty"`
+	// Exported declarations a change re-signed or removed: their callers
+	// may break.
+	Broke []string `json:"broke,omitempty"`
 }
 
 func (d diag) around(focus string, ring []string) diag {

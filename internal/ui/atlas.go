@@ -34,13 +34,14 @@ type atlasTile struct {
 	Unit       string // review: card id of the unit for this declaration
 	Heat       int    // map: lens bucket, 0 to 5
 	ID         string // map: package path, file path or decl ID
+	Exp        int    // 1 for an exported declaration
 }
 
-// MarshalJSON writes a tile as [k, x, y, w, h, name, unit, heat, id]: a
+// MarshalJSON writes a tile as [k, x, y, w, h, name, unit, heat, id, exp]: a
 // large module has thousands of tiles, and Datastar posts every signal back
 // on each action.
 func (t atlasTile) MarshalJSON() ([]byte, error) {
-	return json.Marshal([]any{t.K, t.X, t.Y, t.W, t.H, t.Name, t.Unit, t.Heat, t.ID})
+	return json.Marshal([]any{t.K, t.X, t.Y, t.W, t.H, t.Name, t.Unit, t.Heat, t.ID, t.Exp})
 }
 
 // atlasOf lays the module out in a w × h space and lets mark fill in each
@@ -82,7 +83,11 @@ func atlasOf(a *live.Analysis, w, h float64, mark func(i int, t *atlasTile, pkg 
 			}
 			for _, dt := range treemap.Layout(decls, belowLabel(ft.Rect.Inset(1), 12)) {
 				d := byDecl[dt.ID]
-				add(tileAt("d", d.Name, dt.Rect), p, f, d)
+				t := tileAt("d", d.Name, dt.Rect)
+				if d.Exported {
+					t.Exp = 1
+				}
+				add(t, p, f, d)
 			}
 		}
 	}

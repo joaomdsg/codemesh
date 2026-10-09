@@ -193,6 +193,16 @@ func (r *Repo) Churn(since time.Duration) (map[string]int, error) {
 	return counts, nil
 }
 
+// Branch returns the checked-out branch, or "" on a detached HEAD.
+func (r *Repo) Branch() (string, error) {
+	out, err := run(r.Dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", nil
+	}
+	return strings.TrimSpace(string(out)), err
+}
+
 // Worktree checks out rev detached in a temporary directory. Call cleanup to remove it.
 func (r *Repo) Worktree(rev string) (dir string, cleanup func() error, err error) {
 	dir, err = os.MkdirTemp("", "codemesh-wt-")
