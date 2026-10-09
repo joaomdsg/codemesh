@@ -58,8 +58,9 @@
     s.tabs = g.selectAll("rect.dx-tab").data(framed).join("rect")
       .attr("class", ([, i]) => "dx-tab h" + worst[i]);
 
+    // A label on the hottest colour is white, which reads better there than ink.
     s.labels = g.selectAll("text").data(d.tiles).join("text")
-      .attr("class", labelClass)
+      .attr("class", (t, i) => labelClass(t) + (t[K] === "d" && heat[i] >= 5 ? " hot" : ""))
       .text((t) => t[NAME]);
 
     const marks = d.marks.filter((m) => m.lens === d.lens);
@@ -96,7 +97,7 @@
     }
     if (mode === "full") {
       s.rects.on("click", (e, t) => ring(s, callers, s.sel === d.tiles.indexOf(t) ? -1 : d.tiles.indexOf(t)));
-      d3.select(el).on("keydown", (e) => { if (e.key === "Escape") ring(s, callers, -1); });
+      el.__clear = () => ring(s, callers, -1);
     }
 
     const ringSet = new Set((d.ring || []).map((id) => byId.get(id)).filter((i) => i !== undefined));
@@ -226,7 +227,11 @@
   function fly(s, d, t, fileOf) {
     const f = (t[K] === "d" && fileOf.get(t)) || t;
     const k = Math.max(1, Math.min(80, (d.w * 0.8) / f[W], (d.h * 0.8) / f[H]));
-    const to = d3.zoomIdentity.translate(d.w / 2, d.h / 2).scale(k).translate(-(f[X] + f[W] / 2), -(f[Y] + f[H] / 2));
+    // A programmatic transform skips the zoom's translate extent, so it is
+    // clamped here: centring a place near an edge would leave a blank band.
+    const clamp = (v, size) => Math.min(0, Math.max(size - size * k, v));
+    const to = d3.zoomIdentity
+      .translate(clamp(d.w / 2 - k * (f[X] + f[W] / 2), d.w), clamp(d.h / 2 - k * (f[Y] + f[H] / 2), d.h)).scale(k);
     const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
     (still ? s.svg : s.svg.transition().duration(450)).call(s.zoom.transform, to);
   }
@@ -240,6 +245,20 @@
     tip.style.left = Math.max(0, x) + "px";
     tip.style.top = y + "px";
   }
+
+  // Keys work wherever focus is, short of a field being typed in: a tile
+  // click leaves focus on the page, not on the map. Escape clears caller
+  // rings; ← and → step through a replay.
+  document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (e.altKey || e.ctrlKey || e.metaKey || t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+    if (e.key === "Escape") document.querySelectorAll(".dx-map").forEach((m) => m.__clear && m.__clear());
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    const rp = document.querySelector(".rp");
+    if (!rp || !rp.__rp || !rp.__rp.step) return;
+    e.preventDefault();
+    rp.__rp.step(e.key === "ArrowRight" ? 1 : -1);
+  });
 
   // The replay: what Claude did over time, on the map it started from. The
   // map, the swimlanes and the step list share one playhead; moving any of
@@ -318,6 +337,7 @@
 
     // The bar: where the playhead is, the follow switch, and new files.
     s.where = bar.append("span").attr("class", "rp-where");
+    bar.append("span").attr("class", "rp-keys hint").text("← → step · drag the strip under the lanes to zoom");
     s.followBtn = bar.append("button").attr("class", "btn rp-follow").text("Follow live")
       .on("click", () => { s.follow = true; s.i = s.r.steps.length - 1; show(s, "follow"); });
     s.newFiles = bar.append("span").attr("class", "rp-new");
@@ -337,14 +357,12 @@
     s.lsvg = lanesBox.append("svg").attr("class", "rp-lsvg");
     s.osvg = lanesBox.append("svg").attr("class", "rp-osvg");
 
-    el.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    s.step = (by) => {
       if (!s.r || !s.r.steps.length) return;
-      e.preventDefault();
       s.follow = false;
-      s.i = Math.max(0, Math.min(s.r.steps.length - 1, s.i + (e.key === "ArrowRight" ? 1 : -1)));
+      s.i = Math.max(0, Math.min(s.r.steps.length - 1, s.i + by));
       show(s, "key");
-    });
+    };
     // Scrolling the list moves the playhead to the step at its top.
     let ticking = false;
     s.listBox.on("scroll", () => {
@@ -373,8 +391,11 @@
     const steps = s.r.steps;
     const W = Math.max(320, s.lanesBox.node().clientWidth);
     const label = 64, laneH = 22, H = LANES.length * laneH + 22, OH = 34;
-    const end = Math.max(s.r.now || 0, ...steps.map((st) => st.t1), 1000);
-    const full = d3.scaleLinear().domain([0, end]).range([label, W - 8]);
+    // The lanes start at Claude's first step: the wait before it, for the
+    // starting point's checks, would squeeze every step to the right.
+    const start = steps.length ? Math.max(0, steps[0].t0 - 1000) : 0;
+    const end = Math.max(s.r.now || 0, ...steps.map((st) => st.t1), start + 1000);
+    const full = d3.scaleLinear().domain([start, end]).range([label, W - 8]);
     s.x = s.x && s.zoomed ? s.x.range([label, W - 8]) : full.copy();
     s.full = full;
     s.lsvg.attr("viewBox", `0 0 ${W} ${H}`).attr("width", W).attr("height", H);

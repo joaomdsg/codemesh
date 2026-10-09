@@ -307,7 +307,9 @@ func legend(l string, lang code.Lang) h.H {
 		ramp(l),
 		h.P(h.Class("hint dx-legend"),
 			h.Str("Area is lines of code. "),
-			levelMark(3), h.Str(" fix first "), levelMark(2), h.Str(" fix soon "), levelMark(1), h.Str(" when convenient. Hover a marker for the short version; click it for the full one. Click any tile to see what calls it.")),
+			h.Span(h.Class("dx-lvl"), levelMark(3), h.Str(" fix first")), h.Span(h.Class("dx-lvl"), levelMark(2), h.Str(" fix soon")),
+			h.Span(h.Class("dx-lvl"), levelMark(1), h.Str(" when convenient.")),
+			h.Str(" Hover a marker for the short version; click it for the full one. Click any tile to see what calls it; Escape clears.")),
 		via.When(lang == code.Julia, func() h.H {
 			return h.P(h.Class("hint dx-legend"), h.Str("Julia picks a method when the code runs, so calls are matched by name: callers and reach are estimates."))
 		}),
@@ -393,18 +395,24 @@ func (p *DiagnosePage) panel(a *live.Analysis, gs []prognosis.Prognosis, g *prog
 				h.A(h.Class("dx-back"), h.Href(lensHref(string(g.Lens))), h.Str("← All places")),
 				h.Span(h.Class("dx-level"), levelMark(g.Level), h.Str(" "+levelWords[g.Level])),
 			),
-			h.H2(h.Class("dx-title"), h.Str(g.Title)),
-			h.P(h.Class("loc"), h.Str(where)),
-			h.P(h.Class("dx-summary"), h.Str(g.Summary)),
-			h.H3(h.Str("Why it matters")),
-			h.P(h.Str(g.Why)),
-			h.H3(h.Str("What to do")),
-			h.Ol(append([]h.H{h.Class("dx-steps")}, steps...)...),
-			h.H3(h.Str("How to check")),
-			h.P(h.Str(g.Check)),
-			h.Details(h.Class("dx-fold"), h.Summary(h.Str("The numbers")),
-				h.Table(h.Class("dx-facts"), h.Thead(h.Tr(h.Th(h.Str("")), h.Th(h.Str("now")), h.Th(h.Str("limit")))), h.Tbody(facts...))),
-			src,
+			h.Div(h.Class("dx-cols"),
+				h.Div(h.Class("dx-prose"),
+					h.H2(h.Class("dx-title"), h.Str(g.Title)),
+					h.P(h.Class("loc"), h.Str(where)),
+					h.P(h.Class("dx-summary"), h.Str(g.Summary)),
+					h.H3(h.Str("Why it matters")),
+					h.P(h.Str(g.Why)),
+					h.H3(h.Str("What to do")),
+					h.Ol(append([]h.H{h.Class("dx-steps")}, steps...)...),
+					h.H3(h.Str("How to check")),
+					h.P(h.Str(g.Check)),
+				),
+				h.Div(h.Class("dx-more"),
+					h.H3(h.Str("The numbers")),
+					h.Table(h.Class("dx-facts"), h.Thead(h.Tr(h.Th(h.Str("")), h.Th(h.Str("now")), h.Th(h.Str("limit")))), h.Tbody(facts...)),
+					src,
+				),
+			),
 		),
 		p.treat(a, g, run),
 	)
@@ -430,8 +438,11 @@ func (p *DiagnosePage) treat(a *live.Analysis, g *prognosis.Prognosis, run *fix.
 	}
 	s := run.Snapshot()
 	live := s.State == fix.Preparing || s.State == fix.Working || s.State == fix.Checking
+	// While Claude works the title says so and the replay shows what it does;
+	// the notes explain the waits around it.
 	note := ""
-	if n := len(s.Events); n > 0 && live {
+	waiting := live || s.State == fix.Stopped && s.After == nil // a stopped run still checks what it has
+	if n := len(s.Events); n > 0 && waiting && s.State != fix.Working {
 		note = s.Events[n-1].Text
 	}
 	head := h.Div(h.Class("dx-run-head"),
@@ -448,10 +459,17 @@ func (p *DiagnosePage) treat(a *live.Analysis, g *prognosis.Prognosis, run *fix.
 		),
 		via.When(note != "", func() h.H { return h.Span(h.Class("hint dx-run-note"), h.Str(note)) }),
 	)
-	body := []h.H{h.Class("dx-treat"), head, runInfo(s),
-		feed(map[expr.Expr]any{p.Replay.Ref(): replayOf(a, s)}),
-		h.Div(h.Class("rp"), h.DataIgnoreMorph(), h.TabIndex(0), h.Aria("label", "Replay of what Claude did. Left and right arrows step through it."),
-			h.DataEffect(expr.Rawf("codemesh.replay(el, %s)", p.Replay.Ref()))),
+	body := []h.H{h.Class("dx-treat"), head, runInfo(s)}
+	var replay []h.H
+	if s.State != fix.Preparing || len(s.Steps) > 0 {
+		replay = []h.H{
+			feed(map[expr.Expr]any{p.Replay.Ref(): replayOf(a, s)}),
+			h.Div(h.ID("dx-replay"), h.Class("rp"), h.DataIgnoreMorph(), h.TabIndex(0), h.Aria("label", "Replay of what Claude did. Left and right arrows step through it."),
+				h.DataEffect(expr.Rawf("codemesh.replay(el, %s)", p.Replay.Ref()))),
+		}
+	}
+	if s.State == fix.Stopped {
+		body = append(body, h.P(h.Class("hint"), h.Str("Stopped early. Below is what Claude had changed by then, checked the same way.")))
 	}
 	if s.Err != nil {
 		body = append(body, h.P(h.Class("banner err"), h.Str("It did not finish: "+s.Err.Error()+". Nothing in your files changed. Discard and try again.")))
@@ -459,10 +477,12 @@ func (p *DiagnosePage) treat(a *live.Analysis, g *prognosis.Prognosis, run *fix.
 	if s.PR.Err != nil {
 		body = append(body, h.P(h.Class("banner err"), h.Str("The pull request did not open: "+s.PR.Err.Error()+". The change is still here; you can try again.")))
 	}
+	// Once there is a result it comes first: whether the attempt worked is
+	// the question; the replay is how it got there.
 	if s.After != nil && s.Before != nil {
 		body = append(body, p.result(g, s))
 	}
-	return h.Section(body...)
+	return h.Section(append(body, replay...)...)
 }
 
 // prAct offers a finished run as a draft pull request, or says why not.
@@ -479,13 +499,13 @@ func (p *DiagnosePage) prAct(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 	case s.Base == "":
 		return h.Span(h.Class("hint"), h.Str("No PR: the repository was on no branch when the run started."))
 	}
-	return h.Span(h.Class("hint"), h.Str("A PR needs "+s.Check.Name+" to pass."))
+	return h.Span(h.Class("hint"), h.Str("A PR needs the checks to pass."))
 }
 
 func runTitle(s fix.Snapshot) string {
 	switch s.State {
 	case fix.Preparing:
-		return "Preparing a throwaway copy…"
+		return "Checking the starting point…"
 	case fix.Working:
 		return "Claude is working…"
 	case fix.Checking:
@@ -563,8 +583,14 @@ func runInfo(s fix.Snapshot) h.H {
 	if len(helpers) > 0 {
 		facts = append(facts, "helpers on "+strings.Join(helpers, ", "))
 	}
-	facts = append(facts, plural(u.Calls(), "API call"))
-	facts = append(facts, fmt.Sprintf("tokens: %s in, %s cache written, %s cache read, %s out", toks(in), toks(write), toks(read), toks(out)))
+	if u.Calls() == 0 {
+		facts = append(facts, "no replies yet")
+	} else {
+		facts = append(facts, plural(u.Calls(), "API call"))
+	}
+	if u.Calls() > 0 {
+		facts = append(facts, fmt.Sprintf("tokens: %s in, %s cache written, %s cache read, %s out", toks(in), toks(write), toks(read), toks(out)))
+	}
 	if u.Version != "" {
 		facts = append(facts, "Claude Code "+u.Version)
 	}
@@ -574,7 +600,7 @@ func runInfo(s fix.Snapshot) h.H {
 	}
 	return h.Details(h.Class("dx-fold dx-runinfo"),
 		h.Summary(h.Str(strings.Join(facts, " · "))),
-		h.Table(h.Class("dx-usage"), h.Tbody(rows...)),
+		h.Div(h.Class("dx-usage-wrap"), h.Table(h.Class("dx-usage"), h.Tbody(rows...))),
 		h.P(h.Class("hint"), h.Str(how), via.When(u.Session != "", func() h.H { return h.Str(" Session " + u.Session + ".") })),
 	)
 }
@@ -612,7 +638,7 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		verdict = h.P(h.Class("dx-verdict warn"), h.Str("▲ The problem is still there. The changes may still help; read them before deciding."))
 	}
 	if !s.After.CheckOK && s.Before.CheckOK {
-		verdict = h.P(h.Class("dx-verdict bad"), h.Str("▲ "+s.Check.Name+" passed before and fails now. Do not keep this as it is."))
+		verdict = h.P(h.Class("dx-verdict bad"), h.Str("▲ "+s.Check.Label+" passed before and fail now. Do not keep this as it is."))
 	}
 	units := slices.Clone(s.Review.Units)
 	slices.SortStableFunc(units, func(a, b *review.Unit) int { return cmp.Compare(b.Risk, a.Risk) })
@@ -630,7 +656,7 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 	return h.Div(h.Class("dx-result"),
 		verdict,
 		h.Div(h.Class("dx-scores"),
-			score(s.Check.Name+" passes", s.Before.CheckOK, s.After.CheckOK),
+			score(s.Check.Label+" pass", s.Before.CheckOK, s.After.CheckOK),
 			count("Places needing attention", len(s.Before.Prognoses), len(s.After.Prognoses)),
 			count("Smells", len(s.Before.Findings), len(s.After.Findings)),
 		),
@@ -645,8 +671,8 @@ func (p *DiagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 				h.DataEffect(expr.Rawf("codemesh.diag(el, %s, {mode: 'compare'})", p.After.Ref())))),
 		),
 		h.Div(h.Class("dx-cmp-key"), ramp(string(g.Lens)),
-			h.P(h.Class("ramp"), h.Span(h.Class("sw sw-chg"), h.Aria("hidden", "true")), h.Span(h.Class("ramp-end"), h.Str("code the change touched"))),
-			h.P(h.Class("ramp"), h.Span(h.Class("sw sw-broke"), h.Aria("hidden", "true")), h.Span(h.Class("ramp-end"), h.Str("exported, and its signature changed or it was removed: callers may break")))),
+			h.P(h.Class("ramp"), h.Span(h.Class("ramp-end"), h.Span(h.Class("sw sw-chg"), h.Aria("hidden", "true")), h.Str("code the change touched"))),
+			h.P(h.Class("ramp"), h.Span(h.Class("ramp-end"), h.Span(h.Class("sw sw-broke"), h.Aria("hidden", "true")), h.Str("exported, and its signature changed or it was removed: callers may break")))),
 		delta2("Fixed", "gone", fixed),
 		delta2("New", "new", added),
 		smellDelta("New smells", "new", s.Review.Introduced),

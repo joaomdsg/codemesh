@@ -122,6 +122,10 @@ func (p *ReviewPage) View() h.H {
 		return p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("Nothing to review: "+a.Note+".")))
 	}
 	rev := a.Review
+	if len(rev.Units) == 0 {
+		// Nothing changed: the map, progress and shortcuts would frame nothing.
+		return p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("No changes against "+a.Base+". Edits show up here as you make them.")))
+	}
 	done := len(rev.Units) - p.open(a)
 	p.budget = 0
 	p.inDiff = map[string]string{}
@@ -137,9 +141,6 @@ func (p *ReviewPage) View() h.H {
 	body := []h.H{p.summary(a, done)}
 	if p.err != "" {
 		body = append(body, h.Div(h.Class("banner err"), h.Role("alert"), h.Str(p.err)))
-	}
-	if len(rev.Units) == 0 {
-		body = append(body, h.P(h.Class("empty"), h.Str("No changes against "+a.Base+".")))
 	}
 	body = append(body, p.smellDelta(rev))
 	body = append(body, lanes...)

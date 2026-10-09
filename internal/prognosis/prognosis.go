@@ -140,7 +140,7 @@ func testCallers(s *code.Snapshot, d *code.Decl) int {
 func callerRefs(s *code.Snapshot, d *code.Decl, why string) []Ref {
 	var out []Ref
 	for _, c := range prod(s, d.Callers) {
-		out = append(out, Ref{ID: c.ID, Name: c.Name, Why: why})
+		out = append(out, Ref{ID: c.ID, Name: label(c), Why: why})
 		if len(out) == maxRelated {
 			break
 		}
@@ -281,7 +281,7 @@ func structure(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 		out = append(out, Prognosis{
 			Key: "dominant:" + p.Path, Lens: Structure, Level: 2, Target: p.Path, Name: pkgShort(s, p.Path),
 			Title:   "One package holds most of the code",
-			Summary: fmt.Sprintf("%s holds %d%% of the module's code, in %s. Everything in it can reach everything else.", pkgShort(s, p.Path), share, plural(len(files), "file")),
+			Summary: fmt.Sprintf("%s holds %d%% of the %s's code, in %s. Everything in it can reach everything else.", pkgShort(s, p.Path), share, say(s, "module", "package"), plural(len(files), "file")),
 			Why:     "Packages are walls: code outside a package can only use what it exports. When most code sits in one package, there are no walls, so any part can come to depend on any other, and a change anywhere can break something far away. Smaller packages with clear jobs keep changes local.",
 			Do: []string{
 				"Find groups of files that work on the same thing; the largest files listed below are a start.",
@@ -290,7 +290,7 @@ func structure(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 				"Repeat one group at a time, building and testing after each move.",
 			},
 			Check:   fmt.Sprintf("No package holds more than %d%% of the code, and each package's name says what it does.", dominantShare),
-			Facts:   []Fact{{"share of the module's lines, %", share, dominantShare}, {"lines", n, 0}, {"files", len(files), 0}},
+			Facts:   []Fact{{say(s, "share of the module's lines, %", "share of the package's lines, %"), share, dominantShare}, {"lines", n, 0}, {"files", len(files), 0}},
 			Related: rel,
 		})
 	}
@@ -357,7 +357,7 @@ func wide(s *code.Snapshot) []Prognosis {
 			if n := outside[d]; n > 0 {
 				why = "used " + plural(n, "time") + " from other packages"
 			}
-			rel = append(rel, Ref{ID: d.ID, Name: d.Name, Why: why})
+			rel = append(rel, Ref{ID: d.ID, Name: label(d), Why: why})
 		}
 		share := len(exp) * 100 / len(all)
 		out = append(out, Prognosis{
@@ -423,7 +423,7 @@ func smells(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 		top := ds[0]
 		var rel []Ref
 		for _, d := range ds[1:min(len(ds), maxRelated+1)] {
-			rel = append(rel, Ref{ID: d.ID, Name: d.Name, Why: fmt.Sprintf("takes %d parameters", d.Params)})
+			rel = append(rel, Ref{ID: d.ID, Name: label(d), Why: fmt.Sprintf("takes %d parameters", d.Params)})
 		}
 		name, file, line := declRef(top)
 		out = append(out, Prognosis{
@@ -467,7 +467,7 @@ func largeFile(s *code.Snapshot, ix idx, f smell.Finding) Prognosis {
 	slices.SortFunc(ds, func(a, b *code.Decl) int { return cmp.Compare(b.Lines, a.Lines) })
 	var rel []Ref
 	for _, d := range ds[:min(len(ds), maxRelated)] {
-		rel = append(rel, Ref{ID: d.ID, Name: d.Name, Why: fmt.Sprintf("%d lines", d.Lines)})
+		rel = append(rel, Ref{ID: d.ID, Name: label(d), Why: fmt.Sprintf("%d lines", d.Lines)})
 	}
 	churn := 0
 	if file != nil {
@@ -573,6 +573,15 @@ func pkgShort(s *code.Snapshot, p string) string {
 		return path.Base(p)
 	}
 	return strings.TrimPrefix(strings.TrimPrefix(p, s.Module+"/"), s.Module+".")
+}
+
+// label names a declaration in a list. A Julia method carries its argument
+// types, the only thing telling it from the function's other methods.
+func label(d *code.Decl) string {
+	if args := strings.TrimPrefix(d.ID, d.Package+"."+d.Name); strings.HasPrefix(args, "(") {
+		return d.Name + args
+	}
+	return d.Name
 }
 
 // say picks the wording for the snapshot's language.
