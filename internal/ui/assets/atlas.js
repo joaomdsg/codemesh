@@ -88,7 +88,7 @@
     s.labels = s.g.selectAll("text")
       .data(tiles.filter((d) => d[K] !== "d" || atlas.lens || d[UNIT]))
       .join("text")
-      .attr("class", (d) => "atlas-label l-" + d[K] + (atlas.lens && d[K] === "d" && d[HEAT] >= 4 ? " hot" : "") + (atlas.lens && d[EXP] ? " exp" : ""))
+      .attr("class", (d) => "atlas-label l-" + d[K] + (atlas.lens && d[K] === "d" && d[HEAT] === 5 ? " hot" : "") + (atlas.lens && d[EXP] ? " exp" : ""))
       .text((d) => d[NAME]);
     label(s);
   }

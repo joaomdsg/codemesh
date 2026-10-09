@@ -381,7 +381,7 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 	}
 	r.set(func() { r.before, r.state = before, Working })
 
-	r.note("Claude is working on it.")
+	r.note("Stop ends it early and keeps what it changed so far.")
 	brief := prognosis.Brief{Check: check.Name, Where: check.Where, Nearby: prognosis.Nearby(before.Prognoses, p)}
 	if self != "" {
 		brief.List = self + " prognoses " + mod

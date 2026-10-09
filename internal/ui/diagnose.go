@@ -438,11 +438,11 @@ func (p *DiagnosePage) treat(a *live.Analysis, g *prognosis.Prognosis, run *fix.
 	}
 	s := run.Snapshot()
 	live := s.State == fix.Preparing || s.State == fix.Working || s.State == fix.Checking
-	// While Claude works the title says so and the replay shows what it does;
-	// the notes explain the waits around it.
+	// The note line stays while the run is live, so the replay below it does
+	// not shift between phases.
 	note := ""
 	waiting := live || s.State == fix.Stopped && s.After == nil // a stopped run still checks what it has
-	if n := len(s.Events); n > 0 && waiting && s.State != fix.Working {
+	if n := len(s.Events); n > 0 && waiting {
 		note = s.Events[n-1].Text
 	}
 	head := h.Div(h.Class("dx-run-head"),

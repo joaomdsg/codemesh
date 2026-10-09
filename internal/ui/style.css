@@ -18,7 +18,7 @@
   --heat2: #f3d9a4;
   --heat3: #eeb877;
   --heat4: #e38b5a;
-  --heat5: #cf5545;
+  --heat5: #cc4a39;
   --sp1: 4px;
   --sp2: 8px;
   --sp3: 12px;
@@ -405,6 +405,7 @@ kbd {
   .stamp { display: none; }
   .main { padding: var(--sp2); }
   .top { padding-inline: var(--sp2); }
+  .tabs { gap: 0; }
   .tab { padding-inline: var(--sp2); }
 }
 
@@ -548,6 +549,8 @@ kbd {
 .dx-usage th, .dx-usage td { padding: 2px var(--sp4) 2px 0; text-align: right; }
 .dx-usage th:first-child, .dx-usage td:first-child { text-align: left; font-family: var(--mono); }
 .dx-acts { display: flex; align-items: baseline; gap: var(--sp2); margin-left: auto; }
+/* A zero-width strut as tall as a .btn (3px padding + 1px border), so the head keeps its height when the buttons go. */
+.dx-acts::before { content: "\200b"; padding-block: 4px; margin-right: calc(-1 * var(--sp2)); }
 .dx-result { display: flex; flex-direction: column; gap: var(--sp2); margin-top: var(--sp3); }
 .dx-verdict.bad { color: var(--bad); }
 .dx-scores { display: flex; flex-wrap: wrap; gap: var(--sp2); }
