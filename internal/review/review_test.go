@@ -1,6 +1,7 @@
 package review_test
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ var calc = sync.OnceValues(func() (fixture, error) { return build(testrepo.CalcB
 // diff, load both sides, find smells.
 func build(baseFiles, headFiles map[string]string) (fixture, error) {
 	dir, err := testrepo.Make(baseFiles, headFiles)
+	defer os.RemoveAll(dir)
 	if err != nil {
 		return fixture{}, err
 	}
