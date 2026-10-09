@@ -557,6 +557,11 @@ func runMeta(s fix.Snapshot) string {
 func runInfo(s fix.Snapshot) h.H {
 	u := s.Usage
 	if u.Model == "" && len(u.Models) == 0 {
+		// Holds the line the run info will fill, so the page does not shift
+		// when Claude starts.
+		if s.State == fix.Preparing || s.State == fix.Working {
+			return h.P(h.Class("dx-runinfo dx-runinfo-wait"), h.Str("Model and cost show once Claude starts."))
+		}
 		return nil
 	}
 	names := slices.Sorted(maps.Keys(u.Models))

@@ -333,8 +333,8 @@ var ruleLabels = map[smell.Rule]string{
 	smell.LargeFile:       "Large file",
 	smell.UnusedExport:    "Unused export",
 	smell.DeadCode:        "Dead code",
-	smell.EnviousFunc:     "Envious function",
-	smell.UnstableDep:     "Unstable dependency",
+	smell.EnviousFunc:     "Leans on another package",
+	smell.UnstableDep:     "Imports a less stable package",
 	smell.UntestedPackage: "Untested package",
 }
 

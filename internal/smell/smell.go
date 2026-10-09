@@ -68,7 +68,7 @@ var why = map[Rule]string{
 	UnusedExport:    "Exported but unused outside its package: API surface nobody uses.",
 	DeadCode:        "Declared and never referenced: weight with no value.",
 	EnviousFunc:     "Most of its references go to one other package; it may belong there.",
-	UnstableDep:     "Depends on a package less stable than itself, against the Stable Dependencies Principle.",
+	UnstableDep:     "Imports a package that changes more freely than itself, so that package's changes ripple into this one.",
 	UntestedPackage: "No test refers to it: changes land unguarded.",
 }
 

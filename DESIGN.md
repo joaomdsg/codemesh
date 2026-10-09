@@ -105,8 +105,8 @@ Each smell is a rule with a documented threshold:
 | large file | > 600 code lines (high > 1200) | the file has several concerns |
 | unused export | exported from a package other modules cannot import (`internal/`), no use outside its package | API surface that nobody uses |
 | dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
-| envious function | most of its references go to one other package | it may live in the wrong package |
-| unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
+| leans on another package | most of its references go to one other package | it may live in the wrong package |
+| imports a less stable package | depends on a package more unstable than itself | breaks the Stable Dependencies Principle: its changes ripple back |
 | untested package | no test files, and no test in another package refers to its declarations; not a main package | changes land unguarded |
 
 A finding past the high limit is high severity and names that limit
@@ -124,7 +124,7 @@ Code lines are lines holding a Go token. A long string literal (see Other
 below) counts as one line, so an inlined script does not make a large file.
 
 Test code and generated files are exempt from every rule. Functions in a
-main package are exempt from envious-function, since wiring other packages
+main package are exempt from leans-on-another-package, since wiring other packages
 together is a main package's job.
 
 ## Review

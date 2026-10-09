@@ -405,6 +405,7 @@ kbd {
   .stamp { display: none; }
   .main { padding: var(--sp2); }
   .top { padding-inline: var(--sp2); }
+  .tab { padding-inline: var(--sp2); }
 }
 
 .chip-smell { color: var(--bad); border-color: var(--bad); }
@@ -432,6 +433,17 @@ kbd {
 .dx-side { position: sticky; top: var(--sp4); max-height: calc(100vh - 90px); overflow: auto; }
 /* With a run below it, the side would float over the replay. */
 .dx-open:has(> .dx-treat .rp) > .dx-side { position: static; max-height: none; }
+/* Scroll shadows: the local layers cover the shadows at either end, so a shadow shows only where more of the panel is hidden. */
+.side, .dx-side {
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 24px no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 24px no-repeat local,
+    linear-gradient(color-mix(in srgb, var(--ink) 16%, transparent), transparent) top / 100% 8px no-repeat scroll,
+    linear-gradient(transparent, color-mix(in srgb, var(--ink) 16%, transparent)) bottom / 100% 8px no-repeat scroll,
+    var(--surface);
+}
+/* Stacked under the map, the panel is part of the page: no second scroll. */
+@media (max-width: 900px) { .side, .dx-side { position: static; max-height: none; overflow: visible; } }
 .dx-map { position: relative; }
 .dx-mini { border: 1px solid var(--line-soft); margin-bottom: var(--sp3); }
 .dx-census { display: flex; gap: var(--sp3); flex-wrap: wrap; margin: 0; }
@@ -531,7 +543,7 @@ kbd {
 .dx-run-head { display: flex; align-items: baseline; gap: var(--sp3); flex-wrap: wrap; }
 .dx-run-head h3 { margin: 0; }
 .dx-runinfo { margin: var(--sp2) 0 0; }
-.dx-runinfo summary { font-size: 13px; color: var(--muted); }
+.dx-runinfo summary, .dx-runinfo-wait { font-size: 13px; color: var(--muted); }
 .dx-usage { border-collapse: collapse; margin: var(--sp2) 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .dx-usage th, .dx-usage td { padding: 2px var(--sp4) 2px 0; text-align: right; }
 .dx-usage th:first-child, .dx-usage td:first-child { text-align: left; font-family: var(--mono); }

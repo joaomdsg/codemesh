@@ -70,7 +70,7 @@ func matrix(a *live.Analysis) h.H {
 			bad[[2]string{f.Package, f.Target}] = f
 		}
 	}
-	head := []h.H{h.Th(h.Class("dsm-name"), h.Str("package")), h.Th(h.Title("instability Ce/(Ca+Ce)"), h.Str("I")),
+	head := []h.H{h.Th(h.Class("dsm-name"), h.Str("package")), h.Th(h.Title("instability: the share of its links that are its own imports"), h.Str("I")),
 		h.Th(h.Title("packages importing it"), h.Str("in")), h.Th(h.Title("packages it imports"), h.Str("out"))}
 	for i := range rows {
 		head = append(head, h.Th(h.Class("dsm-col"), h.Str(i+1)))
@@ -107,7 +107,7 @@ func matrix(a *live.Analysis) h.H {
 	}
 	summary := okLine("Every package imports only packages at least as stable as itself.")
 	if unstable > 0 {
-		summary = h.P(h.Class("warn"), h.Str(fmt.Sprintf("▲ %s of a less stable package, against the Stable Dependencies Principle.", plural(unstable, "import"))))
+		summary = h.P(h.Class("warn"), h.Str(fmt.Sprintf("▲ %s of a less stable package, whose changes ripple back.", plural(unstable, "import"))))
 	}
 	return h.Div(h.Class("deps"),
 		h.H2(h.Str("Dependencies")),
@@ -115,7 +115,7 @@ func matrix(a *live.Analysis) h.H {
 		h.Div(h.Class("dsm-wrap"),
 			h.Table(h.Class("dsm"), h.Thead(h.Tr(head...)), h.Tbody(body...)),
 		),
-		h.P(h.Class("hint"), h.Str("Row imports column; a cell counts references. I is instability: 0 stable, 1 free to change.")),
+		h.P(h.Class("hint"), h.Str("Row imports column; a cell counts references. I runs from 0, relied on by others, to 1, free to change.")),
 	)
 }
 

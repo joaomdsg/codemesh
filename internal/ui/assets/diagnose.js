@@ -434,14 +434,20 @@
     };
     s.drawLanes = draw;
 
-    // Drag anywhere on the lanes to scrub.
-    s.lsvg.call(d3.drag().on("start drag", (e) => {
-      if (!steps.length) return;
-      const t = s.x.invert(e.x);
-      let at = d3.bisector((st) => st.t0).right(steps, t) - 1;
-      at = Math.max(0, Math.min(steps.length - 1, at));
-      if (at !== s.i) { s.follow = false; s.i = at; show(s, "lane"); }
-    }));
+    // Drag anywhere on the lanes to scrub. The drag is made once: a new one
+    // per live update would drop a touch drag already under way, since each
+    // d3.drag keeps its own gestures.
+    if (!s.scrub) {
+      s.scrub = d3.drag().on("start drag", (e) => {
+        const steps = s.r.steps;
+        if (!steps.length) return;
+        const t = s.x.invert(e.x);
+        let at = d3.bisector((st) => st.t0).right(steps, t) - 1;
+        at = Math.max(0, Math.min(steps.length - 1, at));
+        if (at !== s.i) { s.follow = false; s.i = at; show(s, "lane"); }
+      });
+      s.lsvg.call(s.scrub);
+    }
 
     s.osvg.selectAll("rect.rp-omark").data(steps).join("rect")
       .attr("class", (st) => "rp-omark rk-" + st.k)
