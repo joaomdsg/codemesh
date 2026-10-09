@@ -196,6 +196,9 @@ type Runs struct {
 	// Agent is the command that does the work, given the prompt and flags
 	// after it. Tests swap it so no test ever starts Claude.
 	Agent string
+	// Self is this program, which the agent runs to list the prognoses of
+	// its worktree; "" leaves that step out.
+	Self string
 
 	mu   sync.Mutex
 	runs map[string]*Run
@@ -227,7 +230,7 @@ func (rs *Runs) Start(p prognosis.Prognosis) *Run {
 	rs.runs[p.Key] = r
 	go func() {
 		defer close(r.done)
-		r.run(life, work, rs.Dir, rs.Agent, p)
+		r.run(life, work, rs.Dir, rs.Agent, rs.Self, p)
 		r.mu.Lock()
 		if r.finished.IsZero() {
 			r.finished = time.Now() // ended early; this also stops the heartbeat
@@ -291,7 +294,7 @@ func (r *Run) close() {
 	}
 }
 
-func (r *Run) run(life, ctx context.Context, dir, agent string, p prognosis.Prognosis) {
+func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosis.Prognosis) {
 	repo, err := gitx.Open(dir)
 	if err != nil {
 		r.fail(fmt.Errorf("not a git repository: %w", err))
@@ -330,7 +333,11 @@ func (r *Run) run(life, ctx context.Context, dir, agent string, p prognosis.Prog
 	r.set(func() { r.before, r.state = before, Working })
 
 	r.note("Claude is working on it.")
-	if err := r.claude(ctx, agent, mod, p.Prompt(check.Name, check.Where)); err != nil && ctx.Err() == nil {
+	brief := prognosis.Brief{Check: check.Name, Where: check.Where, Nearby: prognosis.Nearby(before.Prognoses, p)}
+	if self != "" {
+		brief.List = self + " prognoses " + mod
+	}
+	if err := r.claude(ctx, agent, mod, p.Prompt(brief)); err != nil && ctx.Err() == nil {
 		r.fail(err)
 		return
 	}

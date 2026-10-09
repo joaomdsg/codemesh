@@ -416,26 +416,87 @@ func largeFile(s *code.Snapshot, ix idx, f smell.Finding) Prognosis {
 	}
 }
 
-// Prompt is the task given to a coding agent asked to treat the prognosis.
-// check is the command the change must leave passing, and where it runs.
-func (p Prognosis) Prompt(check, where string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Improve the health of this Go module at one place.\n\nProblem: %s\nWhere: %s", p.Title, p.Name)
-	if p.File != "" {
-		fmt.Fprintf(&b, " (%s:%d)", p.File, p.Line)
+// Brief is what an agent needs besides the prognosis itself.
+type Brief struct {
+	Check, Where string      // the command the change must leave passing, and where it runs
+	List         string      // a command that prints the tree's prognoses, "" when there is none
+	Nearby       []Prognosis // other problems in the same file
+}
+
+// Nearby returns the other prognoses in g's file, most urgent first, at
+// most maxNearby: a fix that restructures g's code can solve them too, or
+// make them worse. The package is too wide a net: one package can hold most
+// of a module.
+func Nearby(all []Prognosis, g Prognosis) []Prognosis {
+	if g.File == "" {
+		return nil
 	}
-	fmt.Fprintf(&b, "\nWhat we see: %s\nWhy it matters: %s\n\nWhat to do:\n", p.Summary, p.Why)
-	for i, d := range p.Do {
-		fmt.Fprintf(&b, "%d. %s\n", i+1, d)
-	}
-	if len(p.Related) > 0 {
-		b.WriteString("\nRelated places:\n")
-		for _, r := range p.Related {
-			fmt.Fprintf(&b, "- %s: %s\n", r.Name, r.Why)
+	var out []Prognosis
+	for _, o := range all {
+		if o.Key != g.Key && o.File == g.File && len(out) < maxNearby {
+			out = append(out, o)
 		}
 	}
-	fmt.Fprintf(&b, "\nDone when: %s\n\nRules: keep behaviour the same. Keep exported names and signatures unless the problem is about them. Follow the repository's CLAUDE.md, AGENTS.md and CONVENTIONS.md where they exist. Run `%s` from %s before you finish and leave it passing: it is this repository's own check. Do not commit and do not push. Touch only what this problem needs. End with three lines saying what you changed and why.\n", p.Check, check, where)
-	return b.String()
+	return out
+}
+
+const maxNearby = 12
+
+// Prompt is the task given to a coding agent asked to treat the prognosis.
+// It asks for the whole fix, and gives the agent codemesh's own verdict to
+// check against: judged by its own reading, an agent stops at the first
+// improvement.
+func (p Prognosis) Prompt(b Brief) string {
+	var w strings.Builder
+	fmt.Fprintf(&w, "Fix one code-health problem in this module, completely.\n\nProblem: %s (%s)\nWhere: %s", p.Title, p.Key, p.where())
+	fmt.Fprintf(&w, "\nWhat we see: %s\nWhy it matters: %s\n\nHow to approach it:\n", p.Summary, p.Why)
+	for i, d := range p.Do {
+		fmt.Fprintf(&w, "%d. %s\n", i+1, d)
+	}
+	if len(b.Nearby) > 0 {
+		w.WriteString("\nOther problems in the same file. A good fix may solve some of them too, and must not make any worse:\n")
+		for _, o := range b.Nearby {
+			fmt.Fprintf(&w, "- %s: %s, %s [%s]\n", levelWord[o.Level], o.Title, o.where(), o.Key)
+		}
+	}
+	if len(p.Related) > 0 {
+		w.WriteString("\nRelated places:\n")
+		for _, r := range p.Related {
+			fmt.Fprintf(&w, "- %s: %s\n", r.Name, r.Why)
+		}
+	}
+	w.WriteString("\nScope: resolve the problem fully, not a token improvement. Restructure as far as the fix needs: split functions, move code to other files of the package or to new files, introduce types, rename or change unexported functions together with their callers. Keep exported names, signatures and behaviour unless the problem is about them. Leave unrelated code alone.\n")
+	w.WriteString("\nWork in a loop until done:\n1. Change the code.\n")
+	n := 2
+	if b.List != "" {
+		fmt.Fprintf(&w, "%d. Run `%s`. %s must be gone, and no new problem may appear in the files you touched.\n", n, b.List, p.Key)
+		n++
+	}
+	fmt.Fprintf(&w, "%d. Run `%s` from %s. It is this repository's own check and must pass.\n", n, b.Check, b.Where)
+	fmt.Fprintf(&w, "\nDone when: %s", p.Check)
+	if b.List != "" {
+		fmt.Fprintf(&w, " %s no longer appears in that list.", p.Key)
+	}
+	w.WriteString("\n\nFollow the repository's CLAUDE.md, AGENTS.md and CONVENTIONS.md where they exist. Do not commit and do not push. End with three lines saying what you changed and why.\n")
+	return w.String()
+}
+
+var levelWord = map[Level]string{3: "fix first", 2: "fix soon", 1: "when convenient"}
+
+// String is one prognosis as a line of text, for the command line.
+func (p Prognosis) String() string {
+	return fmt.Sprintf("%s\t%s\t%s\t%s", p.Key, levelWord[p.Level], p.Title, p.where())
+}
+
+// where names the place with its file and line, leaving out what it lacks.
+func (p Prognosis) where() string {
+	switch {
+	case p.File == "" || p.File == p.Name:
+		return p.Name
+	case p.Line == 0:
+		return fmt.Sprintf("%s (%s)", p.Name, p.File)
+	}
+	return fmt.Sprintf("%s (%s:%d)", p.Name, p.File, p.Line)
 }
 
 func pkgShort(s *code.Snapshot, p string) string {

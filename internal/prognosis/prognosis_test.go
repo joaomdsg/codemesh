@@ -58,12 +58,31 @@ func TestFind_groupsAPackagesLongParameterListsIntoOneProblem(t *testing.T) {
 	assert.NotContains(t, gs, "params:"+mod+".Six", "grouped, not listed one by one")
 }
 
-func TestPrompt_forbidsCommittingAndPushing(t *testing.T) {
-	g := sick(t)["hotspot:"+mod+".Tangled"]
+func TestPrompt_asksForTheWholeFixCheckedByCodemesh(t *testing.T) {
+	gs := sick(t)
+	g := gs["hotspot:"+mod+".Tangled"]
 
-	p := g.Prompt("./ci.sh", "the repository root")
+	p := g.Prompt(prognosis.Brief{Check: "./ci.sh", Where: "the repository root", List: "/bin/codemesh prognoses /wt", Nearby: []prognosis.Prognosis{gs["complex:"+mod+".Knotty"]}})
+	assert.Contains(t, p, "move code to other files of the package or to new files", "restructuring is in scope")
+	assert.NotContains(t, p, "Touch only what this problem needs", "a narrow scope produced token fixes")
+	assert.Contains(t, p, "Run `/bin/codemesh prognoses /wt`. hotspot:"+mod+".Tangled must be gone", "the agent checks against codemesh's verdict")
+	assert.Contains(t, p, "complex:"+mod+".Knotty", "the problems around it are in view")
+	assert.Contains(t, p, "Run `./ci.sh` from the repository root")
 	assert.Contains(t, p, "Do not commit and do not push.")
-	assert.Contains(t, p, "Run `./ci.sh` from the repository root", "the repo's own gate, not a narrower one")
-	assert.Contains(t, p, "busy.go:")
 	assert.Contains(t, p, g.Do[0])
+}
+
+func TestNearby_isTheRestOfTheFile(t *testing.T) {
+	var all []prognosis.Prognosis
+	for _, g := range sick(t) {
+		all = append(all, g)
+	}
+	g := sick(t)["hotspot:"+mod+".Tangled"]
+	keys := map[string]bool{}
+	for _, o := range prognosis.Nearby(all, g) {
+		keys[o.Key] = true
+	}
+	assert.True(t, keys["untested:"+mod+".Tangled"], "its own missing tests, in busy.go")
+	assert.False(t, keys["complex:"+mod+".Knotty"], "quiet.go is another file")
+	assert.False(t, keys[g.Key], "not itself")
 }

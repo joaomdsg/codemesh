@@ -199,6 +199,13 @@ matters, what to do and how to check it.
    the only guards are that `git push` is denied, the worktree is removed on
    Discard or shutdown, and nothing is written back. Uncommitted edits are
    not in the worktree.
+   The prompt asks for the whole fix: restructuring, moving code to other
+   or new files and changing unexported code are in scope; exported names,
+   signatures and behaviour stay unless the problem is about them. It lists
+   the other problems in the same file, and has Claude loop until
+   `codemesh prognoses <worktree>` no longer lists the problem and the
+   check passes: judged by its own reading, an agent stops at the first
+   improvement.
 6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
    target in a Makefile or justfile, else `go build ./... && go test ./...`
    in the module. `go test ./...` alone stops at nested modules and skips

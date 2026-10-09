@@ -24,9 +24,11 @@ It needs Go 1.27 or newer and `git` on the PATH. The Diagnose spike's
 
 ```
 codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [-agent claude] [dir]
+codemesh prognoses [dir]
 ```
 
-Open http://localhost:7777. `dir` defaults to the current directory and must
+Open http://localhost:7777. `codemesh prognoses` prints the Diagnose
+findings, one per line, most urgent first. `dir` defaults to the current directory and must
 hold a `go.mod`.
 
 The review is the working tree, staged, unstaged and untracked, against its

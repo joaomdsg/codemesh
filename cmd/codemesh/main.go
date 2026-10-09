@@ -2,6 +2,7 @@
 // its working-tree changes and a diagnosis of its health.
 //
 //	codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [-agent claude] [dir]
+//	codemesh prognoses [dir]
 package main
 
 import (
@@ -19,11 +20,16 @@ import (
 
 	"github.com/joaomdsg/codemesh/internal/fix"
 	"github.com/joaomdsg/codemesh/internal/live"
+	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/ui"
 )
 
 func main() {
+	run := run
+	if len(os.Args) > 1 && os.Args[1] == "prognoses" {
+		run = listPrognoses
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "codemesh:", err)
 		os.Exit(1)
@@ -63,6 +69,9 @@ func run() error {
 	}
 	runs := fix.NewRuns(dir)
 	runs.Agent = *agent
+	if self, err := os.Executable(); err == nil {
+		runs.Self = self
+	}
 	defer runs.Close()
 	srv := &http.Server{Handler: ui.New(src, state, runs, origin), ReadHeaderTimeout: 10 * time.Second}
 
@@ -102,4 +111,21 @@ func originOf(addr string) (string, error) {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port), nil
+}
+
+// listPrognoses prints a tree's prognoses, one per line, most urgent first:
+// the verdict an agent fixing one checks its work against.
+func listPrognoses() error {
+	dir := "."
+	if len(os.Args) > 2 {
+		dir = os.Args[2]
+	}
+	snap, fs, err := live.Load(dir)
+	if err != nil {
+		return err
+	}
+	for _, g := range prognosis.Find(snap, fs) {
+		fmt.Println(g)
+	}
+	return nil
 }
