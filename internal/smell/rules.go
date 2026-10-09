@@ -3,6 +3,7 @@ package smell
 import (
 	"fmt"
 	"math"
+	pathpkg "path"
 	"slices"
 
 	"github.com/joaomdsg/codemesh/internal/code"
@@ -133,10 +134,14 @@ func envy(d *code.Decl) (other string, n, own int) {
 }
 
 func relOf(s *code.Snapshot, path string) string {
-	if p := s.Package(path); p != nil {
-		return p.Rel
+	p := s.Package(path)
+	switch {
+	case p == nil:
+		return path
+	case p.Rel == ".":
+		return pathpkg.Base(s.Module)
 	}
-	return path
+	return p.Rel
 }
 
 func unstableDeps(s *code.Snapshot) []Finding {

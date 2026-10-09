@@ -86,6 +86,7 @@ type Check struct {
 	Where string // where it runs, in words
 	Dir   string
 	Args  []string
+	Env   []string // added to the environment
 }
 
 func checkOf(root, mod string) Check {
@@ -96,6 +97,12 @@ func checkOf(root, mod string) Check {
 		if hasTarget(filepath.Join(root, f.file), "ci") {
 			return Check{Name: f.tool + " ci", Where: "the repository root", Dir: root, Args: []string{f.tool, "ci"}}
 		}
+	}
+	if _, err := os.Stat(filepath.Join(mod, "Project.toml")); err == nil {
+		// Parallel precompilation of package extensions can deadlock
+		// Pkg.test; one task at a time cannot.
+		return Check{Name: `JULIA_NUM_PRECOMPILE_TASKS=1 julia --project -e 'using Pkg; Pkg.test()'`, Where: "the package root", Dir: mod,
+			Args: []string{"julia", "--project", "-e", "using Pkg; Pkg.test()"}, Env: []string{"JULIA_NUM_PRECOMPILE_TASKS=1"}}
 	}
 	return Check{Name: "go build ./... && go test ./...", Where: "the module root", Dir: mod, Args: []string{"sh", "-c", "go build ./... && go test ./..."}}
 }
@@ -338,12 +345,21 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 	}
 	r.set(func() { r.repo, r.head, r.base = repo.Dir, head, base })
 	r.note("Copying the last commit (" + head[:7] + ") into a throwaway worktree. Uncommitted edits are not included.")
+	// The starting point gets a worktree of its own, kept for the run: the
+	// review reads each side's source from its snapshot's directory when it
+	// is built, after Claude has edited Claude's copy.
 	wt, cleanup, err := repo.Worktree(head)
 	if err != nil {
 		r.fail(err)
 		return
 	}
 	r.set(func() { r.cleanup = cleanup })
+	start, cleanStart, err := repo.Worktree(head)
+	if err != nil {
+		r.fail(err)
+		return
+	}
+	r.set(func() { r.cleanup = func() error { return errors.Join(cleanup(), cleanStart()) } })
 	if life.Err() != nil {
 		return
 	}
@@ -357,7 +373,7 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 	r.set(func() { r.check, r.wt, r.mod, r.tree = check, wt, mod, newTree(wt, mod) })
 
 	r.note("Analysing the starting point and running " + check.Name + " on it.")
-	before, err := analyse(ctx, mod, check)
+	before, err := analyse(ctx, filepath.Join(start, rel), checkOf(start, filepath.Join(start, rel)))
 	if err != nil {
 		r.fail(err)
 		return
@@ -416,7 +432,8 @@ func (r *Run) addsFiles(changes []Change) bool {
 		return false
 	}
 	for _, c := range changes {
-		if !strings.HasSuffix(c.File, ".go") || strings.HasSuffix(c.File, "_test.go") {
+		test := strings.HasSuffix(c.File, "_test.go") || strings.HasPrefix(c.File, "test/")
+		if test || !strings.HasSuffix(c.File, ".go") && !strings.HasSuffix(c.File, ".jl") {
 			continue
 		}
 		if !hasFile(r.before.Snap, c.File) {
@@ -467,6 +484,9 @@ func analyse(ctx context.Context, dir string, c Check) (*Side, error) {
 	defer cancel()
 	cmd := exec.CommandContext(cctx, c.Args[0], c.Args[1:]...)
 	cmd.Dir = c.Dir
+	if len(c.Env) > 0 {
+		cmd.Env = append(os.Environ(), c.Env...)
+	}
 	out, err := cmd.CombinedOutput()
 	s.CheckOK, s.Output = err == nil, tail(string(out), 40)
 	return s, nil

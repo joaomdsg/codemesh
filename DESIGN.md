@@ -1,6 +1,7 @@
 # codemesh design (v0.1)
 
-codemesh is a local web tool for Go modules. It does two jobs:
+codemesh is a local web tool for Go modules and, in the Diagnose spike,
+Julia packages. It does two jobs:
 
 1. **Map**: show where the smells are, packages first.
 2. **Review**: make reading a change fast enough that review stops being the
@@ -40,9 +41,22 @@ We dropped:
 
 ## Truth over approximation
 
-All code facts come from `go/packages` with full type information: callers,
-uses, imports. No text matching. A smell the tool reports must be a fact you
-can click through to.
+All Go code facts come from `go/packages` with full type information:
+callers, uses, imports. No text matching. A smell the tool reports must be a
+fact you can click through to.
+
+Julia is the exception, because it picks a method when the code runs. Its
+facts come from Julia's own parser (`Base.JuliaSyntax`), run by
+`internal/code/julia.jl`, so spans, names, complexity and modules are exact;
+but a call is matched to declarations by name, so callers and references are
+inferred, and the Diagnose legend says so. Each module that owns files is a
+package, a submodule declared inside another module's file stays in that
+file's package with its names qualified, and each method is a declaration
+of its own, its ID carrying its argument types: `area(Square)`. A name links
+to the same package's declarations, to exported ones of packages it uses,
+and `M.f` to M's, through `const M = ...` aliases and
+`Base.get_extension`. A method of another module's function, such as
+`Base.show`, is a method: called by dispatch, never dead.
 
 ## Map
 
@@ -203,7 +217,9 @@ matters, what to do and how to check it.
    another command called the same way. It may run any command there, so
    the only guards are that `git push` is denied, the worktree is removed on
    Discard or shutdown, and nothing is written back unless the reader opens
-   a pull request (9). Uncommitted edits are
+   a pull request (9). The starting point is analysed in a second worktree,
+   kept for the run: the review reads each side's source when it is built,
+   and Claude's copy has changed by then. Uncommitted edits are
    not in the worktree.
    The prompt asks for the whole fix: restructuring, moving code to other
    or new files and changing unexported code are in scope; exported names,
@@ -220,8 +236,10 @@ matters, what to do and how to check it.
    end.
 6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
    target in a Makefile or justfile, else `go build ./... && go test ./...`
-   in the module. `go test ./...` alone stops at nested modules and skips
-   whatever else a gate runs. Claude is told to leave it passing, and
+   in the module, or `Pkg.test()` in a Julia package, with one precompile
+   task at a time: parallel precompilation of package extensions can hang
+   it. `go test ./...` alone stops at nested modules and skips whatever else
+   a gate runs. Claude is told to leave it passing, and
    codemesh runs it before and after.
 7. **The replay** shows what Claude did over time. Each thought, read,
    search, edit and command is a step, timed as the stream arrives. Claude
@@ -251,10 +269,13 @@ matters, what to do and how to check it.
    on the result. codemesh folds the change since the starting commit into
    one commit titled after the prognosis, pushes it to origin as
    `codemesh/<rule>-<place>-<time>` and runs `gh pr create --draft` against the
-   branch the repository was on when the run started. It refuses when that
-   was a detached HEAD, or when origin's branch lacks the starting commit, so
-   the PR holds only the change. Git never prompts; the commit carries the
-   repository's own identity. The local branch goes with the worktree.
+   branch the repository was on when the run started. That branch must hold
+   the starting commit so the PR holds only the change: when origin lacks
+   the branch or is behind, codemesh pushes the starting commit to it
+   first, never forced, and stops if origin's branch moved on elsewhere. It
+   refuses a run started on a detached HEAD. Git never prompts; the commit
+   carries the repository's own identity. The local branch goes with the
+   worktree.
 
 ## Live
 
@@ -277,7 +298,10 @@ the map and the review queue follow your edits.
   them to `atlas.js`, which only draws, zooms and links. The Diagnose
   spike's island, `diagnose.js`, follows the same pattern.
 - Dependencies:
-  - `golang.org/x/tools/go/packages` loads the code.
+  - `golang.org/x/tools/go/packages` loads Go code; Julia's own parser,
+    through the `julia` on the PATH, loads Julia code. A pure-Go
+    tree-sitter grammar was tried first and mis-parsed 4 of HyperSignal.jl's
+    10 files.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
     binary files and mode changes correctly, where the alternatives do not.
   - Complexity is hand-rolled, about 40 lines, to avoid an

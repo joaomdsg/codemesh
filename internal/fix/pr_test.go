@@ -74,17 +74,49 @@ func TestOpenPR_pushesTheChangeAndOpensADraftAgainstTheStartingBranch(t *testing
 	assert.Empty(t, gitOut(t, repo, "branch", "--list", "codemesh/*"), "the local branch goes with the worktree")
 }
 
-func TestOpenPR_refusesWhenTheStartingCommitIsNotOnOrigin(t *testing.T) {
+func TestOpenPR_pushesABaseBranchOriginLacksFirst(t *testing.T) {
 	t.Parallel()
-	repo, _, calls, rs := pushed(t)
-	require.NoError(t, os.WriteFile(filepath.Join(repo, "c.go"), []byte("package m\n"), 0o644))
-	require.NoError(t, testrepo.Git(repo, "add", "c.go"))
-	require.NoError(t, testrepo.Git(repo, "commit", "--quiet", "-m", "local only"))
+	repo, origin, calls, rs := pushed(t)
+	require.NoError(t, testrepo.Git(repo, "switch", "--quiet", "-c", "local"))
+	r := finish(t, rs)
+
+	require.NoError(t, r.Snapshot().PR.Err)
+	assert.Equal(t, gitOut(t, repo, "rev-parse", "HEAD"), gitOut(t, origin, "rev-parse", "local"), "origin gets the branch at the starting commit")
+	args, _ := os.ReadFile(filepath.Join(calls, "args"))
+	assert.Contains(t, string(args), "--base local")
+}
+
+func TestOpenPR_bringsOriginUpToTheStartingCommit(t *testing.T) {
+	t.Parallel()
+	repo, origin, _, rs := pushed(t)
+	commit(t, repo, "c.go", "local only")
+	r := finish(t, rs)
+
+	require.NoError(t, r.Snapshot().PR.Err)
+	assert.Equal(t, gitOut(t, repo, "rev-parse", "HEAD"), gitOut(t, origin, "rev-parse", "main"))
+}
+
+func TestOpenPR_refusesWhenOriginsBranchMovedOnElsewhere(t *testing.T) {
+	t.Parallel()
+	repo, origin, calls, rs := pushed(t)
+	commit(t, repo, "x.go", "someone else's")
+	require.NoError(t, testrepo.Git(repo, "push", "--quiet", "origin", "main"))
+	require.NoError(t, testrepo.Git(repo, "reset", "--quiet", "--hard", "HEAD~1"))
+	commit(t, repo, "y.go", "mine")
+	theirs := gitOut(t, origin, "rev-parse", "main")
 	r := finish(t, rs)
 
 	require.Error(t, r.Snapshot().PR.Err)
-	assert.Contains(t, r.Snapshot().PR.Err.Error(), "push main first")
+	assert.Contains(t, r.Snapshot().PR.Err.Error(), "origin's main has commits the run did not start from")
+	assert.Equal(t, theirs, gitOut(t, origin, "rev-parse", "main"), "never forced")
 	assert.NoFileExists(t, filepath.Join(calls, "args"), "gh is never called")
+}
+
+func commit(t *testing.T, repo, file, msg string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(repo, file), []byte("package m\n"), 0o644))
+	require.NoError(t, testrepo.Git(repo, "add", file))
+	require.NoError(t, testrepo.Git(repo, "commit", "--quiet", "-m", msg))
 }
 
 func TestRun_reanalysesTheWorktreeWhileClaudeWritesANewFile(t *testing.T) {
@@ -106,4 +138,31 @@ func TestRun_reanalysesTheWorktreeWhileClaudeWritesANewFile(t *testing.T) {
 	assert.Equal(t, Working, s.State, "the map grows while Claude is still at work")
 	assert.True(t, hasFile(s.Now, "b.go"))
 	assert.NotNil(t, s.Now.Decl("m.B"))
+}
+
+// The starting point is read from its own worktree: Claude's copy has moved
+// on by the time the review reads the source.
+func TestRun_reviewsAChangeAgainstTheTreeItStartedFrom(t *testing.T) {
+	t.Parallel()
+	repo := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n",
+		"m.go": "package m\n\nfunc First() int { return 1 }\n\nfunc Parse(x string) string {\n\treturn x\n}\n"}, nil)
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\ncat > m.go <<'GO'\npackage m\n\nfunc First() int { return 1 }\n\n"+
+		"func noop(s string) string { return s }\n\nfunc Parse(x string) string {\n\treturn noop(x)\n}\nGO\n"), 0o755))
+	rs := NewRuns(repo)
+	rs.Agent = agent
+	t.Cleanup(rs.Close)
+	r := rs.Start(prognosis.Prognosis{Key: "complex:m.Parse", Title: "Complex function", Name: "Parse"})
+	require.Eventually(t, func() bool { s := r.Snapshot(); return s.State == Done || s.State == Failed }, time.Minute, 50*time.Millisecond)
+
+	s := r.Snapshot()
+	require.NotNil(t, s.Review)
+	for _, u := range s.Review.Units {
+		if u.ID == "m.Parse" {
+			assert.Equal(t, 1, u.Added)
+			assert.Equal(t, 1, u.Deleted, "only return x changed")
+			return
+		}
+	}
+	t.Fatal("no unit for Parse")
 }

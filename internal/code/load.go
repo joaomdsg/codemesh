@@ -20,11 +20,15 @@ const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedImports |
 	packages.NeedModule | packages.NeedTypes | packages.NeedSyntax |
 	packages.NeedTypesInfo | packages.NeedForTest
 
-// Load analyses the module rooted at dir.
+// Load analyses the Go module or the Julia package rooted at dir: a
+// Project.toml without a go.mod beside it makes it Julia.
 func Load(dir string) (*Snapshot, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
+	}
+	if exists(filepath.Join(abs, "Project.toml")) && !exists(filepath.Join(abs, "go.mod")) {
+		return loadJulia(abs)
 	}
 	cfg := &packages.Config{Dir: abs, Mode: loadMode, Tests: true, Fset: token.NewFileSet()}
 	loaded, err := packages.Load(cfg, "./...")
@@ -32,7 +36,7 @@ func Load(dir string) (*Snapshot, error) {
 		return nil, fmt.Errorf("load %s: %w", abs, err)
 	}
 	l := &loader{
-		s:    &Snapshot{decls: map[string]*Decl{}, pkgs: map[string]*Package{}},
+		s:    &Snapshot{Lang: Go, decls: map[string]*Decl{}, pkgs: map[string]*Package{}},
 		fset: cfg.Fset,
 		objs: map[string]*Decl{},
 		seen: map[string]bool{},
@@ -418,4 +422,9 @@ func specNames(s ast.Spec) []*ast.Ident {
 		return s.Names
 	}
 	return nil
+}
+
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

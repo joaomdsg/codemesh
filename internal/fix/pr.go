@@ -30,7 +30,8 @@ func (s Snapshot) CanPR() bool {
 
 // OpenPR commits the run's change on a new branch, pushes it to origin and
 // opens a draft pull request against the branch the repository was on when
-// the run started. It returns at once; the outcome shows in the snapshot.
+// the run started, pushing that branch up to the starting commit first if
+// origin lacks it. It returns at once; the outcome shows in the snapshot.
 func (r *Run) OpenPR() {
 	r.mu.Lock()
 	s := Snapshot{State: r.state, After: r.after, Base: r.base}
@@ -59,11 +60,20 @@ func (r *Run) push(ctx context.Context, branch string, t text) (string, error) {
 		_, err := command(ctx, r.wt, nil, "git", args...)
 		return err
 	}
-	if err := git("fetch", "--quiet", "origin", r.base); err != nil {
+	// The pull request must hold only the change, so origin's base branch
+	// needs the starting commit. When it lacks it, the starting commit is
+	// pushed to it, never forced: a branch that moved on elsewhere stops here.
+	err := git("fetch", "--quiet", "origin", r.base)
+	switch {
+	case err != nil && !strings.Contains(err.Error(), "couldn't find remote ref"):
 		return "", fmt.Errorf("could not fetch %s from origin: %w", r.base, err)
-	}
-	if git("merge-base", "--is-ancestor", r.head, "FETCH_HEAD") != nil {
-		return "", fmt.Errorf("the run started from %s, which origin/%s does not have; push %s first", r.head[:7], r.base, r.base)
+	case err != nil || git("merge-base", "--is-ancestor", r.head, "FETCH_HEAD") != nil:
+		if err := git("push", "--quiet", "origin", r.head+":refs/heads/"+r.base); err != nil {
+			if strings.Contains(err.Error(), "rejected") {
+				return "", fmt.Errorf("origin's %s has commits the run did not start from; pull them into %s, then try a fix again", r.base, r.base)
+			}
+			return "", fmt.Errorf("could not push %s to origin: %w", r.base, err)
+		}
 	}
 	// Claude may have committed some of its work; the reset folds everything
 	// since the starting commit into one.

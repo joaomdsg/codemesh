@@ -219,7 +219,7 @@ func (s *Source) fingerprint() string {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".go") && d.Name() != "go.mod" && d.Name() != "go.sum" {
+		if !watched(d.Name()) {
 			return nil
 		}
 		if info, err := d.Info(); err == nil {
@@ -275,4 +275,14 @@ func StatePath(dir string) string {
 		gitDir = filepath.Join(dir, ".codemesh")
 	}
 	return filepath.Join(gitDir, "codemesh", "reviewed.json")
+}
+
+// watched reports whether a file's edits change the analysis: Go and Julia
+// sources and the files that name their dependencies.
+func watched(name string) bool {
+	switch name {
+	case "go.mod", "go.sum", "Project.toml", "Manifest.toml":
+		return true
+	}
+	return strings.HasSuffix(name, ".go") || strings.HasSuffix(name, ".jl")
 }

@@ -175,6 +175,9 @@ func complexity(s *code.Snapshot, ix idx) []Prognosis {
 		first := "Write tests that pin down what it does today, before changing it."
 		if tests > 0 {
 			first = fmt.Sprintf("Run the %s that call it, and add cases for the paths they miss.", plural(tests, "test"))
+			if tests == 1 {
+				first = "Run the test that calls it, and add cases for the paths it misses."
+			}
 		}
 		p.Do = []string{
 			first,
@@ -282,7 +285,8 @@ func structure(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 			Why:     "Packages are walls: code outside a package can only use what it exports. When most code sits in one package, there are no walls, so any part can come to depend on any other, and a change anywhere can break something far away. Smaller packages with clear jobs keep changes local.",
 			Do: []string{
 				"Find groups of files that work on the same thing; the largest files listed below are a start.",
-				"Move one group into its own package (under internal/ if outsiders should not import it), exporting only what the rest needs.",
+				say(s, "Move one group into its own package (under internal/ if outsiders should not import it), exporting only what the rest needs.",
+					"Move one group into its own submodule, exporting only what the rest needs."),
 				"Repeat one group at a time, building and testing after each move.",
 			},
 			Check:   fmt.Sprintf("No package holds more than %d%% of the code, and each package's name says what it does.", dominantShare),
@@ -302,7 +306,8 @@ func structure(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 			Why:     "A package that many others rely on should only rely on packages that change even less. Otherwise the churn of the less stable one ripples through it to everything above.",
 			Do: []string{
 				"Find what it uses from the other package.",
-				"Define a small interface in this package for that use, and have the other package satisfy it.",
+				say(s, "Define a small interface in this package for that use, and have the other package satisfy it.",
+					"Declare the function this package needs here, and have the other package add a method to it for its types."),
 				"Or move the shared piece down into a stable package both can import.",
 			},
 			Check:   "The import is gone, or the imported package is now the more stable of the two.",
@@ -362,7 +367,7 @@ func wide(s *code.Snapshot) []Prognosis {
 			Why:     "What a package exports is a promise: other packages may use it, so changing it means changing them too. A package that exports most of what it holds makes nearly every change a public one. Exporting only what callers need leaves the rest free to change.",
 			Do: []string{
 				"Find the exported names no other package uses; the list below starts with them.",
-				"Unexport them (lowercase the first letter) and build.",
+				say(s, "Unexport them (lowercase the first letter) and build.", "Take them out of the export list and run the tests."),
 				"If callers need many small pieces, give them one entry point and keep the pieces inside.",
 			},
 			Check:   fmt.Sprintf("The package exports at most %d%% of its declarations, and other packages use each name it exports.", wideShare),
@@ -400,7 +405,8 @@ func smells(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 					"Write one test that runs the package's main path end to end.",
 					"Add a test whenever you fix a bug here, so it stays fixed.",
 				},
-				Check: "go test reports at least one test for this package, and it fails when you break the main path on purpose.",
+				Check: say(s, "go test reports at least one test for this package, and it fails when you break the main path on purpose.",
+					"Pkg.test() runs at least one test set for this module, and it fails when you break the main path on purpose."),
 				Facts: []Fact{{"lines", p.Lines(), 0}, {"test files", 0, 0}},
 			})
 		}
@@ -566,7 +572,15 @@ func pkgShort(s *code.Snapshot, p string) string {
 	if p == s.Module {
 		return path.Base(p)
 	}
-	return strings.TrimPrefix(p, s.Module+"/")
+	return strings.TrimPrefix(strings.TrimPrefix(p, s.Module+"/"), s.Module+".")
+}
+
+// say picks the wording for the snapshot's language.
+func say(s *code.Snapshot, goText, julia string) string {
+	if s.Lang == code.Julia {
+		return julia
+	}
+	return goText
 }
 
 func b2i(b bool) Level {

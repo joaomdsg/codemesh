@@ -1,6 +1,6 @@
 # codemesh
 
-A local web tool for Go modules. It does two jobs:
+A local web tool for Go modules and Julia packages. It does two jobs:
 
 - **Map**: find code smells, packages first.
 - **Review**: read a change as declarations, riskiest first, so review stops
@@ -17,7 +17,8 @@ so you can keep it open while you code.
 go install github.com/joaomdsg/codemesh/cmd/codemesh@latest
 ```
 
-It needs Go 1.27 or newer and `git` on the PATH. The Diagnose spike's
+It needs Go 1.27 or newer and `git` on the PATH, and `julia` 1.10 or newer
+to analyse a Julia package. The Diagnose spike's
 "Try a fix" also needs `claude` (Claude Code) on the PATH, and "Open a
 draft PR" needs `gh`, logged in, and push access to `origin`.
 
@@ -30,7 +31,7 @@ codemesh prognoses [dir]
 
 Open http://localhost:7777. `codemesh prognoses` prints the Diagnose
 findings, one per line, most urgent first. `dir` defaults to the current directory and must
-hold a `go.mod`.
+hold a `go.mod`, or a Julia package's `Project.toml`.
 
 The review is the working tree, staged, unstaged and untracked, against its
 merge-base with `-base`. Without `-base` it is `origin/HEAD`, else `main`,

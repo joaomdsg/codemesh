@@ -109,7 +109,7 @@ func Build(in Input) *Review {
 	for _, d := range in.Diffs {
 		p := cmp.Or(d.NewPath, d.OldPath)
 		hf, bf := file(in.Head, d.NewPath), file(in.Base, d.OldPath)
-		if path.Ext(p) != ".go" || hf == nil && bf == nil || hf != nil && hf.Generated {
+		if ext := path.Ext(p); ext != ".go" && ext != ".jl" || hf == nil && bf == nil || hf != nil && hf.Generated {
 			rev.Units = append(rev.Units, b.fileUnit(d, hf))
 			continue
 		}
@@ -227,9 +227,12 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	case path.Base(p) == "go.sum":
 		u.Lane = Noise
 		u.Reasons = append(u.Reasons, "checksums")
-	case p == "go.mod":
+	case p == "go.mod" || p == "Project.toml":
 		u.Lane = Contract
 		u.Reasons = append(u.Reasons, "dependencies")
+	case path.Base(p) == "Manifest.toml":
+		u.Lane = Noise
+		u.Reasons = append(u.Reasons, "resolved versions")
 	case isFixture(p):
 		u.Lane = Tests
 		u.Reasons = append(u.Reasons, "test fixture")

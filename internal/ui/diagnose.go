@@ -266,7 +266,7 @@ func (p *DiagnosePage) overview(a *live.Analysis, gs []prognosis.Prognosis) h.H 
 			feed(map[expr.Expr]any{p.Diag.Ref(): diagOf(a, gs, p.lens)}),
 			h.Div(h.Class("dx-map atlas atlas-map"), h.DataIgnoreMorph(),
 				h.DataEffect(expr.Rawf("codemesh.diag(el, %s, {mode: 'full'})", p.Diag.Ref()))),
-			legend(p.lens),
+			legend(p.lens, a.Snap.Lang),
 		),
 		h.Aside(h.Class("dx-side"), list),
 	)
@@ -302,12 +302,15 @@ func (p *DiagnosePage) lensBar() h.H {
 	return h.Nav(append([]h.H{h.Class("segs"), h.Aria("label", "Lens")}, kids...)...)
 }
 
-func legend(l string) h.H {
+func legend(l string, lang code.Lang) h.H {
 	return group([]h.H{
 		ramp(l),
 		h.P(h.Class("hint dx-legend"),
 			h.Str("Area is lines of code. "),
 			levelMark(3), h.Str(" fix first "), levelMark(2), h.Str(" fix soon "), levelMark(1), h.Str(" when convenient. Hover a marker for the short version; click it for the full one. Click any tile to see what calls it.")),
+		via.When(lang == code.Julia, func() h.H {
+			return h.P(h.Class("hint dx-legend"), h.Str("Julia picks a method when the code runs, so calls are matched by name: callers and reach are estimates."))
+		}),
 	})
 }
 
@@ -470,7 +473,7 @@ func (p *DiagnosePage) prAct(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 	case s.PR.Opening:
 		return h.Span(h.Class("hint"), h.Str("Opening a draft PR…"))
 	case s.CanPR():
-		return h.Button(h.Class("btn"), on.Click(on.Bind(p.PR, g.Key)), h.Str("Open a draft PR"))
+		return h.Button(h.Class("btn"), on.Click(on.Bind(p.PR, g.Key)), h.Title("Pushes "+s.Base+" to origin first if origin lacks it"), h.Str("Open a draft PR"))
 	case s.State != fix.Done || s.After == nil:
 		return nil
 	case s.Base == "":
