@@ -138,7 +138,8 @@ type Snapshot struct {
 	Round  int
 	rounds []int
 	ended  string
-	// Stopping says Stop was pressed while the round's checks still run.
+	// Stopping says Stop was pressed while checks still run: the starting
+	// point's, or a round's.
 	Stopping     bool
 	SummaryRound int // the round Summary describes
 	Undone       int // the round undone for leaving more, 0 for none
@@ -165,10 +166,11 @@ func (r *Run) Snapshot() Snapshot {
 	return Snapshot{Key: r.Key, State: r.state, Events: append([]Event(nil), r.events...), Steps: append([]Step(nil), r.steps...), Err: r.err,
 		Usage: r.usage.clone(), Summary: r.summary, Took: took, Before: r.before, After: r.after, Now: r.now, NowN: r.nowN, Review: r.review, Check: r.check, Base: r.base, PR: r.pr,
 		Round: r.round, rounds: slices.Clone(r.rounds), ended: r.ended, roundErr: r.roundErr,
-		Stopping: r.stopping && r.state == Checking, SummaryRound: r.summaryRound, Undone: r.undone, Origin: r.origin}
+		Stopping: r.stopping && (r.state == Preparing || r.state == Checking), SummaryRound: r.summaryRound, Undone: r.undone, Origin: r.origin}
 }
 
-// Stop ends Claude early; the run keeps what it had.
+// Stop ends Claude early; the run keeps what it had, unless that left more
+// than the round before.
 func (r *Run) Stop() {
 	r.set(func() { r.stopping = true })
 	r.stop()

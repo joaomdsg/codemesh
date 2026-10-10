@@ -272,6 +272,7 @@ func TestRun_stopWhilePreparingKeepsTheStartingCheck(t *testing.T) {
 	agent, calls := loopAgent(t, true, fixes)
 	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 1\n"})
 	r.Stop()
+	assert.True(t, r.Snapshot().Stopping, "the page says the stop waits for the starting check")
 	require.Eventually(t, func() bool { return r.Snapshot().After != nil }, time.Minute, 20*time.Millisecond)
 
 	s := r.Snapshot()

@@ -241,10 +241,10 @@ matters, what to do and how to check it.
    with no id to resume, ends the loop with the change as it stands. The
    head shows the round; the result says what each round left and why the
    loop stopped, including an error's first line or a stop. Stop ends
-   Claude's work and keeps what it changed; pressed during the checks, the
-   round finishes, the head says it is stopping, and Claude does not go
-   again. The replay marks where each
-   round began; an undone round's steps stay, faded and labelled undone,
+   Claude's work and keeps what it changed, unless that left more than the
+   round before; pressed during the checks, the starting point's or a
+   round's, they finish, the head says it is stopping, and Claude does not
+   go again. The replay marks where each round began; an undone round's steps stay, faded and labelled undone,
    and leave nothing on the map.
    The run's head names the model, the models of any helper agents, the
    API calls, the tokens and Claude Code's version, with a table per model
@@ -297,7 +297,7 @@ matters, what to do and how to check it.
    the branch or is behind, codemesh pushes the starting commit to it
    first, never forced, and stops if origin's branch moved on elsewhere. It
    refuses a run started on a detached HEAD. Git never prompts; the commit
-   carries the repository's own identity. The local branch goes with the
+   carries the repository's own identity, or codemesh's when it has none. The local branch goes with the
    worktree. Its summary is Claude's last one; when a later round failed
    before summing up, the heading names the round the summary is from.
 

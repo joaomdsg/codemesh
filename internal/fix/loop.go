@@ -18,8 +18,8 @@ const maxRounds = 5
 // maxListed caps the new smells one follow-up names.
 const maxListed = 20
 
-// How a run's rounds ended; "" while it runs and when it was stopped. A round
-// that left more is undone however the loop ended.
+// How a run's rounds ended; "" while it runs. A round that left more is
+// undone however the loop ended.
 const (
 	clean   = "clean"   // the last round left nothing
 	stalled = "stalled" // a round left as many as the one before
@@ -189,8 +189,8 @@ func (s Snapshot) RoundsNote() string {
 	return text
 }
 
-// endedWhy says why the loop stopped after last rounds; "" when it was clean
-// or a round was undone, which RoundsNote says itself.
+// endedWhy says why the loop stopped after last rounds; "" when it was clean,
+// or when the undone round is all there is to say, which RoundsNote adds.
 func (s Snapshot) endedWhy(last int) string {
 	switch s.ended {
 	case stalled:

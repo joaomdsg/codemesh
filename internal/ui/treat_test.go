@@ -38,6 +38,7 @@ func TestStoppable_showsStopUntilItIsPressed(t *testing.T) {
 		{fix.Snapshot{State: fix.Working}, true},
 		{fix.Snapshot{State: fix.Checking}, true},
 		{fix.Snapshot{State: fix.Checking, Stopping: true}, false},
+		{fix.Snapshot{State: fix.Preparing, Stopping: true}, false},
 		{done(), false},
 	} {
 		assert.Equal(t, c.stop, stoppable(c.s), "%s stopping=%v", c.s.State, c.s.Stopping)

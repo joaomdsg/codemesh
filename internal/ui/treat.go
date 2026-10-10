@@ -55,8 +55,8 @@ func (p *diagnosePage) runHead(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 	)
 }
 
-// stoppable reports whether Stop shows. Pressed during the checks, the round
-// still finishes; Claude just does not go again.
+// stoppable reports whether Stop shows. Pressed during checks, they still
+// finish; Claude just does not go again.
 func stoppable(s fix.Snapshot) bool { return s.Live() && !s.Stopping }
 
 // runNote is Claude's latest word while the run is going. It stays up for the
