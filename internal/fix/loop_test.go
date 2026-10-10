@@ -70,13 +70,24 @@ func loopRun(t *testing.T, agent string) Snapshot {
 
 func loopStart(t *testing.T, agent string) *Run {
 	t.Helper()
-	repo := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n\nfunc A() int { return 1 }\n"}, nil)
+	r := loopBegin(t, agent, nil)
+	require.Eventually(t, func() bool { s := r.Snapshot(); return !s.Live() }, 2*time.Minute, 50*time.Millisecond)
+	return r
+}
+
+// loopBegin starts a run on a small module with extra files and returns
+// without waiting for it.
+func loopBegin(t *testing.T, agent string, extra map[string]string) *Run {
+	t.Helper()
+	files := map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n\nfunc A() int { return 1 }\n"}
+	for k, v := range extra {
+		files[k] = v
+	}
+	repo := testrepo.New(t, files, nil)
 	rs := NewRuns(repo)
 	rs.Agent = agent
 	t.Cleanup(rs.Close)
-	r := rs.Start(prognosis.Prognosis{Key: "complex:m.A", Title: "Complex function", Name: "A"})
-	require.Eventually(t, func() bool { s := r.Snapshot(); return s.State == Done || s.State == Failed }, 2*time.Minute, 50*time.Millisecond)
-	return r
+	return rs.Start(prognosis.Prognosis{Key: "complex:m.A", Title: "Complex function", Name: "A"})
 }
 
 func TestRun_feedsBackWhatTheChangeLeftUntilItIsClean(t *testing.T) {
@@ -167,4 +178,52 @@ func TestLeftover_namesTheProblemStillThereAndACheckTheChangeBroke(t *testing.T)
 	}, leftover(p, "go test", &Side{CheckOK: true}, still, &review.Review{}))
 	assert.Equal(t, []string{"The problem is still there: Complex function, A [complex:m.A]"},
 		leftover(p, "go test", &Side{}, still, &review.Review{}), "a check that failed at the start is not the run's to fix")
+}
+
+func TestRun_stopsAtTheRoundCap(t *testing.T) {
+	t.Parallel()
+	// Each round leaves one function with too many parameters fewer: five,
+	// then four, down to one when the cap ends it.
+	calls := t.TempDir()
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\n"+
+		`echo '{"type":"system","subtype":"init","session_id":"s1","model":"m","claude_code_version":"t"}'`+"\n"+
+		"n=$(( $(cat "+calls+"/n 2>/dev/null || echo 0) + 1 )); echo $n > "+calls+"/n\n"+
+		"printf 'package m\\n' > c.go\n"+
+		"i=$n; while [ $i -le 5 ]; do printf 'func C%d(a, b, c, d, e, f int) int { return a }\\n' $i >> c.go; i=$((i+1)); done\n"), 0o755))
+	s := loopRun(t, agent)
+
+	assert.Equal(t, []int{5, 4, 3, 2, 1}, s.rounds)
+	assert.Equal(t, capped, s.ended)
+}
+
+func TestRun_stopInALaterRoundKeepsWhatItHas(t *testing.T) {
+	t.Parallel()
+	agent, _ := loopAgent(t, true, "exec sleep 30")
+	r := loopBegin(t, agent, nil)
+	require.Eventually(t, func() bool { s := r.Snapshot(); return s.Round == 2 && s.State == Working }, time.Minute, 20*time.Millisecond)
+	r.Stop()
+	// A stopped run still analyses what it has.
+	require.Eventually(t, func() bool { return r.Snapshot().After != nil }, time.Minute, 20*time.Millisecond)
+
+	s := r.Snapshot()
+	assert.Equal(t, Stopped, s.State)
+	assert.Equal(t, []int{1, 1}, s.rounds)
+	assert.Empty(t, s.ended)
+	require.NotNil(t, s.After, "what Claude changed so far is analysed")
+}
+
+func TestRun_stopWhileCheckingEndsTheLoop(t *testing.T) {
+	t.Parallel()
+	agent, calls := loopAgent(t, true, fixes)
+	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 2\n"})
+	require.Eventually(t, func() bool { return r.Snapshot().State == Checking }, time.Minute, 20*time.Millisecond)
+	r.Stop()
+	require.Eventually(t, func() bool { return !r.Snapshot().Live() }, time.Minute, 20*time.Millisecond)
+
+	s := r.Snapshot()
+	assert.Equal(t, Done, s.State, "the round finished; its result can still become a pull request")
+	assert.Equal(t, []int{1}, s.rounds)
+	assert.NoFileExists(t, filepath.Join(calls, "followup"), "Claude does not go again")
+	assert.Equal(t, "Stopped, so Claude does not go again.", s.Events[len(s.Events)-1].Text)
 }

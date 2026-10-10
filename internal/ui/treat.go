@@ -43,7 +43,9 @@ func (p *diagnosePage) runHead(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		h.H3(h.Str(runTitle(s))),
 		h.Span(h.Class("hint"), h.Str(runMeta(s))),
 		h.Div(h.Class("dx-acts"),
-			via.When(s.Editing(), func() h.H {
+			// Stopped during the checks, the round still finishes; Claude
+			// just does not go again.
+			via.When(s.Live(), func() h.H {
 				return h.Button(h.Class("btn"), on.Click(on.Bind(p.Stop, g.Key)), h.Str("Stop"))
 			}),
 			p.prAct(g, s),

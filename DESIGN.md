@@ -239,8 +239,9 @@ matters, what to do and how to check it.
    carry a worse round. A pull request folds these commits into one. A later
    round that fails, or a session with no id to resume, ends the loop with
    the change as it stands. The head shows the round; the result says what
-   each round left and why the loop stopped. The replay marks where each
-   round began.
+   each round left and why the loop stopped. Stop ends Claude's work and
+   keeps what it changed; pressed during the checks, the round finishes
+   and Claude does not go again. The replay marks where each round began.
    The run's head names the model, the models of any helper agents, the
    API calls, the tokens and Claude Code's version, with a table per model
    in a fold. Its cost meter moves with each reply: an estimate, marked ≈,

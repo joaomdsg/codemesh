@@ -83,6 +83,9 @@ type outcome struct {
 // kept before it, finishes the run when Claude does not go again, and
 // otherwise keeps the round. It reports whether Claude goes again.
 func (r *Run) settle(ctx context.Context, n int, now outcome, kept *outcome) bool {
+	if now.stopped && r.Snapshot().State == Checking {
+		r.note("Stopped, so Claude does not go again.")
+	}
 	more, ended := r.endRound(now.left, now.stopped, now.failed)
 	if ended == undone {
 		if err := r.undo(ctx, kept.sha); err != nil {
