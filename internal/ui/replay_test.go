@@ -25,6 +25,10 @@ func TestChangedDecls_landsOnTheDeclarationsTheLinesFallIn(t *testing.T) {
 	// Lines added between A and B count for A, the declaration before them.
 	c = fix.Change{Start: 5, Old: "l5\nl6", New: "l5\nx\nl6"}
 	assert.Equal(t, map[string]int{"A": 1}, changedDecls(ds, c))
+
+	// A line replaced on B's first line belongs to B, not to A before it.
+	c = fix.Change{Start: 6, Old: "l6\nl7\nl8", New: "l6\nb7\nl8"}
+	assert.Equal(t, map[string]int{"B": 2}, changedDecls(ds, c))
 }
 
 func TestBroken_listsExportedDeclarationsRemovedOrResigned(t *testing.T) {
