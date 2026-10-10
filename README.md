@@ -73,7 +73,8 @@ fix" asks Claude Code to treat it in a throwaway worktree, hands it back
 what its change left (new smells, the problem, a broken check) for up to
 five rounds, replays what it did step by step on the map, and shows the
 before and after, checked with the repository's own `ci.sh` or `make ci`
-when it has one. See
+when it has one. What Claude or the check leaves running, such as a server
+or a build daemon, is stopped when it ends. See
 [DESIGN.md](DESIGN.md#diagnose-spike).
 
 ## Review
