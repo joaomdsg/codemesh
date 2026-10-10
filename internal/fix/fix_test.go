@@ -123,6 +123,13 @@ func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
 	assert.Len(t, tr.changes(), 1, "putting the file back is a change too")
 }
 
+func TestInside_takesNamesStartingWithDotsAsInside(t *testing.T) {
+	for p, want := range map[string]bool{"/r/..x/a.go": true, "/r/a.go": true, "/r": true, "/r/../a.go": false, "/a.go": false} {
+		_, ok := inside("/r", p)
+		assert.Equal(t, want, ok, p)
+	}
+}
+
 func TestTree_readsTheLinesAShellCommandNames(t *testing.T) {
 	b := "package m\n" + strings.Repeat("x\n", 9)
 	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n", "b.go": b}, nil)

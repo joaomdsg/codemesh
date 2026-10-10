@@ -126,7 +126,7 @@ func hunks(a, b string) []hunk {
 // inside gives p relative to root, slash-separated, when p lies within it.
 func inside(root, p string) (string, bool) {
 	rel, err := filepath.Rel(root, p)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false
 	}
 	return filepath.ToSlash(rel), true
