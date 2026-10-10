@@ -216,7 +216,8 @@ matters, what to do and how to check it.
    throwaway worktree of the last commit (`internal/fix`); `-agent` names
    another command called the same way. It may run any command there, so
    the only guards are that `git push` is denied, the worktree is removed on
-   Discard or shutdown, and nothing is written back unless the reader opens
+   Discard or shutdown (or, after a crash, when codemesh next starts on the
+   repository), and nothing is written back unless the reader opens
    a pull request (9). The starting point is analysed in a second worktree,
    kept for the run: the review reads each side's source when it is built,
    and Claude's copy has changed by then. Uncommitted edits are

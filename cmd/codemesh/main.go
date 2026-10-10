@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/joaomdsg/codemesh/internal/fix"
+	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/joaomdsg/codemesh/internal/review"
@@ -56,6 +57,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("review state: %w", err)
 	}
+	sweep(dir, log)
 	src := live.New(dir, *base, log)
 	defer src.Close()
 
@@ -128,4 +130,16 @@ func listPrognoses() error {
 		fmt.Println(g)
 	}
 	return nil
+}
+
+// sweep removes worktrees left by codemesh servers that died without
+// cleaning up.
+func sweep(dir string, log *slog.Logger) {
+	repo, err := gitx.Open(dir)
+	if err != nil {
+		return
+	}
+	if err := repo.Sweep(); err != nil {
+		log.Warn("removing worktrees of dead servers", "err", err)
+	}
 }
