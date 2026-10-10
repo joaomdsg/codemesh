@@ -37,7 +37,6 @@ func main() {
 	}
 }
 
-// options are the server's flags and the module to serve.
 type options struct {
 	addr, base, agent, dir string
 	poll                   time.Duration
@@ -97,8 +96,8 @@ func run() error {
 	})
 }
 
-// serve serves on ln and starts watching until a signal or a server error,
-// then shuts the server down.
+// serve serves on ln, then calls watch. A signal or a server error shuts the
+// server down.
 func serve(srv *http.Server, ln net.Listener, watch func(context.Context)) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
