@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/bluekeyes/go-gitdiff/gitdiff"
+	"github.com/joaomdsg/codemesh/internal/gitx"
 )
 
 // Change is one file a step left different, as the lines it replaced and
@@ -38,7 +39,7 @@ func (t *tree) changes() []Change {
 	if t == nil {
 		return nil
 	}
-	out, err := exec.Command("git", "-C", t.wt, "status", "--porcelain=v1", "-z", "--untracked-files=all").Output()
+	out, err := gitIn(t.wt, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
 		return nil
 	}
@@ -63,10 +64,16 @@ func (t *tree) changes() []Change {
 	return cs
 }
 
+func gitIn(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = gitx.Env()
+	return cmd.Output()
+}
+
 func (t *tree) diff(p string) []Change {
 	before, ok := t.seen[p]
 	if !ok {
-		head, _ := exec.Command("git", "-C", t.wt, "show", "HEAD:"+p).Output()
+		head, _ := gitIn(t.wt, "show", "HEAD:"+p)
 		before = string(head)
 	}
 	data, _ := os.ReadFile(filepath.Join(t.wt, p))

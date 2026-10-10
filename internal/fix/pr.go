@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 )
 
@@ -76,7 +76,12 @@ func (r *Run) push(ctx context.Context, branch string, t text) (string, error) {
 	return lines[len(lines)-1], nil
 }
 
+// git runs git in the run's worktree; never elsewhere, as undo resets and
+// cleans where it runs.
 func (r *Run) git(ctx context.Context, args ...string) error {
+	if r.wt == "" {
+		return errors.New("the run has no worktree")
+	}
 	_, err := command(ctx, r.wt, nil, "git", args...)
 	return err
 }
@@ -143,7 +148,7 @@ func command(ctx context.Context, dir string, stdin io.Reader, name string, args
 	cmd := exec.CommandContext(ctx, name, args...)
 	group(cmd)
 	cmd.Dir, cmd.Stdin = dir, stdin
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
+	cmd.Env = gitx.Env("GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	if err := exited(cmd.Run()); err != nil {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -41,9 +42,20 @@ type FileDiff struct {
 	Hunks            []Hunk
 }
 
+// Env is the process's environment for running git in a directory given
+// with -C, plus extra. It drops the variables that point git at another
+// repository, as a git hook's environment does.
+func Env(extra ...string) []string {
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		k, _, _ := strings.Cut(kv, "=")
+		return k == "GIT_DIR" || k == "GIT_WORK_TREE" || k == "GIT_INDEX_FILE"
+	})
+	return append(env, extra...)
+}
+
 func run(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = Env("LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

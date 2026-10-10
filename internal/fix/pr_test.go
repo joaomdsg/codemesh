@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +101,19 @@ func TestOpenPR_doesNothingOnceTheRunIsClosed(t *testing.T) {
 
 	assert.Equal(t, PR{}, r.Snapshot().PR)
 	assert.NoFileExists(t, filepath.Join(calls, "args"))
+}
+
+func TestGit_runsOnlyInTheRunsWorktree(t *testing.T) {
+	assert.Error(t, (&Run{}).git(context.Background(), "rev-parse", "HEAD"), "not in the process's directory")
+
+	a := testrepo.New(t, map[string]string{"a.go": "package a\n"}, nil)
+	b := testrepo.New(t, map[string]string{"b.go": "package b\n"}, nil)
+	want := gitOut(t, a, "rev-parse", "HEAD")
+	t.Setenv("GIT_DIR", filepath.Join(b, ".git"))
+	t.Setenv("GIT_WORK_TREE", b)
+	got, err := command(context.Background(), a, nil, "git", "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, want, strings.TrimSpace(got), "nor in a repository the environment names")
 }
 
 func TestOpenPR_pushesABaseBranchOriginLacksFirst(t *testing.T) {

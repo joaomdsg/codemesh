@@ -344,6 +344,21 @@ func TestRepo_diffListsUntrackedLinksWithoutReadingThem(t *testing.T) {
 	assert.NotContains(t, got, "nested/", "a nested repository has no lines of its own")
 }
 
+func TestRepo_ignoresAGitDirFromTheEnvironment(t *testing.T) {
+	a, b := newRepo(t), newRepo(t)
+	for _, dir := range []string{a, b} {
+		write(t, dir, "f.txt", dir)
+		commit(t, dir, "one")
+	}
+	want := git(t, a, "rev-parse", "HEAD")
+	t.Setenv("GIT_DIR", filepath.Join(b, ".git"))
+	t.Setenv("GIT_WORK_TREE", b)
+
+	got, err := (&gitx.Repo{Dir: a}).Head()
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "git runs on the repository it was given")
+}
+
 func TestRepo_diffMarksTrackedBinary(t *testing.T) {
 	t.Parallel()
 	dir := newRepo(t)
