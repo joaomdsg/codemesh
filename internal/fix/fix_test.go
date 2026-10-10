@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,6 +106,27 @@ func TestCheckOf_prefersTheReposOwnGate(t *testing.T) {
 	c := checkOf(root, filepath.Join(root, "sub"))
 	assert.Equal(t, "./ci.sh", c.Name)
 	assert.Equal(t, root, c.Dir, "a repo's gate runs from its root, not the module's")
+}
+
+func TestAnalyse_endsTheChecksChildrenWhenCancelled(t *testing.T) {
+	t.Parallel()
+	dir := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n"}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	// Without exec the shell forks each sleep, and the child holds the output.
+	s, err := analyse(ctx, dir, Check{Dir: dir, Args: []string{"sh", "-c", "sleep 30; sleep 30"}})
+	require.NoError(t, err)
+	assert.False(t, s.CheckOK)
+	assert.Less(t, time.Since(start), 10*time.Second)
+}
+
+func TestAnalyse_passesACheckThatLeavesAChildBehind(t *testing.T) {
+	t.Parallel()
+	dir := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n"}, nil)
+	s, err := analyse(context.Background(), dir, Check{Dir: dir, Args: []string{"sh", "-c", "sleep 8 &"}})
+	require.NoError(t, err)
+	assert.True(t, s.CheckOK, "the check itself succeeded")
 }
 
 func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {

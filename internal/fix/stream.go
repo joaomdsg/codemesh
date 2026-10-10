@@ -30,6 +30,7 @@ func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
 	}
 	r.mu.Unlock()
 	cmd := exec.CommandContext(ctx, agent, args...)
+	group(cmd)
 	cmd.Dir = dir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -41,7 +42,7 @@ func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
 		return fmt.Errorf("could not start claude: %w", err)
 	}
 	r.read(stdout)
-	if err := cmd.Wait(); err != nil {
+	if err := exited(cmd.Wait()); err != nil {
 		return fmt.Errorf("claude: %w: %s", err, tail(stderr.String(), 5))
 	}
 	return nil

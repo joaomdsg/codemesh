@@ -141,11 +141,12 @@ func (r *Run) commitChange(ctx context.Context, branch, title string) error {
 // push that needs credentials fails instead of hanging.
 func command(ctx context.Context, dir string, stdin io.Reader, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	group(cmd)
 	cmd.Dir, cmd.Stdin = dir, stdin
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
-	if err := cmd.Run(); err != nil {
+	if err := exited(cmd.Run()); err != nil {
 		return "", fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(errOut.String()))
 	}
 	return out.String(), nil

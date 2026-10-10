@@ -255,6 +255,18 @@ func TestRun_stopInALaterRoundKeepsWhatItHas(t *testing.T) {
 	require.NotNil(t, s.After, "what Claude changed so far is analysed")
 }
 
+func TestRun_stopEndsWhatClaudeStarted(t *testing.T) {
+	t.Parallel()
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\nsleep 30; sleep 30\n"), 0o755))
+	r := loopBegin(t, agent, nil)
+	require.Eventually(t, func() bool { return r.Snapshot().State == Working }, time.Minute, 20*time.Millisecond)
+	stopped := time.Now()
+	r.Stop()
+	require.Eventually(t, func() bool { return r.Snapshot().After != nil }, time.Minute, 20*time.Millisecond)
+	assert.Less(t, time.Since(stopped), 15*time.Second, "the agent's children do not hold the run")
+}
+
 func TestRun_stopWhileCheckingEndsTheLoop(t *testing.T) {
 	t.Parallel()
 	agent, calls := loopAgent(t, true, fixes)
