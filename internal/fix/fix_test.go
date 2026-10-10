@@ -1,9 +1,11 @@
 package fix
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -167,16 +169,37 @@ func TestAnalyse_endsWhatTheCheckLeftRunning(t *testing.T) {
 	assert.Eventually(t, func() bool { return !running(t, pid) }, 5*time.Second, 50*time.Millisecond)
 }
 
-// running reports whether the process whose id is in file still exists.
+// running reports whether the process whose id is in file still runs. A
+// killed process stays a zombie until its parent reaps it, which an init
+// that does not reap never does, so a zombie counts as gone.
 func running(t *testing.T, file string) bool {
 	t.Helper()
 	b, err := os.ReadFile(file)
 	require.NoError(t, err)
 	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
 	require.NoError(t, err)
+	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(n) + "/stat"); err == nil {
+		// The state follows the command in parentheses, which may hold any
+		// character, ")" too.
+		i := bytes.LastIndexByte(stat, ')')
+		return i+2 < len(stat) && stat[i+2] != 'Z'
+	}
 	p, err := os.FindProcess(n)
 	require.NoError(t, err)
 	return p.Signal(syscall.Signal(0)) == nil
+}
+
+func TestRunning_takesAZombieAsGone(t *testing.T) {
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		t.Skip("no /proc")
+	}
+	dead := exec.Command("true")
+	require.NoError(t, dead.Start())
+	t.Cleanup(func() { _ = dead.Wait() })
+	pid := filepath.Join(t.TempDir(), "pid")
+	require.NoError(t, os.WriteFile(pid, []byte(strconv.Itoa(dead.Process.Pid)), 0o600))
+	// Not waited for, it stays a zombie: killed, it is gone all the same.
+	assert.Eventually(t, func() bool { return !running(t, pid) }, 5*time.Second, 20*time.Millisecond)
 }
 
 func TestUsage_settle_addsATallyThatCoversOnlyItsOwnCall(t *testing.T) {
