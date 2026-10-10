@@ -20,10 +20,10 @@ func TestParse_turnsClaudesStreamIntoSteps(t *testing.T) {
 	thought := parse([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Grouping the shared parameters.\nThen tests."},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/wt/m/a.go","old_string":"f(a, b)","new_string":"f(p)"}}]}}`))
 	require.Len(t, thought, 2)
 	assert.Equal(t, Step{Kind: kindThink, Title: "Grouping the shared parameters.", Text: "Grouping the shared parameters.\nThen tests."}, *thought[0].step)
-	assert.Equal(t, Step{ID: "t1", Kind: kindEdit, Tool: "Edit", Title: "Edit a.go", Path: "/wt/m/a.go", Old: "f(a, b)", New: "f(p)"}, *thought[1].step)
+	assert.Equal(t, Step{ID: "t1", Kind: kindEdit, Title: "Edit a.go", Path: "/wt/m/a.go", Old: "f(a, b)", New: "f(p)"}, *thought[1].step)
 
 	run := parse([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"go test ./...\necho done"}}]}}`))
-	assert.Equal(t, Step{ID: "t2", Kind: kindExec, Tool: "Bash", Title: "Bash go test ./...", Command: "go test ./...\necho done"}, *run[0].step)
+	assert.Equal(t, Step{ID: "t2", Kind: kindExec, Title: "Bash go test ./...", Command: "go test ./...\necho done"}, *run[0].step)
 
 	res := parse([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"FAIL a"}],"is_error":true}]}}`))
 	require.Len(t, res, 1)

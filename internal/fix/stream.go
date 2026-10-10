@@ -303,7 +303,7 @@ func toolStep(id, name string, input json.RawMessage) *Step {
 		} `json:"edits"`
 	}
 	_ = json.Unmarshal(input, &in)
-	st := &Step{ID: id, Tool: name, Kind: kinds[name], Path: cmp.Or(in.FilePath, in.NotebookPath), Command: in.Command}
+	st := &Step{ID: id, Kind: kinds[name], Path: cmp.Or(in.FilePath, in.NotebookPath), Command: in.Command}
 	if st.Kind == "" {
 		st.Kind = kindOther
 	}

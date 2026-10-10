@@ -49,7 +49,6 @@ type Event struct {
 type Step struct {
 	ID         string // the tool call's id; "" for a thought
 	Kind       string // think, read, search, edit, run or other
-	Tool       string
 	Title      string // one line
 	Path       string // the file it named, relative to the worktree when inside it
 	File       string // the same file relative to the module, when it is in it
@@ -202,8 +201,7 @@ func (s Snapshot) Live() bool {
 	return s.State == Preparing || s.State == Working || s.State == Checking
 }
 
-// Editing reports whether Claude has yet to finish editing, so it can still be
-// stopped.
+// Editing reports whether Claude has yet to finish editing.
 func (s Snapshot) Editing() bool { return s.State == Preparing || s.State == Working }
 
 // Snapshot returns the run's progress so far.
