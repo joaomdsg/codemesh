@@ -90,6 +90,18 @@ func TestOpenPR_commitsInARepositoryWithNoIdentity(t *testing.T) {
 	assert.Equal(t, "codemesh", gitOut(t, origin, "log", "-1", "--format=%an", pr.Branch))
 }
 
+func TestOpenPR_doesNothingOnceTheRunIsClosed(t *testing.T) {
+	t.Parallel()
+	_, _, calls, rs := pushed(t)
+	r := rs.Start(prognosis.Prognosis{Key: "complex:m.A", Title: "Complex function", Name: "A"})
+	require.Eventually(t, func() bool { return r.Snapshot().CanPR() }, time.Minute, 50*time.Millisecond)
+	rs.Dismiss(r.Key)
+	r.OpenPR()
+
+	assert.Equal(t, PR{}, r.Snapshot().PR)
+	assert.NoFileExists(t, filepath.Join(calls, "args"))
+}
+
 func TestOpenPR_pushesABaseBranchOriginLacksFirst(t *testing.T) {
 	t.Parallel()
 	repo, origin, calls, rs := pushed(t)

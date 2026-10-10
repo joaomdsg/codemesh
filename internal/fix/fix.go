@@ -148,6 +148,7 @@ type Run struct {
 	gh       string
 	pr       PR
 	bg       sync.WaitGroup // OpenPR's work, which close waits for
+	closing  bool           // close began; OpenPR starts no more work
 	life     context.Context
 	cleanup  func() error
 	stop     context.CancelFunc // ends Claude's work; the run still checks the result
@@ -341,6 +342,9 @@ func (rs *Runs) Close() {
 // close ends the run and waits for it before removing the worktree, so a
 // worktree still being created is removed too, not left behind.
 func (r *Run) close() {
+	r.mu.Lock()
+	r.closing = true
+	r.mu.Unlock()
 	r.end()
 	<-r.done
 	r.bg.Wait()

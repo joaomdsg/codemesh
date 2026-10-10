@@ -37,7 +37,7 @@ func (r *Run) OpenPR() {
 	r.mu.Lock()
 	s := Snapshot{State: r.state, Before: r.before, After: r.after, Base: r.base, Check: r.check, Summary: r.summary,
 		Origin: r.origin, rounds: r.rounds, SummaryRound: r.summaryRound, Undone: r.undone}
-	if !s.CanPR() || r.pr.Opening || r.pr.URL != "" {
+	if !s.CanPR() || r.closing || r.pr.Opening || r.pr.URL != "" {
 		r.mu.Unlock()
 		return
 	}
