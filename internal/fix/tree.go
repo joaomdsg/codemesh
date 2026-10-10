@@ -75,10 +75,7 @@ func (t *tree) diff(p string) []Change {
 		return nil
 	}
 	t.seen[p] = after
-	file := ""
-	if rel, err := filepath.Rel(t.mod, filepath.Join(t.wt, p)); err == nil && !strings.HasPrefix(rel, "..") {
-		file = filepath.ToSlash(rel)
-	}
+	file, _ := inside(t.mod, filepath.Join(t.wt, p))
 	var cs []Change
 	for _, h := range hunks(before, after) {
 		cs = append(cs, Change{Path: p, File: file, Start: h.start, Old: clip(h.old, false), New: clip(h.new, false)})
@@ -124,6 +121,15 @@ func hunks(a, b string) []hunk {
 		hs = append(hs, hunk{start: int(f.OldPosition), old: o.String(), new: n.String()})
 	}
 	return hs
+}
+
+// inside gives p relative to root, slash-separated, when p lies within it.
+func inside(root, p string) (string, bool) {
+	rel, err := filepath.Rel(root, p)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 // shellKind sorts a shell command into a lane by its first word: reading and

@@ -64,12 +64,12 @@ func (t *tree) moduleFile(p string) (string, bool) {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(t.mod, p)
 	}
-	rel, err := filepath.Rel(t.mod, p)
-	if err != nil || strings.HasPrefix(rel, "..") {
+	rel, ok := inside(t.mod, p)
+	if !ok {
 		return "", false
 	}
 	info, err := os.Stat(p)
-	return filepath.ToSlash(rel), err == nil && info.Mode().IsRegular()
+	return rel, err == nil && info.Mode().IsRegular()
 }
 
 // shown is the line range a printing command shows of file: 0, 0 when it is

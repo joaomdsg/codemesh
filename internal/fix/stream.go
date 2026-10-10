@@ -150,13 +150,11 @@ func (r *Run) place(p string) (shown, file string) {
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(mod, p)
 	}
-	shown = p
-	if rel, err := filepath.Rel(wt, p); err == nil && !strings.HasPrefix(rel, "..") {
-		shown = filepath.ToSlash(rel)
+	shown, ok := inside(wt, p)
+	if !ok {
+		shown = p
 	}
-	if rel, err := filepath.Rel(mod, p); err == nil && !strings.HasPrefix(rel, "..") {
-		file = filepath.ToSlash(rel)
-	}
+	file, _ = inside(mod, p)
 	return shown, file
 }
 
