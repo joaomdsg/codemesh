@@ -130,34 +130,52 @@ func (r *Repo) Diff(base string) ([]FileDiff, error) {
 		if p == "" {
 			continue
 		}
-		fd, err := r.untracked(p)
+		fd, ok, err := r.untracked(p)
 		if err != nil {
 			return nil, err
 		}
-		fds = append(fds, fd)
+		if ok {
+			fds = append(fds, fd)
+		}
 	}
 	return fds, nil
 }
 
-func (r *Repo) untracked(path string) (FileDiff, error) {
-	fd := FileDiff{NewPath: path, Status: Added}
-	data, err := os.ReadFile(filepath.Join(r.Dir, filepath.FromSlash(path)))
+// untracked describes an untracked entry. A link is listed but not
+// followed: its target may be missing, a directory or outside the tree. A
+// directory, such as a nested repository, has no lines of its own.
+func (r *Repo) untracked(path string) (fd FileDiff, ok bool, err error) {
+	fd = FileDiff{NewPath: path, Status: Added}
+	full := filepath.Join(r.Dir, filepath.FromSlash(path))
+	info, err := os.Lstat(full)
+	if err != nil || info.IsDir() {
+		return fd, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return fd, true, nil
+	}
+	data, err := os.ReadFile(full)
 	if err != nil {
-		return fd, err
+		return fd, false, err
 	}
 	// Same heuristic git uses: a NUL byte in the first 8000 bytes.
 	if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 		fd.Binary = true
-		return fd, nil
+		return fd, true, nil
 	}
+	if n := Lines(data); n > 0 {
+		fd.Hunks = []Hunk{{NewStart: 1, NewLines: n}}
+	}
+	return fd, true, nil
+}
+
+// Lines counts data's lines, the last one counted without its newline.
+func Lines(data []byte) int {
 	n := bytes.Count(data, []byte{'\n'})
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		n++
 	}
-	if n > 0 {
-		fd.Hunks = []Hunk{{NewStart: 1, NewLines: n}}
-	}
-	return fd, nil
+	return n
 }
 
 // Show returns the contents of path at rev.

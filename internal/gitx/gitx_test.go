@@ -322,6 +322,28 @@ func TestRepo_diffMarksUntrackedBinary(t *testing.T) {
 	assert.Empty(t, fd.Hunks)
 }
 
+func TestRepo_diffListsUntrackedLinksWithoutReadingThem(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "tracked.txt", "t\n")
+	commit(t, dir, "one")
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+	write(t, dir, "sub/x.txt", "x\n")
+	require.NoError(t, os.Symlink("missing", filepath.Join(dir, "dangling")))
+	require.NoError(t, os.Symlink("sub", filepath.Join(dir, "dirlink")))
+	nested := filepath.Join(dir, "nested")
+	require.NoError(t, os.Mkdir(nested, 0o755))
+	require.NoError(t, exec.Command("git", "-C", nested, "init", "--quiet").Run())
+
+	got := diffByPath(t, open(t, dir), "HEAD")
+	for _, p := range []string{"dangling", "dirlink"} {
+		require.Contains(t, got, p)
+		assert.Equal(t, gitx.Added, got[p].Status, p)
+		assert.Empty(t, got[p].Hunks, p)
+	}
+	assert.NotContains(t, got, "nested/", "a nested repository has no lines of its own")
+}
+
 func TestRepo_diffMarksTrackedBinary(t *testing.T) {
 	t.Parallel()
 	dir := newRepo(t)

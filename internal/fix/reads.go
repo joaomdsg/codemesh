@@ -1,13 +1,14 @@
 package fix
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/joaomdsg/codemesh/internal/gitx"
 )
 
 // Read is a stretch of a module file a step read: lines From to To, 1-based
@@ -140,11 +141,7 @@ func lineCount(file string) int {
 	if err != nil {
 		return 0
 	}
-	n := bytes.Count(b, []byte("\n"))
-	if len(b) > 0 && b[len(b)-1] != '\n' {
-		n++
-	}
-	return n
+	return gitx.Lines(b)
 }
 
 // matched reads a `grep -n` or `rg -n` result as the lines it showed of each
