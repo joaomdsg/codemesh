@@ -119,9 +119,7 @@ func (r *Run) keep(ctx context.Context, n int) (string, error) {
 	if err := r.git(ctx, "add", "--all"); err != nil {
 		return "", err
 	}
-	// The worktree's repository may have no identity configured.
-	if err := r.git(ctx, "-c", "user.name=codemesh", "-c", "user.email=codemesh@localhost",
-		"commit", "--quiet", "--no-verify", "--allow-empty", "-m", fmt.Sprintf("codemesh round %d", n)); err != nil {
+	if err := r.commit(ctx, "--no-verify", "--allow-empty", "-m", fmt.Sprintf("codemesh round %d", n)); err != nil {
 		return "", err
 	}
 	out, err := command(ctx, r.wt, nil, "git", "rev-parse", "HEAD")

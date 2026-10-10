@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,6 +81,20 @@ func (r *Run) git(ctx context.Context, args ...string) error {
 	return err
 }
 
+// commit commits what is staged. A repository with no identity configured
+// commits as codemesh; one with an identity keeps it, as it authors the pull
+// request.
+func (r *Run) commit(ctx context.Context, args ...string) error {
+	var id []string
+	if r.git(ctx, "config", "user.name") != nil {
+		id = append(id, "-c", "user.name=codemesh")
+	}
+	if r.git(ctx, "config", "user.email") != nil {
+		id = append(id, "-c", "user.email=codemesh@localhost")
+	}
+	return r.git(ctx, slices.Concat(id, []string{"commit", "--quiet"}, args)...)
+}
+
 // ensureBase makes sure origin's base branch holds the starting commit, so
 // the pull request holds only the change. When it lacks it, the starting
 // commit is pushed to it, never forced: a branch that moved on elsewhere
@@ -116,7 +131,7 @@ func (r *Run) commitChange(ctx context.Context, branch, title string) error {
 	if r.git(ctx, "diff", "--cached", "--quiet") == nil {
 		return errors.New("there is no change to propose")
 	}
-	if err := r.git(ctx, "commit", "--quiet", "--message", title); err != nil {
+	if err := r.commit(ctx, "--message", title); err != nil {
 		return err
 	}
 	return r.git(ctx, "push", "--quiet", "--force-with-lease", "--set-upstream", "origin", branch)

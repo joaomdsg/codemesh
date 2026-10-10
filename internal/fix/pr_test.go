@@ -69,9 +69,25 @@ func TestOpenPR_pushesTheChangeAndOpensADraftAgainstTheStartingBranch(t *testing
 	assert.Contains(t, string(body), "A is hard to follow.")
 	assert.Contains(t, gitOut(t, origin, "show", pr.Branch+":b.go"), "func B()", "the branch on origin holds the change")
 	assert.Equal(t, "Complex function: A", gitOut(t, origin, "log", "-1", "--format=%s", pr.Branch))
+	assert.Equal(t, "t", gitOut(t, origin, "log", "-1", "--format=%an", pr.Branch), "the repository's own identity authors it")
 
 	rs.Dismiss(r.Key)
 	assert.Empty(t, gitOut(t, repo, "branch", "--list", "codemesh/*"), "the local branch goes with the worktree")
+}
+
+func TestOpenPR_commitsInARepositoryWithNoIdentity(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("EMAIL", "")
+	_, origin, _, rs := pushed(t)
+	for _, key := range []string{"user.name", "user.email"} {
+		require.NoError(t, testrepo.Git(rs.Dir, "config", "--unset", key))
+	}
+	r := finish(t, rs)
+
+	pr := r.Snapshot().PR
+	require.NoError(t, pr.Err)
+	assert.Equal(t, "codemesh", gitOut(t, origin, "log", "-1", "--format=%an", pr.Branch))
 }
 
 func TestOpenPR_pushesABaseBranchOriginLacksFirst(t *testing.T) {
