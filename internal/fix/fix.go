@@ -6,6 +6,7 @@ package fix
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -98,6 +99,7 @@ type Run struct {
 	pr       PR
 	bg       sync.WaitGroup // OpenPR's work, which close waits for
 	closing  bool           // close began; OpenPR starts no more work
+	mark     string         // CODEMESH_RUN=<token>, in the environment of what the run starts
 	life     context.Context
 	cleanup  func() error
 	stop     context.CancelFunc // ends Claude's work; the run still checks the result
@@ -235,7 +237,7 @@ func (rs *Runs) Start(p prognosis.Prognosis) *Run {
 	}
 	life, end := context.WithCancel(context.Background())
 	work, stop := context.WithCancel(life)
-	r := &Run{Key: p.Key, Started: time.Now(), state: Preparing, remap: make(chan struct{}, 1), p: p, gh: rs.Gh, life: life, stop: stop, end: end, done: make(chan struct{}), updates: rs.Updates}
+	r := &Run{Key: p.Key, Started: time.Now(), state: Preparing, mark: "CODEMESH_RUN=" + rand.Text(), remap: make(chan struct{}, 1), p: p, gh: rs.Gh, life: life, stop: stop, end: end, done: make(chan struct{}), updates: rs.Updates}
 	rs.runs[p.Key] = r
 	go func() {
 		defer close(r.done)
@@ -298,6 +300,7 @@ func (r *Run) close() {
 	r.end()
 	<-r.done
 	r.bg.Wait()
+	endMarked(r.mark)
 	r.mu.Lock()
 	cleanup, branch := r.cleanup, r.pr.Branch
 	r.cleanup = nil
@@ -321,7 +324,7 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 	startMod := filepath.Join(start, rel)
 	// Stop ends Claude's work, not this: a check cut short would read as one
 	// that failed before the run.
-	before, err := analyse(life, startMod, checkOf(start, startMod))
+	before, err := analyse(life, startMod, r.marked(checkOf(start, startMod)))
 	if err != nil {
 		r.fail(err)
 		return

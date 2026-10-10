@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -57,6 +58,13 @@ func hasTarget(file, t string) bool {
 	return false
 }
 
+// marked is c with the run's mark in its environment, so close can find what
+// it left running.
+func (r *Run) marked(c Check) Check {
+	c.Env = append(slices.Clip(c.Env), r.mark)
+	return c
+}
+
 // analyse loads a tree and runs its check. The check is capped: a hung test
 // must not hold the result back.
 func analyse(ctx context.Context, dir string, c Check) (*Side, error) {
@@ -68,7 +76,7 @@ func analyse(ctx context.Context, dir string, c Check) (*Side, error) {
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(cctx, c.Args[0], c.Args[1:]...)
-	group(cmd)
+	defer group(cmd)()
 	cmd.Dir, cmd.Env = c.Dir, gitx.Env(c.Env...)
 	out, err := cmd.CombinedOutput()
 	s.CheckOK, s.Output = exited(err) == nil, tail(string(out), 40)

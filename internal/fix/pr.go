@@ -151,7 +151,7 @@ func (r *Run) commitChange(ctx context.Context, branch, title string) error {
 // push that needs credentials fails instead of hanging.
 func command(ctx context.Context, dir string, stdin io.Reader, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	group(cmd)
+	defer group(cmd)()
 	cmd.Dir, cmd.Stdin = dir, stdin
 	cmd.Env = gitx.Env("GIT_TERMINAL_PROMPT=0", "LC_ALL=C")
 	var out, errOut strings.Builder

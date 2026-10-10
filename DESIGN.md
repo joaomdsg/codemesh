@@ -221,7 +221,11 @@ matters, what to do and how to check it.
    a pull request (9). The starting point is analysed in a second worktree,
    kept for the run: the review reads each side's source when it is built,
    and Claude's copy has changed by then. Uncommitted edits are
-   not in the worktree.
+   not in the worktree. Claude and each check run in a process group of
+   their own, killed when they end, so a server one starts with `&` stops
+   with it. On Linux, Discard and shutdown also kill what escaped its
+   group: every process whose environment holds the run's `CODEMESH_RUN`
+   token.
    The prompt asks for the whole fix: restructuring, moving code to other
    or new files and changing unexported code are in scope; exported names,
    signatures and behaviour stay unless the problem is about them. It lists

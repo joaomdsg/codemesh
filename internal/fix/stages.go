@@ -113,7 +113,7 @@ func (r *Run) result(life context.Context, before *Side) (*Side, *review.Review,
 	if life.Err() != nil {
 		return nil, nil, false
 	}
-	after, err := analyse(life, r.mod, r.check)
+	after, err := analyse(life, r.mod, r.marked(r.check))
 	if err != nil {
 		r.fail(fmt.Errorf("the edited code did not load: %w", err))
 		return nil, nil, false

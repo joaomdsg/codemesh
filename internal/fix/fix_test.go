@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -153,6 +155,28 @@ func TestClaude_doesNotWaitForAChildHoldingItsOutput(t *testing.T) {
 	require.NoError(t, r.claude(context.Background(), agent, t.TempDir(), "p"))
 	assert.Less(t, time.Since(start), 15*time.Second)
 	assert.Equal(t, "done", r.summary, "what it printed is read")
+}
+
+func TestAnalyse_endsWhatTheCheckLeftRunning(t *testing.T) {
+	t.Parallel()
+	dir := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n"}, nil)
+	pid := filepath.Join(t.TempDir(), "pid")
+	// The child writes nothing to the check's output, so the check ends at once.
+	_, err := analyse(context.Background(), dir, Check{Dir: dir, Args: []string{"sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $! > " + pid}})
+	require.NoError(t, err)
+	assert.Eventually(t, func() bool { return !running(t, pid) }, 5*time.Second, 50*time.Millisecond)
+}
+
+// running reports whether the process whose id is in file still exists.
+func running(t *testing.T, file string) bool {
+	t.Helper()
+	b, err := os.ReadFile(file)
+	require.NoError(t, err)
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	require.NoError(t, err)
+	p, err := os.FindProcess(n)
+	require.NoError(t, err)
+	return p.Signal(syscall.Signal(0)) == nil
 }
 
 func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {

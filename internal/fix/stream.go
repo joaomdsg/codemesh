@@ -32,8 +32,8 @@ func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
 	}
 	r.mu.Unlock()
 	cmd := exec.CommandContext(ctx, agent, args...)
-	group(cmd)
-	cmd.Dir, cmd.Env = dir, gitx.Env()
+	defer group(cmd)()
+	cmd.Dir, cmd.Env = dir, gitx.Env(r.mark)
 	// A pipe of our own, not StdoutPipe: Wait then copies the output and
 	// gives up on it WaitDelay after Claude exits, should a child of Claude's
 	// hold it open.
