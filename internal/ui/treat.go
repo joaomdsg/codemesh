@@ -43,9 +43,7 @@ func (p *diagnosePage) runHead(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		h.H3(h.Str(runTitle(s))),
 		h.Span(h.Class("hint"), h.Str(runMeta(s))),
 		h.Div(h.Class("dx-acts"),
-			// Stopped during the checks, the round still finishes; Claude
-			// just does not go again.
-			via.When(s.Live() && !s.Stopping, func() h.H {
+			via.When(stoppable(s), func() h.H {
 				return h.Button(h.Class("btn"), on.Click(on.Bind(p.Stop, g.Key)), h.Str("Stop"))
 			}),
 			p.prAct(g, s),
@@ -56,6 +54,10 @@ func (p *diagnosePage) runHead(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		via.When(note != "", func() h.H { return h.Span(h.Class("hint dx-run-note"), h.Str(note)) }),
 	)
 }
+
+// stoppable reports whether Stop shows. Pressed during the checks, the round
+// still finishes; Claude just does not go again.
+func stoppable(s fix.Snapshot) bool { return s.Live() && !s.Stopping }
 
 // runNote is Claude's latest word while the run is going. It stays up for the
 // whole run, so the replay below it does not shift between phases.
@@ -70,16 +72,27 @@ func runNote(s fix.Snapshot) string {
 	return ""
 }
 
-func runBanners(s fix.Snapshot) []h.H {
-	var out []h.H
+type banner struct{ class, text string }
+
+// banners say that a run stopped early or what went wrong.
+func banners(s fix.Snapshot) []banner {
+	var out []banner
 	if s.State == fix.Stopped {
-		out = append(out, h.P(h.Class("hint"), h.Str("Stopped early. Below is what Claude had changed by then, checked the same way.")))
+		out = append(out, banner{"hint", "Stopped early. Below is what Claude had changed by then, checked the same way."})
 	}
 	if s.Err != nil {
-		out = append(out, h.P(h.Class("banner err"), h.Str("It did not finish: "+s.Err.Error()+". Nothing in your files changed. Discard and try again.")))
+		out = append(out, banner{"banner err", "It did not finish: " + s.Err.Error() + ". Nothing in your files changed. Discard and try again."})
 	}
 	if s.PR.Err != nil {
-		out = append(out, h.P(h.Class("banner err"), h.Str("The pull request did not open: "+strings.TrimRight(s.PR.Err.Error(), ". ")+". The change is still here; you can try again.")))
+		out = append(out, banner{"banner err", "The pull request did not open: " + strings.TrimRight(s.PR.Err.Error(), ". ") + ". The change is still here; you can try again."})
+	}
+	return out
+}
+
+func runBanners(s fix.Snapshot) []h.H {
+	var out []h.H
+	for _, b := range banners(s) {
+		out = append(out, h.P(h.Class(b.class), h.Str(b.text)))
 	}
 	return out
 }
@@ -100,18 +113,29 @@ func (p *diagnosePage) prAct(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 	switch {
 	case s.PR.URL != "":
 		return h.A(h.Class("btn"), h.Href(s.PR.URL), h.Target("_blank"), h.Rel("noopener"), h.Str("Draft PR ↗"))
-	case s.PR.Opening:
-		return h.Span(h.Class("hint"), h.Str("Opening a draft PR…"))
-	case s.CanPR():
+	case s.CanPR() && !s.PR.Opening:
 		return h.Button(h.Class("btn"), on.Click(on.Bind(p.PR, g.Key)), h.Title("Pushes "+s.Base+" to origin first if origin lacks it"), h.Str("Open a draft PR"))
-	case s.State != fix.Done || s.After == nil:
-		return nil
-	case s.Base == "":
-		return h.Span(h.Class("hint"), h.Str("No PR: the repository was on no branch when the run started."))
-	case !s.Origin:
-		return h.Span(h.Class("hint"), h.Str("No PR: the repository has no origin remote."))
 	}
-	return h.Span(h.Class("hint"), h.Str("A PR needs the checks to pass."))
+	if why := noPR(s); why != "" {
+		return h.Span(h.Class("hint"), h.Str(why))
+	}
+	return nil
+}
+
+// noPR says why a run offers no pull request, or that one is opening; ""
+// while the run goes, when it ended without a result, or when one is offered.
+func noPR(s fix.Snapshot) string {
+	switch {
+	case s.PR.Opening:
+		return "Opening a draft PR…"
+	case s.PR.URL != "" || s.CanPR() || s.State != fix.Done || s.After == nil:
+		return ""
+	case s.Base == "":
+		return "No PR: the repository was on no branch when the run started."
+	case !s.Origin:
+		return "No PR: the repository has no origin remote."
+	}
+	return "A PR needs the checks to pass."
 }
 
 var runTitles = map[fix.State]string{
