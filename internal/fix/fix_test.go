@@ -129,6 +129,21 @@ func TestAnalyse_passesACheckThatLeavesAChildBehind(t *testing.T) {
 	assert.True(t, s.CheckOK, "the check itself succeeded")
 }
 
+func TestRun_keepsTheCheckAndClaudeInTheWorktree(t *testing.T) {
+	dir := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n"}, nil)
+	t.Setenv("GIT_DIR", t.TempDir())
+	t.Setenv("GIT_WORK_TREE", t.TempDir())
+	clean := []string{"sh", "-c", `[ -z "$GIT_DIR$GIT_WORK_TREE" ]`}
+	s, err := analyse(context.Background(), dir, Check{Dir: dir, Args: clean})
+	require.NoError(t, err)
+	assert.True(t, s.CheckOK, "the check does not see them")
+
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\n"+strings.Join(clean[2:], "")+"\n"), 0o755))
+	r := &Run{updates: topic.New[int64]()}
+	assert.NoError(t, r.claude(context.Background(), agent, dir, "p"), "nor does Claude")
+}
+
 func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
 	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n\nfunc A() int {\n\treturn 1\n}\n"}, nil)
 	tr := newTree(wt, wt)

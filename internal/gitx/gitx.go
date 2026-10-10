@@ -42,9 +42,9 @@ type FileDiff struct {
 	Hunks            []Hunk
 }
 
-// Env is the process's environment for running git in a directory given
-// with -C, plus extra. It drops the variables that point git at another
-// repository, as a git hook's environment does.
+// Env is the process's environment plus extra, less the variables that
+// point git at a repository other than the one it runs in, as a git hook's
+// environment does.
 func Env(extra ...string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")

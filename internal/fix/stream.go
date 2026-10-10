@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/joaomdsg/codemesh/internal/gitx"
 )
 
 // claude runs Claude Code headless in dir and turns its stream into events.
@@ -31,7 +33,7 @@ func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
 	r.mu.Unlock()
 	cmd := exec.CommandContext(ctx, agent, args...)
 	group(cmd)
-	cmd.Dir = dir
+	cmd.Dir, cmd.Env = dir, gitx.Env()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err

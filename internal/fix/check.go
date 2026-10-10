@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 )
@@ -68,10 +69,7 @@ func analyse(ctx context.Context, dir string, c Check) (*Side, error) {
 	defer cancel()
 	cmd := exec.CommandContext(cctx, c.Args[0], c.Args[1:]...)
 	group(cmd)
-	cmd.Dir = c.Dir
-	if len(c.Env) > 0 {
-		cmd.Env = append(os.Environ(), c.Env...)
-	}
+	cmd.Dir, cmd.Env = c.Dir, gitx.Env(c.Env...)
 	out, err := cmd.CombinedOutput()
 	s.CheckOK, s.Output = exited(err) == nil, tail(string(out), 40)
 	return s, nil
