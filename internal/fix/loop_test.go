@@ -267,6 +267,19 @@ func TestRun_stopEndsWhatClaudeStarted(t *testing.T) {
 	assert.Less(t, time.Since(stopped), 15*time.Second, "the agent's children do not hold the run")
 }
 
+func TestRun_stopWhilePreparingKeepsTheStartingCheck(t *testing.T) {
+	t.Parallel()
+	agent, calls := loopAgent(t, true, fixes)
+	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 1\n"})
+	r.Stop()
+	require.Eventually(t, func() bool { return r.Snapshot().After != nil }, time.Minute, 20*time.Millisecond)
+
+	s := r.Snapshot()
+	assert.Equal(t, Stopped, s.State)
+	assert.True(t, s.Before.CheckOK, "a stop is not a failed check")
+	assert.NoFileExists(t, filepath.Join(calls, "runs"), "Claude never starts")
+}
+
 func TestRun_stopWhileCheckingEndsTheLoop(t *testing.T) {
 	t.Parallel()
 	agent, calls := loopAgent(t, true, fixes)

@@ -365,7 +365,9 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 	}
 	r.note("Analysing the starting point and running its checks, so the result has something to compare with.")
 	startMod := filepath.Join(start, rel)
-	before, err := analyse(ctx, startMod, checkOf(start, startMod))
+	// Stop ends Claude's work, not this: a check cut short would read as one
+	// that failed before the run.
+	before, err := analyse(life, startMod, checkOf(start, startMod))
 	if err != nil {
 		r.fail(err)
 		return
