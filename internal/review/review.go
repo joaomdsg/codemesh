@@ -222,16 +222,8 @@ func (b *builder) declUnit(old, new *code.Decl) *Unit {
 // fileUnit covers a non-Go or generated file as one unit.
 func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	p := cmp.Or(d.NewPath, d.OldPath)
-	u := &Unit{ID: p, Name: p, File: p, Change: Modified, Lane: Other}
-	switch d.Status {
-	case gitx.Added:
-		u.Change = Added
-	case gitx.Deleted:
-		u.Change = Removed
-	case gitx.Renamed:
-		u.Change = Moved
-		u.Reasons = append(u.Reasons, "renamed from "+d.OldPath)
-	}
+	u := &Unit{ID: p, Name: p, File: p}
+	u.Change, u.Reasons = fileChange(d)
 	oldText, newText := b.lines(b.in.Base, d.OldPath), b.lines(b.in.Head, d.NewPath)
 	switch {
 	case d.Binary:
@@ -241,38 +233,61 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	default:
 		u.setLines(diffLines(oldText, newText, 1, 1))
 	}
-	switch {
-	case hf != nil && hf.Generated:
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "generated")
-	case path.Base(p) == "go.sum":
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "checksums")
-	case p == "go.mod" || p == "Project.toml":
-		u.Lane = Contract
-		u.Reasons = append(u.Reasons, "dependencies")
-	case path.Base(p) == "Manifest.toml":
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "resolved versions")
-	case isFixture(p):
-		u.Lane = Tests
-		u.Reasons = append(u.Reasons, "test fixture")
-	case path.Base(p) == "go.mod":
-		u.Reasons = append(u.Reasons, "dependencies", "in another module")
-	case path.Ext(p) == ".go" && sameShape(oldText, newText):
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "comments or layout only")
-	case path.Ext(p) == ".go":
-		// Go code of a nested module: no type info here, so one unit per file.
-		u.Lane = Logic
-		if strings.HasSuffix(p, "_test.go") {
-			u.Lane = Tests
-		}
-		u.Reasons = append(u.Reasons, "in another module")
-	}
+	lane, why := fileLane(p, hf, oldText, newText)
+	u.Lane, u.Reasons = lane, append(u.Reasons, why...)
 	u.Risk = min(u.Added+u.Deleted, 40) / 4
 	u.Key = key(u.ID, strings.Join(newText, "\n")+"\x00"+strings.Join(oldText, "\n"))
 	return u
+}
+
+func fileChange(d gitx.FileDiff) (Change, []string) {
+	switch d.Status {
+	case gitx.Added:
+		return Added, nil
+	case gitx.Deleted:
+		return Removed, nil
+	case gitx.Renamed:
+		return Moved, []string{"renamed from " + d.OldPath}
+	}
+	return Modified, nil
+}
+
+// fileLane sorts a whole file into a lane, with the reasons for it: the
+// first rule that matches, else Other.
+func fileLane(p string, hf *code.File, oldText, newText []string) (Lane, []string) {
+	f := laneFile{p, path.Base(p), hf != nil && hf.Generated, oldText, newText}
+	for _, r := range laneRules {
+		if r.match(f) {
+			return r.lane, r.why
+		}
+	}
+	return Other, nil
+}
+
+type laneFile struct {
+	path, base       string
+	generated        bool
+	oldText, newText []string
+}
+
+func (f laneFile) goCode() bool { return path.Ext(f.path) == ".go" }
+
+// laneRules are tried in order. Go code of a nested module has no type info
+// here, so it is one unit per file.
+var laneRules = []struct {
+	match func(laneFile) bool
+	lane  Lane
+	why   []string
+}{
+	{func(f laneFile) bool { return f.generated }, Noise, []string{"generated"}},
+	{func(f laneFile) bool { return f.base == "go.sum" }, Noise, []string{"checksums"}},
+	{func(f laneFile) bool { return f.path == "go.mod" || f.path == "Project.toml" }, Contract, []string{"dependencies"}},
+	{func(f laneFile) bool { return f.base == "Manifest.toml" }, Noise, []string{"resolved versions"}},
+	{func(f laneFile) bool { return isFixture(f.path) }, Tests, []string{"test fixture"}},
+	{func(f laneFile) bool { return f.base == "go.mod" }, Other, []string{"dependencies", "in another module"}},
+	{func(f laneFile) bool { return f.goCode() && sameShape(f.oldText, f.newText) }, Noise, []string{"comments or layout only"}},
+	{func(f laneFile) bool { return f.goCode() && strings.HasSuffix(f.path, "_test.go") }, Tests, []string{"in another module"}},
+	{laneFile.goCode, Logic, []string{"in another module"}},
 }
 
 // looseUnit gathers changed lines outside any declaration: imports and

@@ -155,39 +155,55 @@ func paramCount(fl *ast.FieldList) int {
 func shape(n ast.Node) string {
 	h := fnv.New64a()
 	ast.Inspect(n, func(n ast.Node) bool {
-		if n == nil {
+		switch n.(type) {
+		case nil:
 			io.WriteString(h, ")")
-			return true
-		}
-		switch x := n.(type) {
 		case *ast.CommentGroup, *ast.Comment:
 			return false
-		case *ast.Ident:
-			fmt.Fprintf(h, "(id %s", x.Name)
-		case *ast.BasicLit:
-			fmt.Fprintf(h, "(lit %d %s", x.Kind, x.Value)
-		case *ast.BinaryExpr:
-			fmt.Fprintf(h, "(bin %s", x.Op)
-		case *ast.UnaryExpr:
-			fmt.Fprintf(h, "(un %s", x.Op)
-		case *ast.AssignStmt:
-			fmt.Fprintf(h, "(as %s", x.Tok)
-		case *ast.IncDecStmt:
-			fmt.Fprintf(h, "(inc %s", x.Tok)
-		case *ast.BranchStmt:
-			fmt.Fprintf(h, "(br %s", x.Tok)
-		case *ast.RangeStmt:
-			fmt.Fprintf(h, "(range %s", x.Tok)
-		case *ast.ChanType:
-			fmt.Fprintf(h, "(chan %d", x.Dir)
-		case *ast.GenDecl:
-			fmt.Fprintf(h, "(gen %s", x.Tok)
 		default:
-			fmt.Fprintf(h, "(%T", n)
+			io.WriteString(h, nodeTag(n))
 		}
 		return true
 	})
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// nodeTag opens a node in shape's hash: its kind and what tells two nodes
+// of that kind apart.
+func nodeTag(n ast.Node) string {
+	if t, ok := opTag(n); ok {
+		return t
+	}
+	switch x := n.(type) {
+	case *ast.Ident:
+		return fmt.Sprintf("(id %s", x.Name)
+	case *ast.BasicLit:
+		return fmt.Sprintf("(lit %d %s", x.Kind, x.Value)
+	case *ast.ChanType:
+		return fmt.Sprintf("(chan %d", x.Dir)
+	}
+	return fmt.Sprintf("(%T", n)
+}
+
+// opTag tags the nodes an operator or keyword token tells apart.
+func opTag(n ast.Node) (string, bool) {
+	switch x := n.(type) {
+	case *ast.BinaryExpr:
+		return fmt.Sprintf("(bin %s", x.Op), true
+	case *ast.UnaryExpr:
+		return fmt.Sprintf("(un %s", x.Op), true
+	case *ast.AssignStmt:
+		return fmt.Sprintf("(as %s", x.Tok), true
+	case *ast.IncDecStmt:
+		return fmt.Sprintf("(inc %s", x.Tok), true
+	case *ast.BranchStmt:
+		return fmt.Sprintf("(br %s", x.Tok), true
+	case *ast.RangeStmt:
+		return fmt.Sprintf("(range %s", x.Tok), true
+	case *ast.GenDecl:
+		return fmt.Sprintf("(gen %s", x.Tok), true
+	}
+	return "", false
 }
 
 // FileShape returns the Shape of a whole Go source file.

@@ -375,36 +375,43 @@ func smells(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 		}
 	}
 	for _, pkg := range slices.Sorted(maps.Keys(params)) {
-		ds := params[pkg]
-		slices.SortFunc(ds, func(a, b *code.Decl) int { return cmp.Or(cmp.Compare(b.Params, a.Params), cmp.Compare(a.ID, b.ID)) })
-		if len(ds) < clusterMin {
-			for _, d := range ds {
-				out = append(out, manyParams(s, d))
-			}
-			continue
-		}
-		top := ds[0]
-		var rel []Ref
-		for _, d := range ds[1:min(len(ds), maxRelated+1)] {
-			rel = append(rel, Ref{ID: d.ID, Name: label(d), Why: fmt.Sprintf("takes %d parameters", d.Params)})
-		}
-		name, file, line := declRef(top)
-		out = append(out, Prognosis{
-			Key: "params:" + pkg, Lens: Tests, Level: 2, Target: top.ID, Name: name, File: file, Line: line,
-			Title:   "The same data passed around by hand",
-			Summary: fmt.Sprintf("%d functions in %s take more than %d parameters, up to %d in %s. They likely pass the same values from one to the next.", len(ds), pkgShort(s, pkg), smell.ManyParamsLimit, top.Params, top.Name),
-			Why:     "A long parameter list is easy to get wrong: two values of the same type can be swapped and still compile. When several functions pass the same group of values along, that group wants to be one type with a name.",
-			Do: []string{
-				"Compare the parameter lists below and find the values they share.",
-				"Group the shared values into one struct with a clear name, and pass that instead.",
-				"Change one function at a time, building and testing after each.",
-			},
-			Check:   fmt.Sprintf("Each of these functions takes %d parameters or fewer, and the tests pass.", smell.ManyParamsLimit),
-			Facts:   []Fact{{"functions with too many parameters", len(ds), clusterMin}, {"most parameters in one", top.Params, smell.ManyParamsLimit}},
-			Related: rel,
-		})
+		out = append(out, paramsPrognoses(s, pkg, params[pkg])...)
 	}
 	return out
+}
+
+// paramsPrognoses covers a package's functions with too many parameters:
+// one prognosis each, or one for the lot when there are enough of them to
+// share their data.
+func paramsPrognoses(s *code.Snapshot, pkg string, ds []*code.Decl) []Prognosis {
+	slices.SortFunc(ds, func(a, b *code.Decl) int { return cmp.Or(cmp.Compare(b.Params, a.Params), cmp.Compare(a.ID, b.ID)) })
+	if len(ds) < clusterMin {
+		var out []Prognosis
+		for _, d := range ds {
+			out = append(out, manyParams(s, d))
+		}
+		return out
+	}
+	top := ds[0]
+	var rel []Ref
+	for _, d := range ds[1:min(len(ds), maxRelated+1)] {
+		rel = append(rel, Ref{ID: d.ID, Name: label(d), Why: fmt.Sprintf("takes %d parameters", d.Params)})
+	}
+	name, file, line := declRef(top)
+	return []Prognosis{{
+		Key: "params:" + pkg, Lens: Tests, Level: 2, Target: top.ID, Name: name, File: file, Line: line,
+		Title:   "The same data passed around by hand",
+		Summary: fmt.Sprintf("%d functions in %s take more than %d parameters, up to %d in %s. They likely pass the same values from one to the next.", len(ds), pkgShort(s, pkg), smell.ManyParamsLimit, top.Params, top.Name),
+		Why:     "A long parameter list is easy to get wrong: two values of the same type can be swapped and still compile. When several functions pass the same group of values along, that group wants to be one type with a name.",
+		Do: []string{
+			"Compare the parameter lists below and find the values they share.",
+			"Group the shared values into one struct with a clear name, and pass that instead.",
+			"Change one function at a time, building and testing after each.",
+		},
+		Check:   fmt.Sprintf("Each of these functions takes %d parameters or fewer, and the tests pass.", smell.ManyParamsLimit),
+		Facts:   []Fact{{"functions with too many parameters", len(ds), clusterMin}, {"most parameters in one", top.Params, smell.ManyParamsLimit}},
+		Related: rel,
+	}}
 }
 
 func untestedPackage(s *code.Snapshot, p *code.Package) Prognosis {
