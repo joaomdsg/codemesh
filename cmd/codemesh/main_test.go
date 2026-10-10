@@ -42,7 +42,9 @@ func TestRun_sweepsDeadServersWorktreesAndCleansUpOnHangup(t *testing.T) {
 	assert.NotContains(t, worktrees(), gone, "the dead server's worktree is swept")
 	assert.NoDirExists(t, gone)
 
-	require.NoError(t, syscall.Kill(os.Getpid(), syscall.SIGHUP))
+	self, err := os.FindProcess(os.Getpid())
+	require.NoError(t, err)
+	require.NoError(t, self.Signal(syscall.SIGHUP))
 	select {
 	case err := <-errc:
 		require.NoError(t, err)
