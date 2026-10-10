@@ -92,6 +92,9 @@ type Decl struct {
 	Refs map[string]int
 	// Callers are the IDs of other decls referencing this one, sorted.
 	Callers []string
+	// Users are the IDs of decls reaching this type through one of its
+	// constants, fields or methods, or a field holding it, sorted.
+	Users []string
 }
 
 // Decl returns the declaration with the given ID, or nil.

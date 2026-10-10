@@ -44,6 +44,14 @@ func (u Usage) Calls() int {
 	return n
 }
 
+// Tokens totals each kind of token across models.
+func (u Usage) Tokens() (in, write, read, out int) {
+	for _, m := range u.Models {
+		in, write, read, out = in+m.Input, write+m.CacheWrite, read+m.CacheRead, out+m.Output
+	}
+	return in, write, read, out
+}
+
 func (u Usage) clone() Usage {
 	u.Models = maps.Clone(u.Models)
 	u.seen = nil

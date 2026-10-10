@@ -26,13 +26,7 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	}
 	if new != nil {
 		u.Callers = new.Callers
-		prod, tests := b.callers(new)
-		if prod > 0 {
-			add(plural(prod, "caller"), 3*min(prod, 10))
-		}
-		if tests > 0 {
-			add(plural(tests, "test caller"), 0)
-		}
+		b.addCallerRisk(new, add)
 	}
 	cur := cmp.Or(new, old)
 	if cur.Data {
@@ -42,12 +36,26 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	if u.Exported && !cur.Test {
 		add("exported", 4)
 	}
+	b.addFuncRisk(old, new, add)
+}
+
+func (b *builder) addFuncRisk(old, new *code.Decl, add func(string, int)) {
 	if new == nil || new.Kind != code.Func && new.Kind != code.Method {
 		return
 	}
 	add(complexityReason(old, new))
 	if _, tests := b.callers(new); !new.Test && tests == 0 {
 		add("no direct test", 5)
+	}
+}
+
+func (b *builder) addCallerRisk(d *code.Decl, add func(string, int)) {
+	prod, tests := b.callers(d)
+	if prod > 0 {
+		add(plural(prod, "caller"), 3*min(prod, 10))
+	}
+	if tests > 0 {
+		add(plural(tests, "test caller"), 0)
 	}
 }
 

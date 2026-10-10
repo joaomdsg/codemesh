@@ -12,18 +12,18 @@ import (
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
-// DepsPage is a dependency structure matrix: row imports column, cells count
+// depsPage is a dependency structure matrix: row imports column, cells count
 // references, rows ordered from consumers down to foundations.
-type DepsPage struct{ shell }
+type depsPage struct{ shell }
 
-func (p *DepsPage) OnInit(ctx *via.Ctx) error {
+func (p *depsPage) OnInit(ctx *via.Ctx) error {
 	p.start(ctx)
 	return nil
 }
 
-func (p *DepsPage) PageMeta() via.Meta { return via.Meta{Title: "Dependencies · codemesh"} }
+func (p *depsPage) PageMeta() via.Meta { return via.Meta{Title: "Dependencies · codemesh"} }
 
-func (p *DepsPage) View() h.H {
+func (p *depsPage) View() h.H {
 	a := p.src.Current()
 	if a == nil || a.Snap == nil {
 		return p.frame(tabDeps, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
@@ -57,66 +57,76 @@ type depRow struct {
 	unstable float64
 }
 
+// dsm is what the matrix draws from: the rows in order, the references
+// between packages, and the unstable imports to mark.
+type dsm struct {
+	a    *live.Analysis
+	rows []depRow
+	refs map[[2]string]int
+	bad  map[[2]string]smell.Finding
+}
+
 func matrix(a *live.Analysis) h.H {
-	rows := depRows(a.Snap)
-	idx := map[string]int{}
-	for i, r := range rows {
-		idx[r.pkg.Path] = i
-	}
-	refs := packageRefs(a.Snap)
-	bad := map[[2]string]smell.Finding{}
+	m := dsm{a: a, rows: depRows(a.Snap), refs: packageRefs(a.Snap), bad: map[[2]string]smell.Finding{}}
 	for _, f := range a.Findings {
 		if f.Rule == smell.UnstableDep {
-			bad[[2]string{f.Package, f.Target}] = f
+			m.bad[[2]string{f.Package, f.Target}] = f
 		}
-	}
-	head := []h.H{h.Th(h.Class("dsm-name"), h.Str("package")), h.Th(h.Title("instability: the share of its links that are its own imports"), h.Str("I")),
-		h.Th(h.Title("packages importing it"), h.Str("in")), h.Th(h.Title("packages it imports"), h.Str("out"))}
-	for i := range rows {
-		head = append(head, h.Th(h.Class("dsm-col"), h.Str(i+1)))
 	}
 	var body []h.H
-	for i, r := range rows {
-		cells := []h.H{
-			h.Th(h.Class("dsm-name"), h.A(h.Href(mapURL{in: r.pkg.Path}.String()), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(a, r.pkg)))),
-			h.Td(h.Class("num"), h.Str(fmt.Sprintf("%.2f", r.unstable))),
-			h.Td(h.Class("num"), h.Str(r.ca)),
-			h.Td(h.Class("num"), h.Str(r.ce)),
-		}
-		for j, c := range rows {
-			if i == j {
-				cells = append(cells, h.Td(h.Class("dsm-self")))
-				continue
-			}
-			if !slices.Contains(r.pkg.Imports, c.pkg.Path) {
-				cells = append(cells, h.Td())
-				continue
-			}
-			n := refs[[2]string{r.pkg.Path, c.pkg.Path}]
-			cls, tip := "dsm-dep", fmt.Sprintf("%s → %s: %s", pkgName(a, r.pkg), pkgName(a, c.pkg), plural(n, "reference"))
-			if f, ok := bad[[2]string{r.pkg.Path, c.pkg.Path}]; ok {
-				cls, tip = "dsm-dep dsm-bad", tip+". "+f.Detail
-			}
-			cells = append(cells, h.Td(h.Class(cls), h.Title(tip), h.Str(n)))
-		}
-		body = append(body, h.Tr(cells...))
-	}
-	unstable := 0
-	for range bad {
-		unstable++
+	for i := range m.rows {
+		body = append(body, m.row(i))
 	}
 	summary := okLine("Every package imports only packages at least as stable as itself.")
-	if unstable > 0 {
-		summary = h.P(h.Class("warn"), h.Str(fmt.Sprintf("▲ %s of a less stable package, whose changes ripple back.", plural(unstable, "import"))))
+	if len(m.bad) > 0 {
+		summary = h.P(h.Class("warn"), h.Str(fmt.Sprintf("▲ %s of a less stable package, whose changes ripple back.", plural(len(m.bad), "import"))))
 	}
 	return h.Div(h.Class("deps"),
 		h.H2(h.Str("Dependencies")),
 		summary,
 		h.Div(h.Class("dsm-wrap"),
-			h.Table(h.Class("dsm"), h.Thead(h.Tr(head...)), h.Tbody(body...)),
+			h.Table(h.Class("dsm"), h.Thead(h.Tr(m.head()...)), h.Tbody(body...)),
 		),
 		h.P(h.Class("hint"), h.Str("Row imports column; a cell counts references. I runs from 0, relied on by others, to 1, free to change.")),
 	)
+}
+
+func (m dsm) head() []h.H {
+	head := []h.H{h.Th(h.Class("dsm-name"), h.Str("package")), h.Th(h.Title("instability: the share of its links that are its own imports"), h.Str("I")),
+		h.Th(h.Title("packages importing it"), h.Str("in")), h.Th(h.Title("packages it imports"), h.Str("out"))}
+	for i := range m.rows {
+		head = append(head, h.Th(h.Class("dsm-col"), h.Str(i+1)))
+	}
+	return head
+}
+
+func (m dsm) row(i int) h.H {
+	r := m.rows[i]
+	cells := []h.H{
+		h.Th(h.Class("dsm-name"), h.A(h.Href(mapURL{in: r.pkg.Path}.String()), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(m.a, r.pkg)))),
+		h.Td(h.Class("num"), h.Str(fmt.Sprintf("%.2f", r.unstable))),
+		h.Td(h.Class("num"), h.Str(r.ca)),
+		h.Td(h.Class("num"), h.Str(r.ce)),
+	}
+	for j, c := range m.rows {
+		cells = append(cells, m.cell(r, c, i == j))
+	}
+	return h.Tr(cells...)
+}
+
+func (m dsm) cell(r, c depRow, self bool) h.H {
+	switch {
+	case self:
+		return h.Td(h.Class("dsm-self"))
+	case !slices.Contains(r.pkg.Imports, c.pkg.Path):
+		return h.Td()
+	}
+	n := m.refs[[2]string{r.pkg.Path, c.pkg.Path}]
+	cls, tip := "dsm-dep", fmt.Sprintf("%s → %s: %s", pkgName(m.a, r.pkg), pkgName(m.a, c.pkg), plural(n, "reference"))
+	if f, ok := m.bad[[2]string{r.pkg.Path, c.pkg.Path}]; ok {
+		cls, tip = "dsm-dep dsm-bad", tip+". "+f.Detail
+	}
+	return h.Td(h.Class(cls), h.Title(tip), h.Str(n))
 }
 
 // depRows orders packages by layer, highest first: a package's layer is one

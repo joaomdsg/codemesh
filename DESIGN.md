@@ -103,7 +103,7 @@ Each smell is a rule with a documented threshold:
 | deep nesting | nesting depth > 4 | control flow hides the main path |
 | many parameters | > 5 parameters | the function does several jobs |
 | large file | > 600 code lines (high > 1200) | the file has several concerns |
-| unused export | exported from a package other modules cannot import (`internal/`), no use outside its package | API surface that nobody uses |
+| unused export | exported from a package other modules cannot import (`internal/`), no use outside its package; a type counts as used through its constants, fields or methods, and a constant through its type | API surface that nobody uses |
 | dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
 | leans on another package | most of its references go to one other package | it may live in the wrong package |
 | imports a less stable package | depends on a package more unstable than itself | breaks the Stable Dependencies Principle: its changes ripple back |

@@ -131,7 +131,7 @@ func TestFind_flagsLongFunctionsAboveSixtyLines(t *testing.T) {
 	assert.Equal(t, s.Decl(prefix+"size.Long121").Start, f.Line)
 	assert.Equal(t, prefix+"size", f.Package)
 	assert.Equal(t, 121, f.Measure)
-	assert.Equal(t, smell.LongFuncHighLimit, f.Limit)
+	assert.Equal(t, 120, f.Limit)
 	assert.Equal(t, "121 lines, high limit 120", f.Detail)
 	assert.Equal(t, "61 lines, limit 60", one(t, fs, smell.LongFunc, "size.Long61").Detail)
 }
@@ -160,7 +160,7 @@ func TestFind_flagsNestingAboveFour(t *testing.T) {
 	assert.Equal(t, map[string]smell.Severity{"size.Nest5": smell.Warn}, of(fs, smell.DeepNesting))
 	f := one(t, fs, smell.DeepNesting, "size.Nest5")
 	assert.Equal(t, 5, f.Measure)
-	assert.Equal(t, smell.DeepNestingLimit, f.Limit)
+	assert.Equal(t, 4, f.Limit)
 	assert.Equal(t, "nesting 5, limit 4", f.Detail)
 }
 
@@ -191,7 +191,7 @@ func TestFind_flagsFilesAboveSixHundredLines(t *testing.T) {
 	assert.Equal(t, 601, f.Measure)
 	assert.Equal(t, smell.LargeFileLimit, f.Limit)
 	assert.Equal(t, "601 lines, limit 600", f.Detail)
-	assert.Equal(t, smell.LargeFileHighLimit, one(t, fs, smell.LargeFile, "big/f1201.go").Limit)
+	assert.Equal(t, 1200, one(t, fs, smell.LargeFile, "big/f1201.go").Limit)
 	assert.Equal(t, "1201 lines, high limit 1200", one(t, fs, smell.LargeFile, "big/f1201.go").Detail)
 }
 
@@ -208,7 +208,7 @@ func TestFind_flagsUnusedExportsOfClosedPackagesOnly(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"example.com/quiet/internal/priv.Orphan: no use outside its package"}, got,
-		"lib.E is API for other modules; priv.Used has a caller in lib")
+		"lib.E is API for other modules; priv.Used has a caller in lib; lib uses Mode through Fast, Item through its field and Tag through that field's value; Slow and Hot belong to used types")
 }
 
 func TestFind_leavesImportableExportsAlone(t *testing.T) {

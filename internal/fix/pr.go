@@ -56,43 +56,10 @@ func (r *Run) OpenPR() {
 func (r *Run) push(ctx context.Context, branch string, t text) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
-	git := func(args ...string) error {
-		_, err := command(ctx, r.wt, nil, "git", args...)
-		return err
-	}
-	// The pull request must hold only the change, so origin's base branch
-	// needs the starting commit. When it lacks it, the starting commit is
-	// pushed to it, never forced: a branch that moved on elsewhere stops here.
-	err := git("fetch", "--quiet", "origin", r.base)
-	switch {
-	case err != nil && !strings.Contains(err.Error(), "couldn't find remote ref"):
-		return "", fmt.Errorf("could not fetch %s from origin: %w", r.base, err)
-	case err != nil || git("merge-base", "--is-ancestor", r.head, "FETCH_HEAD") != nil:
-		if err := git("push", "--quiet", "origin", r.head+":refs/heads/"+r.base); err != nil {
-			if strings.Contains(err.Error(), "rejected") {
-				return "", fmt.Errorf("origin's %s has commits the run did not start from; pull them into %s, then try a fix again", r.base, r.base)
-			}
-			return "", fmt.Errorf("could not push %s to origin: %w", r.base, err)
-		}
-	}
-	// Claude may have committed some of its work; the reset folds everything
-	// since the starting commit into one.
-	for _, args := range [][]string{
-		{"reset", "--quiet", "--soft", r.head},
-		{"switch", "--quiet", "-C", branch},
-		{"add", "--all"},
-	} {
-		if err := git(args...); err != nil {
-			return "", err
-		}
-	}
-	if git("diff", "--cached", "--quiet") == nil {
-		return "", errors.New("there is no change to propose")
-	}
-	if err := git("commit", "--quiet", "--message", t.title); err != nil {
+	if err := r.ensureBase(ctx); err != nil {
 		return "", err
 	}
-	if err := git("push", "--quiet", "--force-with-lease", "--set-upstream", "origin", branch); err != nil {
+	if err := r.commitChange(ctx, branch, t.title); err != nil {
 		return "", err
 	}
 	out, err := command(ctx, r.wt, strings.NewReader(t.body), r.gh, "pr", "create", "--draft",
@@ -105,6 +72,53 @@ func (r *Run) push(ctx context.Context, branch string, t text) (string, error) {
 		return "", errors.New(r.gh + " pr create printed no link")
 	}
 	return lines[len(lines)-1], nil
+}
+
+func (r *Run) git(ctx context.Context, args ...string) error {
+	_, err := command(ctx, r.wt, nil, "git", args...)
+	return err
+}
+
+// ensureBase makes sure origin's base branch holds the starting commit, so
+// the pull request holds only the change. When it lacks it, the starting
+// commit is pushed to it, never forced: a branch that moved on elsewhere
+// stops here.
+func (r *Run) ensureBase(ctx context.Context) error {
+	err := r.git(ctx, "fetch", "--quiet", "origin", r.base)
+	switch {
+	case err != nil && !strings.Contains(err.Error(), "couldn't find remote ref"):
+		return fmt.Errorf("could not fetch %s from origin: %w", r.base, err)
+	case err != nil || r.git(ctx, "merge-base", "--is-ancestor", r.head, "FETCH_HEAD") != nil:
+		if err := r.git(ctx, "push", "--quiet", "origin", r.head+":refs/heads/"+r.base); err != nil {
+			if strings.Contains(err.Error(), "rejected") {
+				return fmt.Errorf("origin's %s has commits the run did not start from; pull them into %s, then try a fix again", r.base, r.base)
+			}
+			return fmt.Errorf("could not push %s to origin: %w", r.base, err)
+		}
+	}
+	return nil
+}
+
+// commitChange commits the worktree's change on branch and pushes it.
+func (r *Run) commitChange(ctx context.Context, branch, title string) error {
+	// Claude may have committed some of its work; the reset folds everything
+	// since the starting commit into one.
+	for _, args := range [][]string{
+		{"reset", "--quiet", "--soft", r.head},
+		{"switch", "--quiet", "-C", branch},
+		{"add", "--all"},
+	} {
+		if err := r.git(ctx, args...); err != nil {
+			return err
+		}
+	}
+	if r.git(ctx, "diff", "--cached", "--quiet") == nil {
+		return errors.New("there is no change to propose")
+	}
+	if err := r.git(ctx, "commit", "--quiet", "--message", title); err != nil {
+		return err
+	}
+	return r.git(ctx, "push", "--quiet", "--force-with-lease", "--set-upstream", "origin", branch)
 }
 
 // command runs name in dir and returns its output. Git never prompts: a

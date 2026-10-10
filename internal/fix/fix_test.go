@@ -18,11 +18,11 @@ import (
 func TestParse_turnsClaudesStreamIntoSteps(t *testing.T) {
 	thought := parse([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Grouping the shared parameters.\nThen tests."},{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/wt/m/a.go","old_string":"f(a, b)","new_string":"f(p)"}}]}}`))
 	require.Len(t, thought, 2)
-	assert.Equal(t, Step{Kind: Think, Title: "Grouping the shared parameters.", Text: "Grouping the shared parameters.\nThen tests."}, *thought[0].step)
-	assert.Equal(t, Step{ID: "t1", Kind: Edit, Tool: "Edit", Title: "Edit a.go", Path: "/wt/m/a.go", Old: "f(a, b)", New: "f(p)"}, *thought[1].step)
+	assert.Equal(t, Step{Kind: kindThink, Title: "Grouping the shared parameters.", Text: "Grouping the shared parameters.\nThen tests."}, *thought[0].step)
+	assert.Equal(t, Step{ID: "t1", Kind: kindEdit, Tool: "Edit", Title: "Edit a.go", Path: "/wt/m/a.go", Old: "f(a, b)", New: "f(p)"}, *thought[1].step)
 
 	run := parse([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"go test ./...\necho done"}}]}}`))
-	assert.Equal(t, Step{ID: "t2", Kind: Exec, Tool: "Bash", Title: "Bash go test ./...", Command: "go test ./...\necho done"}, *run[0].step)
+	assert.Equal(t, Step{ID: "t2", Kind: kindExec, Tool: "Bash", Title: "Bash go test ./...", Command: "go test ./...\necho done"}, *run[0].step)
 
 	res := parse([]byte(`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":[{"type":"text","text":"FAIL a"}],"is_error":true}]}}`))
 	require.Len(t, res, 1)
@@ -124,9 +124,9 @@ func TestTree_namesTheModuleFilesAShellCommandReads(t *testing.T) {
 	tr := newTree(wt, wt)
 	reads := tr.named(`sed -n 1,5p sub/a.go && cat "b.go" missing.go | head`)
 	assert.Equal(t, []string{"sub/a.go", "b.go"}, reads)
-	assert.Equal(t, Read, shellKind("sed -n 1,5p sub/a.go", reads))
-	assert.Equal(t, Search, shellKind(`grep -rn "A" .`, nil))
-	assert.Equal(t, Exec, shellKind("go test ./...", nil))
+	assert.Equal(t, kindRead, shellKind("sed -n 1,5p sub/a.go", reads))
+	assert.Equal(t, kindSearch, shellKind(`grep -rn "A" .`, nil))
+	assert.Equal(t, kindExec, shellKind("go test ./...", nil))
 }
 
 func TestHunks_keepsEditsFarApartSeparate(t *testing.T) {
@@ -142,4 +142,35 @@ func TestHunks_keepsEditsFarApartSeparate(t *testing.T) {
 	assert.Equal(t, "line 1\nline 2\nline 3\nline 4\nline 5\n", hs[0].old)
 	assert.Equal(t, "line 1\nline 2\nchanged 3\nline 4\nline 5\n", hs[0].new)
 	assert.Equal(t, 34, hs[1].start)
+}
+
+func TestSnapshot_phases(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		state         State
+		live, editing bool
+	}{
+		{Preparing, true, true},
+		{Working, true, true},
+		{Checking, true, false},
+		{Done, false, false},
+		{Failed, false, false},
+		{Stopped, false, false},
+	} {
+		s := Snapshot{State: c.state}
+		assert.Equal(t, c.live, s.Live(), "%s live", c.state)
+		assert.Equal(t, c.editing, s.Editing(), "%s editing", c.state)
+	}
+}
+
+func TestUsage_Tokens_sumsEachKindAcrossModels(t *testing.T) {
+	t.Parallel()
+	u := Usage{Models: map[string]ModelUse{
+		"a": {Input: 1, CacheWrite: 10, CacheRead: 100, Output: 1000},
+		"b": {Input: 2, CacheWrite: 20, CacheRead: 200, Output: 2000},
+	}}
+
+	in, write, read, out := u.Tokens()
+
+	assert.Equal(t, [4]int{3, 30, 300, 3000}, [4]int{in, write, read, out})
 }

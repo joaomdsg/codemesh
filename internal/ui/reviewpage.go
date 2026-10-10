@@ -17,9 +17,9 @@ import (
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
-// ReviewPage is the review queue: the change as declarations, by lane, risk
+// reviewPage is the review queue: the change as declarations, by lane, risk
 // first, with reviewed units folded away.
-type ReviewPage struct {
+type reviewPage struct {
 	shell
 	// The atlas island's inputs, all client-only: the server renders the
 	// layout and the reviewed cards into them; the focused card is the
@@ -47,20 +47,20 @@ const laneCap = 60
 // sends megabytes nobody scrolls through.
 const renderBudget = 3000
 
-func (p *ReviewPage) OnInit(ctx *via.Ctx) error {
+func (p *reviewPage) OnInit(ctx *via.Ctx) error {
 	p.start(ctx)
 	return nil
 }
 
-func (p *ReviewPage) PageMeta() via.Meta { return via.Meta{Title: "Review · codemesh"} }
+func (p *reviewPage) PageMeta() via.Meta { return via.Meta{Title: "Review · codemesh"} }
 
 // Mark toggles one unit's reviewed mark.
-func (p *ReviewPage) Mark(_ *via.Ctx, key string) {
+func (p *reviewPage) Mark(_ *via.Ctx, key string) {
 	p.save(key, !p.state.Reviewed(key))
 }
 
 // AcceptNoise marks every noise unit reviewed.
-func (p *ReviewPage) AcceptNoise(_ *via.Ctx) {
+func (p *reviewPage) AcceptNoise(_ *via.Ctx) {
 	a := p.src.Current()
 	if a == nil || a.Review == nil {
 		return
@@ -73,7 +73,7 @@ func (p *ReviewPage) AcceptNoise(_ *via.Ctx) {
 }
 
 // Open shows or hides one unit's diff.
-func (p *ReviewPage) Open(_ *via.Ctx, key string) {
+func (p *reviewPage) Open(_ *via.Ctx, key string) {
 	if p.opened == nil {
 		p.opened = map[string]bool{}
 	}
@@ -81,7 +81,7 @@ func (p *ReviewPage) Open(_ *via.Ctx, key string) {
 }
 
 // ShowWhole renders a unit's diff past the per-unit cap.
-func (p *ReviewPage) ShowWhole(_ *via.Ctx, key string) {
+func (p *reviewPage) ShowWhole(_ *via.Ctx, key string) {
 	if p.whole == nil {
 		p.whole = map[string]bool{}
 	}
@@ -89,7 +89,7 @@ func (p *ReviewPage) ShowWhole(_ *via.Ctx, key string) {
 }
 
 // MoreUnits lists the next laneCap units of a lane.
-func (p *ReviewPage) MoreUnits(_ *via.Ctx, l int) {
+func (p *reviewPage) MoreUnits(_ *via.Ctx, l int) {
 	if p.pages == nil {
 		p.pages = map[review.Lane]int{}
 	}
@@ -97,14 +97,14 @@ func (p *ReviewPage) MoreUnits(_ *via.Ctx, l int) {
 }
 
 // visible is the part of a lane that renders.
-func (p *ReviewPage) visible(l review.Lane, units []*review.Unit) []*review.Unit {
+func (p *reviewPage) visible(l review.Lane, units []*review.Unit) []*review.Unit {
 	return units[:min(len(units), laneCap*(1+p.pages[l]))]
 }
 
 // Rescan re-analyses now, without waiting for the watcher.
-func (p *ReviewPage) Rescan(_ *via.Ctx) { p.src.Refresh() }
+func (p *reviewPage) Rescan(_ *via.Ctx) { p.src.Refresh() }
 
-func (p *ReviewPage) save(key string, done bool) bool {
+func (p *reviewPage) save(key string, done bool) bool {
 	if err := p.state.Set(key, done); err != nil {
 		p.err = "Review mark not saved: " + err.Error() + ". Check that the .git directory is writable, then try again."
 		return false
@@ -113,7 +113,7 @@ func (p *ReviewPage) save(key string, done bool) bool {
 	return true
 }
 
-func (p *ReviewPage) View() h.H {
+func (p *reviewPage) View() h.H {
 	a := p.src.Current()
 	if a == nil || a.Snap == nil {
 		return p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
@@ -132,10 +132,12 @@ func (p *ReviewPage) View() h.H {
 	for _, u := range rev.Units {
 		p.inDiff[u.ID] = u.Key
 	}
+	var secs []review.Section
 	var lanes []h.H
 	for _, l := range review.Lanes {
-		if units := rev.Lane(l); len(units) > 0 {
-			lanes = append(lanes, p.lane(a, l, units))
+		if sec := rev.Section(l, p.state); len(sec.Units) > 0 {
+			secs = append(secs, sec)
+			lanes = append(lanes, p.lane(a, sec))
 		}
 	}
 	body := []h.H{p.summary(a, done)}
@@ -147,12 +149,12 @@ func (p *ReviewPage) View() h.H {
 	// The focused card becomes $_focus, which the atlas follows.
 	track := on.EventCS("focusin", expr.Rawf("%s = evt.target.closest('.unit')?.id || %s", p.Focus.Ref(), p.Focus.Ref()))
 	return p.frame(tabReview, a, h.Div(h.Class("review-layout"), track,
-		h.Div(h.Class("review-side"), p.atlasIsland(a), p.outline(rev)),
+		h.Div(h.Class("review-side"), p.atlasIsland(a), p.outline(secs, rev.SharedName())),
 		h.Div(append([]h.H{h.Class("review")}, body...)...),
 	))
 }
 
-func (p *ReviewPage) summary(a *live.Analysis, done int) h.H {
+func (p *reviewPage) summary(a *live.Analysis, done int) h.H {
 	rev := a.Review
 	added, deleted := 0, 0
 	for _, u := range rev.Units {
@@ -177,7 +179,7 @@ func (p *ReviewPage) summary(a *live.Analysis, done int) h.H {
 	)
 }
 
-func (p *ReviewPage) smellDelta(rev *review.Review) h.H {
+func (p *reviewPage) smellDelta(rev *review.Review) h.H {
 	if len(rev.Introduced) == 0 && len(rev.Fixed) == 0 {
 		return nil
 	}
@@ -203,7 +205,7 @@ func (p *ReviewPage) smellDelta(rev *review.Review) h.H {
 
 // atlasIsland is the D3 map of the module with this change's declarations
 // lit. It ignores morphs, so a re-render never wipes what D3 drew.
-func (p *ReviewPage) atlasIsland(a *live.Analysis) h.H {
+func (p *reviewPage) atlasIsland(a *live.Analysis) h.H {
 	return group([]h.H{
 		feed(map[expr.Expr]any{
 			p.Atlas.Ref():    reviewAtlas(a),
@@ -216,43 +218,33 @@ func (p *ReviewPage) atlasIsland(a *live.Analysis) h.H {
 
 // outline is the whole change at a glance: every unit by lane, with its
 // mark, linking to its card.
-func (p *ReviewPage) outline(rev *review.Review) h.H {
-	// Build and build read alike in a list; name the package of either.
-	names := map[string]int{}
-	for _, u := range rev.Units {
-		names[strings.ToLower(u.Name)]++
-	}
+func (p *reviewPage) outline(secs []review.Section, shared func(*review.Unit) bool) h.H {
 	var kids []h.H
-	for _, l := range review.Lanes {
-		units := rev.Lane(l)
-		if len(units) == 0 {
-			continue
-		}
+	for _, sec := range secs {
 		var rows []h.H
-		shown := p.visible(l, units)
+		shown := p.visible(sec.Lane, sec.Units)
 		for _, u := range shown {
-			cls, glyph := "ol-row", "○"
-			if p.state.Reviewed(u.Key) {
-				cls, glyph = "ol-row done", "✓"
-			}
-			rows = append(rows, h.Li(h.A(h.Class(cls), h.Href("#"+unitID(u.Key)),
-				h.Span(h.Class("ol-mark"), h.Str(glyph)),
-				h.Span(h.Class("ol-name"), h.Str(u.Name), via.When(names[strings.ToLower(u.Name)] > 1, func() h.H { return h.Span(h.Class("ol-pkg"), h.Str(" "+path.Base(u.Package))) })),
-				h.Span(h.Class("ol-delta"), delta(u.Added, u.Deleted)),
-			)))
+			rows = append(rows, p.outlineRow(u, shared(u)))
 		}
-		reviewed := 0
-		for _, u := range units {
-			if p.state.Reviewed(u.Key) {
-				reviewed++
-			}
-		}
-		if hidden := len(units) - len(shown); hidden > 0 {
+		if hidden := len(sec.Units) - len(shown); hidden > 0 {
 			rows = append(rows, h.Li(h.Class("ol-more"), h.Str(fmt.Sprintf("%d more", hidden))))
 		}
-		kids = append(kids, h.H3(h.Str(l.String()), h.Span(h.Class("ol-count"), h.Str(fmt.Sprintf(" %d/%d", reviewed, len(units))))), h.Ul(rows...))
+		kids = append(kids, h.H3(h.Str(sec.Lane.String()), h.Span(h.Class("ol-count"), h.Str(fmt.Sprintf(" %d/%d", sec.Done, len(sec.Units))))), h.Ul(rows...))
 	}
 	return h.Nav(append([]h.H{h.Class("outline"), h.Aria("label", "Units")}, kids...)...)
+}
+
+// outlineRow names the unit's package when another unit shares its name.
+func (p *reviewPage) outlineRow(u *review.Unit, shared bool) h.H {
+	cls, glyph := "ol-row", "○"
+	if p.state.Reviewed(u.Key) {
+		cls, glyph = "ol-row done", "✓"
+	}
+	return h.Li(h.A(h.Class(cls), h.Href("#"+unitID(u.Key)),
+		h.Span(h.Class("ol-mark"), h.Str(glyph)),
+		h.Span(h.Class("ol-name"), h.Str(u.Name), via.When(shared, func() h.H { return h.Span(h.Class("ol-pkg"), h.Str(" "+path.Base(u.Package))) })),
+		h.Span(h.Class("ol-delta"), delta(u.Added, u.Deleted)),
+	))
 }
 
 var laneHelp = map[review.Lane]string{
@@ -263,19 +255,14 @@ var laneHelp = map[review.Lane]string{
 	review.Noise:    "no change in meaning: comments, layout, moves, generated code",
 }
 
-func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit) h.H {
-	open := 0
-	for _, u := range units {
-		if !p.state.Reviewed(u.Key) {
-			open++
-		}
-	}
+func (p *reviewPage) lane(a *live.Analysis, sec review.Section) h.H {
+	l, units := sec.Lane, sec.Units
 	head := h.Div(h.Class("lane-head"),
 		h.H3(h.Str(l.String())),
-		h.Span(h.Class("hint"), h.Str(fmt.Sprintf("%d of %d reviewed · %s", len(units)-open, len(units), laneHelp[l]))),
+		h.Span(h.Class("hint"), h.Str(fmt.Sprintf("%d of %d reviewed · %s", sec.Done, len(units), laneHelp[l]))),
 	)
 	var accept h.H
-	if l == review.Noise && open > 0 {
+	if l == review.Noise && sec.Done < len(units) {
 		accept = h.Button(h.Class("btn"), on.Click(p.AcceptNoise), h.Str("Mark all noise reviewed"))
 	}
 	var cards []h.H
@@ -291,18 +278,18 @@ func (p *ReviewPage) lane(a *live.Analysis, l review.Lane, units []*review.Unit)
 }
 
 // showDiff decides whether a card renders its diff unasked.
-func (p *ReviewPage) showDiff(u *review.Unit, l review.Lane) bool {
+func (p *reviewPage) showDiff(u *review.Unit, l review.Lane) bool {
 	if p.opened[u.Key] {
 		return true
 	}
-	if l > review.Logic || p.budget >= renderBudget || p.state.Reviewed(u.Key) {
+	if p.budget >= renderBudget || !p.state.NeedsReading(u, l) {
 		return false
 	}
 	p.budget += len(u.Lines)
 	return true
 }
 
-func (p *ReviewPage) card(a *live.Analysis, u *review.Unit, l review.Lane) h.H {
+func (p *reviewPage) card(a *live.Analysis, u *review.Unit, l review.Lane) h.H {
 	done := p.state.Reviewed(u.Key)
 	cls := "unit"
 	if done {
@@ -352,7 +339,7 @@ const contextRun = 3
 // can run to thousands of lines nobody reads in a review.
 const maxDiffLines = 400
 
-func (p *ReviewPage) diffView(u *review.Unit) h.H {
+func (p *reviewPage) diffView(u *review.Unit) h.H {
 	if len(u.Lines) == 0 {
 		return nil
 	}
@@ -360,49 +347,55 @@ func (p *ReviewPage) diffView(u *review.Unit) h.H {
 	if len(lines) > maxDiffLines && !p.whole[u.Key] {
 		lines, cut = lines[:maxDiffLines], len(lines)-maxDiffLines
 	}
+	rows := foldRows(lines)
+	if cut > 0 {
+		rows = append(rows, h.Button(h.Class("expand"), on.Click(on.Bind(p.ShowWhole, u.Key)), h.Str(fmt.Sprintf("Show the other %s", plural(cut, "line")))))
+	}
+	return h.Div(h.Class("diff"), group(rows))
+}
+
+// foldRows renders the lines, folding each long run of unchanged ones.
+func foldRows(lines []review.Line) []h.H {
 	var rows []h.H
 	var run []review.Line
-	flush := func(last bool) {
-		if len(run) > 2*contextRun+1 {
-			lead, tail := run[:contextRun], run[len(run)-contextRun:]
-			if len(rows) == 0 {
-				lead = nil
-			}
-			if last {
-				tail = nil
-			}
-			for _, l := range lead {
-				rows = append(rows, diffRow(l))
-			}
-			hidden := len(run) - len(lead) - len(tail)
-			var inner []h.H
-			for _, l := range run[len(lead) : len(run)-len(tail)] {
-				inner = append(inner, diffRow(l))
-			}
-			rows = append(rows, h.Details(h.Class("skip"), h.Summary(h.Str(fmt.Sprintf("%d unchanged lines", hidden))), group(inner)))
-			for _, l := range tail {
-				rows = append(rows, diffRow(l))
-			}
-		} else {
-			for _, l := range run {
-				rows = append(rows, diffRow(l))
-			}
-		}
-		run = nil
-	}
 	for _, l := range lines {
 		if l.Op == ' ' {
 			run = append(run, l)
 			continue
 		}
-		flush(false)
+		rows = append(rows, runRows(run, len(rows) == 0, false)...)
+		run = nil
 		rows = append(rows, diffRow(l))
 	}
-	flush(true)
-	if cut > 0 {
-		rows = append(rows, h.Button(h.Class("expand"), on.Click(on.Bind(p.ShowWhole, u.Key)), h.Str(fmt.Sprintf("Show the other %s", plural(cut, "line")))))
+	return append(rows, runRows(run, len(rows) == 0, true)...)
+}
+
+// runRows renders a run of unchanged lines. A long one keeps contextRun lines
+// beside each change and folds the rest; first and last mean no change lies
+// before or after it, so that side keeps none.
+func runRows(run []review.Line, first, last bool) []h.H {
+	if len(run) <= 2*contextRun+1 {
+		return diffRows(run)
 	}
-	return h.Div(h.Class("diff"), group(rows))
+	lead, tail := run[:contextRun], run[len(run)-contextRun:]
+	if first {
+		lead = nil
+	}
+	if last {
+		tail = nil
+	}
+	skipped := run[len(lead) : len(run)-len(tail)]
+	rows := diffRows(lead)
+	rows = append(rows, h.Details(h.Class("skip"), h.Summary(h.Str(fmt.Sprintf("%d unchanged lines", len(skipped)))), group(diffRows(skipped))))
+	return append(rows, diffRows(tail)...)
+}
+
+func diffRows(lines []review.Line) []h.H {
+	var rows []h.H
+	for _, l := range lines {
+		rows = append(rows, diffRow(l))
+	}
+	return rows
 }
 
 func diffRow(l review.Line) h.H {
@@ -419,7 +412,7 @@ func diffRow(l review.Line) h.H {
 // callersLine lists who calls the unit. Callers changed in this same diff
 // come first and link to their card, so a contract change and its call
 // sites are read together.
-func (p *ReviewPage) callersLine(a *live.Analysis, u *review.Unit) h.H {
+func (p *reviewPage) callersLine(a *live.Analysis, u *review.Unit) h.H {
 	if len(u.Callers) == 0 {
 		return nil
 	}

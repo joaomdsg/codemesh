@@ -48,50 +48,53 @@ func (t atlasTile) MarshalJSON() ([]byte, error) {
 // tile's page-specific fields; exactly one of pkg, f, d is the tile's own
 // level, the others are its parents.
 func atlasOf(a *live.Analysis, w, h float64, mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)) atlas {
-	out := atlas{At: a.At.UnixMilli(), W: w, H: h, Tiles: []atlasTile{}}
-	add := func(t atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
-		mark(len(out.Tiles), &t, pkg, f, d)
-		out.Tiles = append(out.Tiles, t)
+	b := atlasBuilder{a: a, mark: mark, out: atlas{At: a.At.UnixMilli(), W: w, H: h, Tiles: []atlasTile{}}}
+	b.packages(treemap.Rect{W: w, H: h})
+	return b.out
+}
+
+type atlasBuilder struct {
+	a    *live.Analysis
+	mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)
+	out  atlas
+}
+
+func (b *atlasBuilder) add(t atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
+	b.mark(len(b.out.Tiles), &t, pkg, f, d)
+	b.out.Tiles = append(b.out.Tiles, t)
+}
+
+func (b *atlasBuilder) packages(r treemap.Rect) {
+	size := func(p *code.Package) (string, float64) { return p.Path, float64(p.Lines()) }
+	for _, pt := range treemap.Place(b.a.Snap.Packages, r, size) {
+		b.add(tileAt("p", pkgName(b.a, pt.Val), pt.Rect), pt.Val, nil, nil)
+		b.files(pt.Val, belowLabel(pt.Rect.Inset(2), 14))
 	}
-	var pkgs []treemap.Item
-	byPath := map[string]*code.Package{}
-	for _, p := range a.Snap.Packages {
-		if n := p.Lines(); n > 0 {
-			pkgs = append(pkgs, treemap.Item{ID: p.Path, Weight: float64(n)})
-			byPath[p.Path] = p
+}
+
+func (b *atlasBuilder) files(p *code.Package, r treemap.Rect) {
+	size := func(f *code.File) (string, float64) {
+		if f.Test {
+			return f.Path, 0
 		}
+		return f.Path, float64(f.Lines)
 	}
-	for _, pt := range treemap.Layout(pkgs, treemap.Rect{W: w, H: h}) {
-		p := byPath[pt.ID]
-		add(tileAt("p", pkgName(a, p), pt.Rect), p, nil, nil)
-		var files []treemap.Item
-		byFile := map[string]*code.File{}
-		for _, f := range p.Files {
-			if !f.Test && f.Lines > 0 {
-				files = append(files, treemap.Item{ID: f.Path, Weight: float64(f.Lines)})
-				byFile[f.Path] = f
-			}
-		}
-		for _, ft := range treemap.Layout(files, belowLabel(pt.Rect.Inset(2), 14)) {
-			f := byFile[ft.ID]
-			add(tileAt("f", path.Base(f.Path), ft.Rect), p, f, nil)
-			var decls []treemap.Item
-			byDecl := map[string]*code.Decl{}
-			for _, d := range f.Decls {
-				decls = append(decls, treemap.Item{ID: d.ID, Weight: float64(max(d.Lines, 1))})
-				byDecl[d.ID] = d
-			}
-			for _, dt := range treemap.Layout(decls, belowLabel(ft.Rect.Inset(1), 12)) {
-				d := byDecl[dt.ID]
-				t := tileAt("d", d.Name, dt.Rect)
-				if d.Exported {
-					t.Exp = 1
-				}
-				add(t, p, f, d)
-			}
-		}
+	for _, ft := range treemap.Place(p.Files, r, size) {
+		b.add(tileAt("f", path.Base(ft.Val.Path), ft.Rect), p, ft.Val, nil)
+		b.decls(p, ft.Val, belowLabel(ft.Rect.Inset(1), 12))
 	}
-	return out
+}
+
+func (b *atlasBuilder) decls(p *code.Package, f *code.File, r treemap.Rect) {
+	// A declaration with no code lines still gets a tile.
+	size := func(d *code.Decl) (string, float64) { return d.ID, float64(max(d.Lines, 1)) }
+	for _, dt := range treemap.Place(f.Decls, r, size) {
+		t := tileAt("d", dt.Val.Name, dt.Rect)
+		if dt.Val.Exported {
+			t.Exp = 1
+		}
+		b.add(t, p, f, dt.Val)
+	}
 }
 
 // belowLabel keeps a strip at the top of a frame for its label, when the

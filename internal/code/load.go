@@ -30,6 +30,10 @@ func Load(dir string) (*Snapshot, error) {
 	if exists(filepath.Join(abs, "Project.toml")) && !exists(filepath.Join(abs, "go.mod")) {
 		return loadJulia(abs)
 	}
+	return loadGo(abs)
+}
+
+func loadGo(abs string) (*Snapshot, error) {
 	cfg := &packages.Config{Dir: abs, Mode: loadMode, Tests: true, Fset: token.NewFileSet()}
 	loaded, err := packages.Load(cfg, "./...")
 	if err != nil {
@@ -90,12 +94,7 @@ func (l *loader) addPackage(p *packages.Package) {
 	}
 	if p.ForTest == "" {
 		pkg.Name = p.Name
-		for path := range p.Imports {
-			if l.internal(path) {
-				pkg.Imports = append(pkg.Imports, path)
-			}
-		}
-		slices.Sort(pkg.Imports)
+		l.addImports(pkg, p)
 	}
 	for _, e := range p.Errors {
 		if msg := e.Error(); !slices.Contains(pkg.Errors, msg) {
@@ -110,6 +109,15 @@ func (l *loader) addPackage(p *packages.Package) {
 		l.seen[name] = true
 		pkg.Files = append(pkg.Files, l.addFile(p, owner, name, f))
 	}
+}
+
+func (l *loader) addImports(pkg *Package, p *packages.Package) {
+	for path := range p.Imports {
+		if l.internal(path) {
+			pkg.Imports = append(pkg.Imports, path)
+		}
+	}
+	slices.Sort(pkg.Imports)
 }
 
 func (l *loader) addFile(p *packages.Package, owner, name string, f *ast.File) *File {
@@ -145,65 +153,77 @@ func (l *loader) addFile(p *packages.Package, owner, name string, f *ast.File) *
 }
 
 func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
-	qual := types.RelativeTo(p.Types)
 	switch gd := gd.(type) {
 	case *ast.FuncDecl:
-		d := &Decl{Kind: Func, Name: gd.Name.Name, Exported: gd.Name.IsExported()}
-		if recv := recvName(gd); recv != "" {
-			d.Kind, d.Name = Method, recv+"."+gd.Name.Name
-			d.Exported = d.Exported && ast.IsExported(recv)
-		}
-		d.ID = p.PkgPath + "." + d.Name
-		d.Start, d.End = l.span(gd.Doc, gd.Pos(), gd.End())
-		d.Params = paramCount(gd.Type.Params)
-		if gd.Body != nil {
-			d.Complexity, d.Nesting = complexity(gd.Body), nesting(gd.Body)
-		}
-		if obj := p.TypesInfo.Defs[gd.Name]; obj != nil {
-			d.Signature = types.TypeString(obj.Type(), qual)
-			l.index(obj, d)
-		}
-		d.Shape = shape(gd)
-		return []unit{{d, gd, p.TypesInfo}}
+		return []unit{l.funcUnit(p, gd)}
 	case *ast.GenDecl:
 		if gd.Tok == token.IMPORT {
 			return nil
 		}
 		var out []unit
 		for _, spec := range gd.Specs {
-			d := &Decl{Kind: kindOf(gd.Tok)}
-			doc, start, end := specDoc(spec), spec.Pos(), spec.End()
-			// A spec outside parentheses shares the GenDecl's keyword and doc.
-			if !gd.Lparen.IsValid() {
-				doc, start, end = gd.Doc, gd.Pos(), gd.End()
+			if u, ok := l.specUnit(p, gd, spec); ok {
+				out = append(out, u)
 			}
-			d.Start, d.End = l.span(doc, start, end)
-			var typ []string
-			for _, id := range specNames(spec) {
-				if d.Name == "" {
-					d.Name, d.Exported = id.Name, id.IsExported()
-				}
-				if obj := p.TypesInfo.Defs[id]; obj != nil {
-					if gd.Tok == token.TYPE {
-						typ = append(typ, surface(obj.Type().Underlying(), qual))
-					} else {
-						typ = append(typ, types.TypeString(obj.Type(), qual))
-					}
-					l.index(obj, d)
-				}
-			}
-			if d.Name == "" || d.Name == "_" {
-				continue
-			}
-			d.ID = p.PkgPath + "." + d.Name
-			d.Signature = strings.Join(typ, ", ")
-			d.Data = gd.Tok != token.TYPE && l.isData(spec.(*ast.ValueSpec), p.TypesInfo)
-			d.Shape = shape(spec)
-			out = append(out, unit{d, spec, p.TypesInfo})
 		}
 		return out
 	}
 	return nil
+}
+
+func (l *loader) funcUnit(p *packages.Package, gd *ast.FuncDecl) unit {
+	d := &Decl{Kind: Func, Name: gd.Name.Name, Exported: gd.Name.IsExported()}
+	if recv := recvName(gd); recv != "" {
+		d.Kind, d.Name = Method, recv+"."+gd.Name.Name
+		d.Exported = d.Exported && ast.IsExported(recv)
+	}
+	d.ID = p.PkgPath + "." + d.Name
+	d.Start, d.End = l.span(gd.Doc, gd.Pos(), gd.End())
+	d.Params = paramCount(gd.Type.Params)
+	if gd.Body != nil {
+		d.Complexity, d.Nesting = complexity(gd.Body), nesting(gd.Body)
+	}
+	if obj := p.TypesInfo.Defs[gd.Name]; obj != nil {
+		d.Signature = types.TypeString(obj.Type(), types.RelativeTo(p.Types))
+		l.index(obj, d)
+	}
+	d.Shape = shape(gd)
+	return unit{d, gd, p.TypesInfo}
+}
+
+func (l *loader) specUnit(p *packages.Package, gd *ast.GenDecl, spec ast.Spec) (unit, bool) {
+	qual := types.RelativeTo(p.Types)
+	d := &Decl{Kind: kindOf(gd.Tok)}
+	doc, start, end := specDoc(spec), spec.Pos(), spec.End()
+	// A spec outside parentheses shares the GenDecl's keyword and doc.
+	if !gd.Lparen.IsValid() {
+		doc, start, end = gd.Doc, gd.Pos(), gd.End()
+	}
+	d.Start, d.End = l.span(doc, start, end)
+	var typ []string
+	for _, id := range specNames(spec) {
+		if d.Name == "" {
+			d.Name, d.Exported = id.Name, id.IsExported()
+		}
+		obj := p.TypesInfo.Defs[id]
+		if obj == nil {
+			continue
+		}
+		if gd.Tok == token.TYPE {
+			typ = append(typ, surface(obj.Type().Underlying(), qual))
+		} else {
+			typ = append(typ, types.TypeString(obj.Type(), qual))
+		}
+		l.index(obj, d)
+	}
+	if d.Name == "" || d.Name == "_" {
+		return unit{}, false
+	}
+	d.ID = p.PkgPath + "." + d.Name
+	d.Signature = strings.Join(typ, ", ")
+	d.Data = gd.Tok != token.TYPE && l.isData(spec.(*ast.ValueSpec), p.TypesInfo)
+	d.Shape = shape(spec)
+	return unit{d, spec, p.TypesInfo}, true
 }
 
 // index makes obj resolvable to d. Objects outside the package scope, such
@@ -218,27 +238,56 @@ func (l *loader) index(obj types.Object, d *Decl) {
 // resolve records every reference from u's syntax to a module declaration.
 func (l *loader) resolve(u unit) {
 	ast.Inspect(u.node, func(n ast.Node) bool {
-		id, ok := n.(*ast.Ident)
-		if !ok {
-			return true
-		}
-		obj := u.info.Uses[id]
-		if obj == nil || obj.Pkg() == nil {
-			return true
-		}
-		to := l.objs[objKey(origin(obj))]
-		if to == nil || to == u.d {
-			return true
-		}
-		if u.d.Refs == nil {
-			u.d.Refs = map[string]int{}
-		}
-		u.d.Refs[to.Package]++
-		if !slices.Contains(to.Callers, u.d.ID) {
-			to.Callers = append(to.Callers, u.d.ID)
+		switch n := n.(type) {
+		case *ast.SelectorExpr:
+			if sel := u.info.Selections[n]; sel != nil {
+				l.use(u, sel.Recv())
+				l.use(u, sel.Type())
+			}
+		case *ast.Ident:
+			l.ref(u, n)
 		}
 		return true
 	})
+}
+
+func (l *loader) ref(u unit, id *ast.Ident) {
+	obj := u.info.Uses[id]
+	if obj == nil || obj.Pkg() == nil {
+		return
+	}
+	if c, ok := obj.(*types.Const); ok {
+		l.use(u, c.Type())
+	}
+	to := l.objs[objKey(origin(obj))]
+	if to == nil || to == u.d {
+		return
+	}
+	if u.d.Refs == nil {
+		u.d.Refs = map[string]int{}
+	}
+	u.d.Refs[to.Package]++
+	if !slices.Contains(to.Callers, u.d.ID) {
+		to.Callers = append(to.Callers, u.d.ID)
+	}
+}
+
+// use records that u reaches the module type t through a constant, a
+// field, a field's value or a method. Callers misses this when u never
+// spells the type's name.
+func (l *loader) use(u unit, t types.Type) {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	n, ok := types.Unalias(t).(*types.Named)
+	if !ok || n.Obj().Pkg() == nil {
+		return
+	}
+	to := l.objs[objKey(n.Origin().Obj())]
+	if to == nil || to == u.d || slices.Contains(to.Users, u.d.ID) {
+		return
+	}
+	to.Users = append(to.Users, u.d.ID)
 }
 
 func (l *loader) finish() {
@@ -250,6 +299,7 @@ func (l *loader) finish() {
 	}
 	for _, d := range l.s.decls {
 		slices.Sort(d.Callers)
+		slices.Sort(d.Users)
 	}
 }
 

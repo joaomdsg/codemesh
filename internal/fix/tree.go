@@ -157,15 +157,15 @@ func (t *tree) named(cmd string) []string {
 func shellKind(cmd string, reads []string) string {
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
-		return Exec
+		return kindExec
 	}
 	switch filepath.Base(fields[0]) {
 	case "grep", "rg", "find", "ls", "tree", "fd", "ag":
-		return Search
+		return kindSearch
 	case "cat", "head", "tail", "sed", "awk", "nl", "less", "wc", "bat":
 		if len(reads) > 0 {
-			return Read
+			return kindRead
 		}
 	}
-	return Exec
+	return kindExec
 }

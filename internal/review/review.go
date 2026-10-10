@@ -127,7 +127,7 @@ func Build(in Input) *Review {
 	slices.SortStableFunc(rev.Units, func(a, b *Unit) int {
 		return cmp.Or(cmp.Compare(a.Lane, b.Lane), cmp.Compare(b.Risk, a.Risk), cmp.Compare(a.File, b.File), cmp.Compare(a.Name, b.Name))
 	})
-	rev.Introduced, rev.Fixed = delta(in.BaseFindings, in.HeadFindings)
+	rev.Introduced, rev.Fixed = smell.Delta(in.BaseFindings, in.HeadFindings)
 	attach(rev)
 	return rev
 }
@@ -257,31 +257,8 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 // looseUnit gathers changed lines outside any declaration: imports and
 // free-floating comments. Blank lines alone do not make a unit.
 func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpans []span) *Unit {
-	var lines []Line
-	collect := func(f *code.File, s *code.Snapshot, rel string, spans []span, op byte) {
-		if f == nil {
-			return
-		}
-		text := b.lines(s, rel)
-		for _, sp := range spans {
-			for n := sp.start; n < sp.start+sp.n && n <= len(text); n++ {
-				t := strings.TrimSpace(text[n-1])
-				// A package clause only changes with the file itself.
-				if t == "" || strings.HasPrefix(t, "package ") || inDecl(f, n) {
-					continue
-				}
-				l := Line{Op: op, Text: text[n-1]}
-				if op == '-' {
-					l.Old = n
-				} else {
-					l.New = n
-				}
-				lines = append(lines, l)
-			}
-		}
-	}
-	collect(bf, b.in.Base, d.OldPath, oldSpans, '-')
-	collect(hf, b.in.Head, d.NewPath, newSpans, '+')
+	lines := append(b.looseLines(bf, b.in.Base, d.OldPath, oldSpans, '-'),
+		b.looseLines(hf, b.in.Head, d.NewPath, newSpans, '+')...)
 	if len(lines) == 0 {
 		return nil
 	}
@@ -301,6 +278,31 @@ func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpa
 	return u
 }
 
+func (b *builder) looseLines(f *code.File, s *code.Snapshot, rel string, spans []span, op byte) []Line {
+	if f == nil {
+		return nil
+	}
+	var out []Line
+	text := b.lines(s, rel)
+	for _, sp := range spans {
+		for n := sp.start; n < sp.start+sp.n && n <= len(text); n++ {
+			t := strings.TrimSpace(text[n-1])
+			// A package clause only changes with the file itself.
+			if t == "" || strings.HasPrefix(t, "package ") || inDecl(f, n) {
+				continue
+			}
+			l := Line{Op: op, Text: text[n-1]}
+			if op == '-' {
+				l.Old = n
+			} else {
+				l.New = n
+			}
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 func (u *Unit) setLines(lines []Line) {
 	u.Lines = lines
 	for _, l := range lines {
@@ -318,27 +320,14 @@ func (u *Unit) setLines(lines []Line) {
 // package. Unchanged, it is noise; edited, it is one modified unit with its
 // diff, not a removal plus an addition.
 func pairMoves(b *builder, units []*Unit) []*Unit {
-	type nk struct {
-		name string
-		kind code.Kind
-	}
-	removed, added := map[nk][]*Unit{}, map[nk][]*Unit{}
-	for _, u := range units {
-		switch {
-		case u.Kind == "":
-		case u.Change == Removed:
-			removed[nk{u.Name, u.Kind}] = append(removed[nk{u.Name, u.Kind}], u)
-		case u.Change == Added:
-			added[nk{u.Name, u.Kind}] = append(added[nk{u.Name, u.Kind}], u)
-		}
-	}
+	adds, rems := groupByName(units)
 	gone := map[*Unit]bool{}
-	for k, adds := range added {
-		rems := removed[k]
-		if len(adds) != 1 || len(rems) != 1 {
+	for k, as := range adds {
+		rs := rems[k]
+		if len(as) != 1 || len(rs) != 1 {
 			continue
 		}
-		u, r := adds[0], rems[0]
+		u, r := as[0], rs[0]
 		if len(u.Lines) == 0 || len(r.Lines) == 0 {
 			continue
 		}
@@ -350,13 +339,28 @@ func pairMoves(b *builder, units []*Unit) []*Unit {
 		}
 		b.remerge(u, r)
 	}
-	out := units[:0]
+	return slices.DeleteFunc(units, func(u *Unit) bool { return gone[u] })
+}
+
+type nameKind struct {
+	name string
+	kind code.Kind
+}
+
+// groupByName groups added and removed declaration units by name and kind.
+func groupByName(units []*Unit) (adds, rems map[nameKind][]*Unit) {
+	adds, rems = map[nameKind][]*Unit{}, map[nameKind][]*Unit{}
 	for _, u := range units {
-		if !gone[u] {
-			out = append(out, u)
+		k := nameKind{u.Name, u.Kind}
+		switch {
+		case u.Kind == "":
+		case u.Change == Removed:
+			rems[k] = append(rems[k], u)
+		case u.Change == Added:
+			adds[k] = append(adds[k], u)
 		}
 	}
-	return out
+	return adds, rems
 }
 
 // remerge turns an added unit into the modified version of a removed one.

@@ -10,20 +10,7 @@ func diffLines(a, b []string, aStart, bStart int) []Line {
 	if len(a)*len(b) > maxCells {
 		return append(lines(a, '-', aStart), lines(b, '+', bStart)...)
 	}
-	// lcs[i][j] is the LCS length of a[i:] and b[j:].
-	lcs := make([][]int, len(a)+1)
-	for i := range lcs {
-		lcs[i] = make([]int, len(b)+1)
-	}
-	for i := len(a) - 1; i >= 0; i-- {
-		for j := len(b) - 1; j >= 0; j-- {
-			if a[i] == b[j] {
-				lcs[i][j] = lcs[i+1][j+1] + 1
-			} else {
-				lcs[i][j] = max(lcs[i+1][j], lcs[i][j+1])
-			}
-		}
-	}
+	lcs := lcsTable(a, b)
 	var out []Line
 	i, j := 0, 0
 	for i < len(a) || j < len(b) {
@@ -41,6 +28,24 @@ func diffLines(a, b []string, aStart, bStart int) []Line {
 		}
 	}
 	return out
+}
+
+// lcsTable returns t where t[i][j] is the LCS length of a[i:] and b[j:].
+func lcsTable(a, b []string) [][]int {
+	t := make([][]int, len(a)+1)
+	for i := range t {
+		t[i] = make([]int, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				t[i][j] = t[i+1][j+1] + 1
+			} else {
+				t[i][j] = max(t[i+1][j], t[i][j+1])
+			}
+		}
+	}
+	return t
 }
 
 func lines(text []string, op byte, start int) []Line {

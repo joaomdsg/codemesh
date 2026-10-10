@@ -2,7 +2,6 @@ package code
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -189,18 +188,6 @@ func shape(n ast.Node) string {
 		return true
 	})
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// ShapeOf returns the Shape of the first declaration in a Go source file.
-func ShapeOf(src string) (string, error) {
-	f, err := parser.ParseFile(token.NewFileSet(), "", src, parser.SkipObjectResolution)
-	if err != nil {
-		return "", err
-	}
-	if len(f.Decls) == 0 {
-		return "", errors.New("no declaration")
-	}
-	return shape(f.Decls[0]), nil
 }
 
 // FileShape returns the Shape of a whole Go source file.

@@ -79,12 +79,12 @@ func New(src *live.Source, state *review.State, runs *fix.Runs, origin string) h
 		via.WithTrustedOrigin(origin),
 	)
 	shell := shell{src: src, state: state, runs: runs}
-	via.Mount(r, "/", MapPage{shell: shell})
-	via.Mount(r, "/deps", DepsPage{shell: shell})
-	via.Mount(r, "/review", ReviewPage{shell: shell})
-	via.Mount(r, "/diagnose", DiagnosePage{shell: shell})
-	via.Mount(r, "/diagnose/{lens}", DiagnosePage{shell: shell})
-	via.Mount(r, "/prognosis/{key}", DiagnosePage{shell: shell})
+	via.Mount(r, "/", mapPage{shell: shell})
+	via.Mount(r, "/deps", depsPage{shell: shell})
+	via.Mount(r, "/review", reviewPage{shell: shell})
+	via.Mount(r, "/diagnose", diagnosePage{shell: shell})
+	via.Mount(r, "/diagnose/{lens}", diagnosePage{shell: shell})
+	via.Mount(r, "/prognosis/{key}", diagnosePage{shell: shell})
 	mux := http.NewServeMux()
 	// Browsers ask for a favicon on every page; answer instead of logging 404s.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

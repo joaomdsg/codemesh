@@ -47,16 +47,16 @@ const (
 // the severity.
 const (
 	LongFuncLimit        = 60
-	LongFuncHighLimit    = 120
+	longFuncHighLimit    = 120
 	ComplexFuncLimit     = 10
 	ComplexFuncHighLimit = 20
-	DeepNestingLimit     = 4
+	deepNestingLimit     = 4
 	ManyParamsLimit      = 5
 	LargeFileLimit       = 600
-	LargeFileHighLimit   = 1200
-	// EnviousFuncMinRefs is the fewest references to the other package that
+	largeFileHighLimit   = 1200
+	// enviousFuncMinRefs is the fewest references to the other package that
 	// count as envy.
-	EnviousFuncMinRefs = 4
+	enviousFuncMinRefs = 4
 )
 
 var why = map[Rule]string{

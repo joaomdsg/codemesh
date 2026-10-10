@@ -5,16 +5,11 @@
 package fix
 
 import (
-	"bufio"
-	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -52,7 +47,7 @@ type Event struct {
 // arrives.
 type Step struct {
 	ID         string // the tool call's id; "" for a thought
-	Kind       string // Think, Read, Search, Edit, Exec or Other
+	Kind       string // think, read, search, edit, run or other
 	Tool       string
 	Title      string // one line
 	Path       string // the file it named, relative to the worktree when inside it
@@ -180,6 +175,15 @@ type Snapshot struct {
 	PR     PR
 }
 
+// Live reports whether the run is still going: setting up, editing or checking.
+func (s Snapshot) Live() bool {
+	return s.State == Preparing || s.State == Working || s.State == Checking
+}
+
+// Editing reports whether Claude has yet to finish editing, so it can still be
+// stopped.
+func (s Snapshot) Editing() bool { return s.State == Preparing || s.State == Working }
+
 // Snapshot returns the run's progress so far.
 func (r *Run) Snapshot() Snapshot {
 	r.mu.Lock()
@@ -258,7 +262,7 @@ func (rs *Runs) Start(p prognosis.Prognosis) *Run {
 	rs.runs[p.Key] = r
 	go func() {
 		defer close(r.done)
-		r.run(life, work, rs.Dir, rs.Agent, rs.Self, p)
+		r.run(life, work, rs)
 		r.mu.Lock()
 		if r.finished.IsZero() {
 			r.finished = time.Now() // ended early; this also stops the heartbeat
@@ -328,71 +332,105 @@ func (r *Run) close() {
 	}
 }
 
-func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosis.Prognosis) {
-	repo, err := gitx.Open(dir)
-	if err != nil {
-		r.fail(fmt.Errorf("not a git repository: %w", err))
+func (r *Run) run(life, ctx context.Context, rs *Runs) {
+	start, rel, ok := r.prepare(life, rs.Dir)
+	if !ok {
 		return
 	}
-	head, err := repo.Head()
-	if err != nil || head == "" {
-		r.fail(errors.New("the repository has no commits to start from"))
-		return
-	}
-	base, err := repo.Branch()
+	r.note("Analysing the starting point and running its checks, so the result has something to compare with.")
+	startMod := filepath.Join(start, rel)
+	before, err := analyse(ctx, startMod, checkOf(start, startMod))
 	if err != nil {
 		r.fail(err)
 		return
 	}
-	r.set(func() { r.repo, r.head, r.base = repo.Dir, head, base })
-	r.note("Copying the last commit (" + head[:7] + ") into a throwaway worktree. Uncommitted edits are not included.")
+	r.set(func() { r.before, r.state = before, Working })
+	if !r.work(ctx, rs.Agent, rs.Self, before) {
+		return
+	}
+	r.finish(life, before)
+}
+
+// prepare opens the repository and cuts the two worktrees; it returns the
+// starting point's and the module's path inside a worktree.
+func (r *Run) prepare(life context.Context, dir string) (start, rel string, ok bool) {
+	repo, head, ok := r.open(dir)
+	if !ok {
+		return "", "", false
+	}
 	// The starting point gets a worktree of its own, kept for the run: the
 	// review reads each side's source from its snapshot's directory when it
 	// is built, after Claude has edited Claude's copy.
-	wt, cleanup, err := repo.Worktree(head)
+	wt, start, err := r.worktrees(repo, head)
 	if err != nil {
 		r.fail(err)
-		return
+		return "", "", false
 	}
-	r.set(func() { r.cleanup = cleanup })
-	start, cleanStart, err := repo.Worktree(head)
-	if err != nil {
-		r.fail(err)
-		return
-	}
-	r.set(func() { r.cleanup = func() error { return errors.Join(cleanup(), cleanStart()) } })
 	if life.Err() != nil {
-		return
+		return "", "", false
 	}
 	abs, _ := filepath.Abs(dir)
-	rel, err := filepath.Rel(repo.Dir, abs)
+	rel, err = filepath.Rel(repo.Dir, abs)
 	if err != nil {
 		rel = "."
 	}
 	mod := filepath.Join(wt, rel)
 	check := checkOf(wt, mod)
 	r.set(func() { r.check, r.wt, r.mod, r.tree = check, wt, mod, newTree(wt, mod) })
+	return start, rel, true
+}
 
-	r.note("Analysing the starting point and running its checks, so the result has something to compare with.")
-	before, err := analyse(ctx, filepath.Join(start, rel), checkOf(start, filepath.Join(start, rel)))
+// open opens the repository and records where the run starts; it fails the
+// run and reports false when it cannot.
+func (r *Run) open(dir string) (*gitx.Repo, string, bool) {
+	repo, err := gitx.Open(dir)
+	if err != nil {
+		r.fail(fmt.Errorf("not a git repository: %w", err))
+		return nil, "", false
+	}
+	head, err := repo.Head()
+	if err != nil || head == "" {
+		r.fail(errors.New("the repository has no commits to start from"))
+		return nil, "", false
+	}
+	base, err := repo.Branch()
 	if err != nil {
 		r.fail(err)
-		return
+		return nil, "", false
 	}
-	r.set(func() { r.before, r.state = before, Working })
+	r.set(func() { r.repo, r.head, r.base = repo.Dir, head, base })
+	r.note("Copying the last commit (" + head[:7] + ") into a throwaway worktree. Uncommitted edits are not included.")
+	return repo, head, true
+}
 
+func (r *Run) worktrees(repo *gitx.Repo, head string) (wt, start string, err error) {
+	wt, cleanup, err := repo.Worktree(head)
+	if err != nil {
+		return "", "", err
+	}
+	r.set(func() { r.cleanup = cleanup })
+	start, cleanStart, err := repo.Worktree(head)
+	if err != nil {
+		return "", "", err
+	}
+	r.set(func() { r.cleanup = func() error { return errors.Join(cleanup(), cleanStart()) } })
+	return wt, start, nil
+}
+
+// work lets Claude edit the worktree. It reports false when the run failed.
+func (r *Run) work(ctx context.Context, agent, self string, before *Side) bool {
 	r.note("Stop ends it early and keeps what it changed so far.")
-	brief := prognosis.Brief{Check: check.Name, Where: check.Where, Nearby: prognosis.Nearby(before.Prognoses, p)}
+	brief := prognosis.Brief{Check: r.check.Name, Where: r.check.Where, Nearby: prognosis.Nearby(before.Prognoses, r.p)}
 	if self != "" {
-		brief.List = self + " prognoses " + mod
+		brief.List = self + " prognoses " + r.mod
 	}
 	working, worked := context.WithCancel(ctx)
-	go r.remapping(working, mod)
-	err = r.claude(ctx, agent, mod, p.Prompt(brief))
+	go r.remapping(working, r.mod)
+	err := r.claude(ctx, agent, r.mod, r.p.Prompt(brief))
 	worked()
 	if err != nil && ctx.Err() == nil {
 		r.fail(err)
-		return
+		return false
 	}
 	if ctx.Err() != nil {
 		r.set(func() { r.state = Stopped })
@@ -401,16 +439,19 @@ func (r *Run) run(life, ctx context.Context, dir, agent, self string, p prognosi
 		r.set(func() { r.state = Checking })
 		r.note("Analysing the result and running the checks again.")
 	}
+	return true
+}
 
+func (r *Run) finish(life context.Context, before *Side) {
 	if life.Err() != nil {
 		return
 	}
-	after, err := analyse(life, mod, check)
+	after, err := analyse(life, r.mod, r.check)
 	if err != nil {
 		r.fail(fmt.Errorf("the edited code did not load: %w", err))
 		return
 	}
-	diffs, err := (&gitx.Repo{Dir: wt}).Diff(head)
+	diffs, err := (&gitx.Repo{Dir: r.wt}).Diff(r.head)
 	if err != nil {
 		r.fail(err)
 		return
@@ -496,302 +537,4 @@ func analyse(ctx context.Context, dir string, c Check) (*Side, error) {
 func tail(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	return strings.Join(lines[max(0, len(lines)-n):], "\n")
-}
-
-// claude runs Claude Code headless in dir and turns its stream into events.
-// It may run any command there, unsandboxed: the push ban and the throwaway
-// worktree are the only guards.
-func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
-	cmd := exec.CommandContext(ctx, agent, "-p", prompt,
-		"--output-format", "stream-json", "--verbose",
-		"--permission-mode", "bypassPermissions",
-		"--disallowedTools", "Bash(git push *)")
-	cmd.Dir = dir
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("could not start claude: %w", err)
-	}
-	r.read(stdout)
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("claude: %w: %s", err, tail(stderr.String(), 5))
-	}
-	return nil
-}
-
-func (r *Run) read(out io.Reader) {
-	sc := bufio.NewScanner(out)
-	sc.Buffer(make([]byte, 1<<20), 64<<20)
-	for sc.Scan() {
-		at := time.Since(r.Started)
-		for _, e := range parse(sc.Bytes()) {
-			switch {
-			case e.step != nil:
-				st := *e.step
-				st.Start, st.End = at, at
-				st.Path, st.File = r.place(st.Path)
-				if st.Command != "" {
-					st.Reads = r.tree.named(st.Command)
-					st.Kind = shellKind(st.Command, st.Reads)
-				}
-				r.set(func() {
-					// A thought lasts until the next step begins.
-					if n := len(r.steps); n > 0 && r.steps[n-1].Kind == Think {
-						r.steps[n-1].End = at
-					}
-					r.steps = append(r.steps, st)
-				})
-			case e.result != nil:
-				res := *e.result
-				changes := r.tree.changes()
-				r.set(func() {
-					for i := len(r.steps) - 1; i >= 0; i-- {
-						if r.steps[i].ID == res.id {
-							st := &r.steps[i]
-							st.End, st.Output, st.Failed, st.Changes = at, res.output, res.failed, changes
-							if len(changes) > 0 && st.Kind != Edit {
-								st.Kind = Edit
-							}
-							break
-						}
-					}
-				})
-				if r.addsFiles(changes) {
-					select {
-					case r.remap <- struct{}{}:
-					default: // an analysis is already due; it will see this change too
-					}
-				}
-			case e.final != nil:
-				r.set(func() {
-					r.summary = e.final.summary
-					r.usage.settle(e.final.by)
-				})
-			case e.init != nil:
-				r.set(func() { r.usage.Model, r.usage.Version, r.usage.Session = e.init.model, e.init.version, e.init.session })
-			case e.use != nil:
-				r.set(func() { r.usage.add(e.use.id, e.use.model, e.use.t) })
-			}
-		}
-	}
-}
-
-// place names a path Claude used relative to the worktree, and as a module
-// file when it is one, so the map can light it.
-func (r *Run) place(p string) (shown, file string) {
-	if p == "" {
-		return "", ""
-	}
-	r.mu.Lock()
-	wt, mod := r.wt, r.mod
-	r.mu.Unlock()
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(mod, p)
-	}
-	shown = p
-	if rel, err := filepath.Rel(wt, p); err == nil && !strings.HasPrefix(rel, "..") {
-		shown = filepath.ToSlash(rel)
-	}
-	if rel, err := filepath.Rel(mod, p); err == nil && !strings.HasPrefix(rel, "..") {
-		file = filepath.ToSlash(rel)
-	}
-	return shown, file
-}
-
-// Kinds of step, one swimlane each.
-const (
-	Think  = "think"
-	Read   = "read"
-	Search = "search"
-	Edit   = "edit"
-	Exec   = "run"
-	Other  = "other"
-)
-
-var kinds = map[string]string{
-	"Read": Read, "NotebookRead": Read,
-	"Edit": Edit, "MultiEdit": Edit, "Write": Edit, "NotebookEdit": Edit,
-	"Bash": Exec, "BashOutput": Exec,
-	"Grep": Search, "Glob": Search, "LS": Search, "WebSearch": Search, "WebFetch": Search,
-}
-
-// clipAt bounds the text a step keeps: a rewritten file or a long test log
-// would otherwise ride along on every re-render of the page.
-const clipAt = 8000
-
-type parsed struct {
-	step   *Step
-	result *struct {
-		id, output string
-		failed     bool
-	}
-	final *struct {
-		summary string
-		by      map[string]tally
-	}
-	init *struct{ model, version, session string }
-	use  *struct {
-		id, model string
-		t         tokens
-	}
-}
-
-// parse reads one stream-json line into steps: the assistant's thoughts and
-// tool calls, the results of those calls, and the final summary with its
-// tally; and what each reply used, for the cost meter.
-func parse(line []byte) []parsed {
-	var m struct {
-		Type       string           `json:"type"`
-		Subtype    string           `json:"subtype"`
-		Model      string           `json:"model"`
-		Version    string           `json:"claude_code_version"`
-		Session    string           `json:"session_id"`
-		Result     string           `json:"result"`
-		ModelUsage map[string]tally `json:"modelUsage"`
-		Message    struct {
-			ID      string          `json:"id"`
-			Model   string          `json:"model"`
-			Usage   *tokens         `json:"usage"`
-			Content json.RawMessage `json:"content"`
-		} `json:"message"`
-	}
-	if json.Unmarshal(line, &m) != nil {
-		return nil
-	}
-	var blocks []struct {
-		Type      string          `json:"type"`
-		Text      string          `json:"text"`
-		ID        string          `json:"id"`
-		Name      string          `json:"name"`
-		Input     json.RawMessage `json:"input"`
-		ToolUseID string          `json:"tool_use_id"`
-		Content   json.RawMessage `json:"content"`
-		IsError   bool            `json:"is_error"`
-	}
-	_ = json.Unmarshal(m.Message.Content, &blocks)
-	var out []parsed
-	switch m.Type {
-	case "system":
-		if m.Subtype == "init" {
-			out = append(out, parsed{init: &struct{ model, version, session string }{m.Model, m.Version, m.Session}})
-		}
-	case "result":
-		out = append(out, parsed{final: &struct {
-			summary string
-			by      map[string]tally
-		}{m.Result, m.ModelUsage}})
-	case "assistant":
-		if m.Message.Usage != nil {
-			out = append(out, parsed{use: &struct {
-				id, model string
-				t         tokens
-			}{m.Message.ID, m.Message.Model, *m.Message.Usage}})
-		}
-		for _, b := range blocks {
-			switch b.Type {
-			case "text":
-				if t := strings.TrimSpace(b.Text); t != "" {
-					out = append(out, parsed{step: &Step{Kind: Think, Title: firstLine(t), Text: clip(t, false)}})
-				}
-			case "tool_use":
-				out = append(out, parsed{step: toolStep(b.ID, b.Name, b.Input)})
-			}
-		}
-	case "user":
-		for _, b := range blocks {
-			if b.Type == "tool_result" {
-				out = append(out, parsed{result: &struct {
-					id, output string
-					failed     bool
-				}{b.ToolUseID, clip(resultText(b.Content), true), b.IsError}})
-			}
-		}
-	}
-	return out
-}
-
-func toolStep(id, name string, input json.RawMessage) *Step {
-	var in struct {
-		FilePath     string `json:"file_path"`
-		NotebookPath string `json:"notebook_path"`
-		Path         string `json:"path"`
-		Pattern      string `json:"pattern"`
-		Command      string `json:"command"`
-		OldString    string `json:"old_string"`
-		NewString    string `json:"new_string"`
-		Content      string `json:"content"`
-		Edits        []struct {
-			OldString string `json:"old_string"`
-			NewString string `json:"new_string"`
-		} `json:"edits"`
-	}
-	_ = json.Unmarshal(input, &in)
-	st := &Step{ID: id, Tool: name, Kind: kinds[name], Path: cmp.Or(in.FilePath, in.NotebookPath), Command: in.Command}
-	if st.Kind == "" {
-		st.Kind = Other
-	}
-	switch st.Kind {
-	case Edit:
-		st.Old, st.New = in.OldString, cmp.Or(in.NewString, in.Content)
-		for _, e := range in.Edits {
-			st.Old += e.OldString + "\n"
-			st.New += e.NewString + "\n"
-		}
-		st.Old, st.New = clip(st.Old, false), clip(st.New, false)
-	case Search:
-		if st.Path == "" && in.Path != "" && !strings.ContainsAny(in.Path, "*?") {
-			st.Path = in.Path
-		}
-	}
-	arg := cmp.Or(firstLine(in.Command), in.Pattern, path.Base(st.Path))
-	st.Title = strings.TrimSpace(name + " " + arg)
-	return st
-}
-
-// resultText reads a tool result's content: a string, or a list of blocks
-// whose text parts are joined.
-func resultText(raw json.RawMessage) string {
-	var s string
-	if json.Unmarshal(raw, &s) == nil {
-		return s
-	}
-	var parts []struct {
-		Type, Text string
-	}
-	_ = json.Unmarshal(raw, &parts)
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Type == "text" {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
-}
-
-// firstLine is a text's first line, cut to a title's length at a word.
-func firstLine(s string) string {
-	l := strings.TrimSpace(strings.SplitN(s, "\n", 2)[0])
-	if len(l) <= 100 {
-		return l
-	}
-	if i := strings.LastIndexByte(l[:100], ' '); i > 60 {
-		return l[:i] + " …"
-	}
-	return l[:100] + "…"
-}
-
-// clip keeps the head of a text, or its tail for output, where a failure
-// usually shows last.
-func clip(s string, tail bool) string {
-	if len(s) <= clipAt {
-		return s
-	}
-	if tail {
-		return "…" + s[len(s)-clipAt:]
-	}
-	return s[:clipAt] + "…"
 }

@@ -19,9 +19,9 @@ import (
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
-// MapPage is the atlas of the module, coloured by a lens, beside the smells
+// mapPage is the atlas of the module, coloured by a lens, beside the smells
 // of the scope in view.
-type MapPage struct {
+type mapPage struct {
 	shell
 	in   string // scope: "" for the module, a package path or a file path
 	lens string
@@ -45,7 +45,7 @@ var lenses = []lens{
 	{"hotspot", "Hotspot", "churn × complexity: hard code that keeps changing"},
 }
 
-func (p *MapPage) OnInit(ctx *via.Ctx) error {
+func (p *mapPage) OnInit(ctx *via.Ctx) error {
 	q := ctx.Request().URL.Query()
 	p.in, p.lens, p.decl = q.Get("in"), q.Get("lens"), q.Get("d")
 	p.rows = smellsPage
@@ -61,11 +61,11 @@ func (p *MapPage) OnInit(ctx *via.Ctx) error {
 const smellsPage = 60
 
 // More lists the next page of smells.
-func (p *MapPage) More(_ *via.Ctx) { p.rows += smellsPage }
+func (p *mapPage) More(_ *via.Ctx) { p.rows += smellsPage }
 
-func (p *MapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
+func (p *mapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
 
-func (p *MapPage) View() h.H {
+func (p *mapPage) View() h.H {
 	a := p.src.Current()
 	if a == nil || a.Snap == nil {
 		return p.frame(tabMap, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
@@ -91,7 +91,7 @@ type scope struct {
 	file *code.File
 }
 
-func (p *MapPage) scope(a *live.Analysis) scope {
+func (p *mapPage) scope(a *live.Analysis) scope {
 	if pkg := a.Snap.Package(p.in); pkg != nil {
 		return scope{pkg: pkg}
 	}
@@ -108,9 +108,9 @@ func (p *MapPage) scope(a *live.Analysis) scope {
 	return scope{}
 }
 
-func (p *MapPage) href(in, decl string) string { return mapURL{p.lens, in, decl}.String() }
+func (p *mapPage) href(in, decl string) string { return mapURL{p.lens, in, decl}.String() }
 
-func (p *MapPage) crumbs(a *live.Analysis, sc scope) h.H {
+func (p *mapPage) crumbs(a *live.Analysis, sc scope) h.H {
 	parts := []h.H{h.A(h.Href(p.href("", "")), h.Str(path.Base(a.Snap.Module)))}
 	if sc.pkg != nil {
 		parts = append(parts, h.Span(h.Class("sep"), h.Str("/")), h.A(h.Href(p.href(sc.pkg.Path, "")), h.Str(pkgName(a, sc.pkg))))
@@ -121,7 +121,7 @@ func (p *MapPage) crumbs(a *live.Analysis, sc scope) h.H {
 	return h.Nav(append([]h.H{h.Class("crumbs"), h.Aria("label", "Scope")}, parts...)...)
 }
 
-func (p *MapPage) lensBar() h.H {
+func (p *mapPage) lensBar() h.H {
 	var kids []h.H
 	for _, l := range lenses {
 		cls := "seg"
@@ -133,7 +133,7 @@ func (p *MapPage) lensBar() h.H {
 	return h.Nav(append([]h.H{h.Class("segs"), h.Aria("label", "Colour by")}, kids...)...)
 }
 
-func (p *MapPage) lensHelp() string {
+func (p *mapPage) lensHelp() string {
 	for _, l := range lenses {
 		if l.key == p.lens {
 			return "Area is lines of code. Colour is " + l.help + "."
@@ -145,16 +145,16 @@ func (p *MapPage) lensHelp() string {
 // atlas lays the module out with each declaration's lens value bucketed into
 // a heat from 0 to 5, and every tile named by its path or decl ID so a click
 // can open it.
-func (p *MapPage) atlas(a *live.Analysis) atlas {
-	fi := indexFindings(a.Findings)
+func (p *mapPage) atlas(a *live.Analysis) atlas {
+	byDecl := smell.ByDecl(a.Findings)
 	values, caps := map[int]float64{}, map[int]int{}
 	at := atlasOf(a, mapW, mapH, func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
 		switch {
 		case d != nil:
 			t.ID = d.ID
-			values[i] = p.value(fi.decl[d.ID], d.Lines, d.Complexity, f.Churn)
+			values[i] = p.value(byDecl[d.ID], d.Lines, d.Complexity, f.Churn)
 			if p.lens == "smells" {
-				caps[i] = heatCap(fi.decl[d.ID])
+				caps[i] = heatCap(byDecl[d.ID])
 			}
 		case f != nil:
 			t.ID = f.Path
@@ -179,7 +179,7 @@ func (p *MapPage) atlas(a *live.Analysis) atlas {
 // The map's layout space, close to the pane's shape on a desktop.
 const mapW, mapH = 1000.0, 620.0
 
-func (p *MapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
+func (p *mapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
 	switch p.lens {
 	case "complexity":
 		return float64(cx)
@@ -198,7 +198,7 @@ func (p *MapPage) value(fs []smell.Finding, lines, cx, churn int) float64 {
 // heat buckets a value into 0 (cold) to 5. Smells and complexity use fixed
 // bands, so the same code reads the same in any codebase; churn and hotspot
 // have no natural scale and are relative to the hottest declaration.
-func (p *MapPage) heat(v, top float64) int {
+func (p *mapPage) heat(v, top float64) int {
 	if v <= 0 {
 		return 0
 	}
@@ -217,15 +217,11 @@ func (p *MapPage) heat(v, top float64) int {
 	return 5
 }
 
-// heatCap is the hottest heat a declaration's worst smell allows. By
-// density alone, a three-line const with one info smell is the hottest tile.
-func heatCap(fs []smell.Finding) int {
-	worst := smell.Info
-	for _, f := range fs {
-		worst = max(worst, f.Severity)
-	}
-	return map[smell.Severity]int{smell.Info: 2, smell.Warn: 4, smell.High: 5}[worst]
-}
+// heatCaps is the hottest heat a declaration's worst smell allows. By density
+// alone, a three-line const with one info smell is the hottest tile.
+var heatCaps = map[smell.Severity]int{smell.Info: 2, smell.Warn: 4, smell.High: 5}
+
+func heatCap(fs []smell.Finding) int { return heatCaps[smell.Worst(fs)] }
 
 func weight(s smell.Severity) int {
 	switch s {
@@ -237,7 +233,7 @@ func weight(s smell.Severity) int {
 	return 1
 }
 
-func (p *MapPage) side(a *live.Analysis, sc scope) h.H {
+func (p *mapPage) side(a *live.Analysis, sc scope) h.H {
 	if d := a.Snap.Decl(p.decl); d != nil {
 		return p.declPanel(a, d)
 	}
@@ -265,7 +261,7 @@ func (p *MapPage) side(a *live.Analysis, sc scope) h.H {
 	return group([]h.H{h.H2(h.Str(title)), h.Ul(append([]h.H{h.Class("findings")}, rows...)...), more})
 }
 
-func (p *MapPage) declPanel(a *live.Analysis, d *code.Decl) h.H {
+func (p *mapPage) declPanel(a *live.Analysis, d *code.Decl) h.H {
 	var fs []h.H
 	for _, f := range a.Findings {
 		if f.Decl == d.ID {
@@ -320,9 +316,10 @@ func metric(label string, v int) h.H {
 	return h.Span(h.Class("badge"), h.Str(fmt.Sprintf("%s %d", label, v)))
 }
 
+var sevGlyphs = map[smell.Severity]string{smell.High: "▲", smell.Warn: "●", smell.Info: "○"}
+
 func sevMark(s smell.Severity) h.H {
-	glyph := map[smell.Severity]string{smell.High: "▲", smell.Warn: "●", smell.Info: "○"}[s]
-	return h.Span(h.Class("sev sev-"+strings.ToLower(s.String())), h.Title(s.String()), h.Str(glyph))
+	return h.Span(h.Class("sev sev-"+strings.ToLower(s.String())), h.Title(s.String()), h.Str(sevGlyphs[s]))
 }
 
 var ruleLabels = map[smell.Rule]string{
@@ -343,24 +340,6 @@ func ruleLabel(r smell.Rule) string {
 		return l
 	}
 	return string(r)
-}
-
-type findingIndex struct {
-	pkg, file, decl map[string][]smell.Finding
-}
-
-func indexFindings(fs []smell.Finding) findingIndex {
-	fi := findingIndex{map[string][]smell.Finding{}, map[string][]smell.Finding{}, map[string][]smell.Finding{}}
-	for _, f := range fs {
-		fi.pkg[f.Package] = append(fi.pkg[f.Package], f)
-		if f.File != "" {
-			fi.file[f.File] = append(fi.file[f.File], f)
-		}
-		if f.Decl != "" {
-			fi.decl[f.Decl] = append(fi.decl[f.Decl], f)
-		}
-	}
-	return fi
 }
 
 // shortPkg prefixes a name with its package's last element when it is not

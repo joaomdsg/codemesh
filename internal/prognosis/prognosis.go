@@ -111,21 +111,8 @@ func index(s *code.Snapshot) idx {
 	return ix
 }
 
-func prod(s *code.Snapshot, ids []string) []*code.Decl {
-	var out []*code.Decl
-	for _, id := range ids {
-		if d := s.Decl(id); d != nil && !d.Test {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
 // BusyChurn is the churn at or above which a file counts as busy.
 func BusyChurn(s *code.Snapshot) int { return index(s).hotChurn }
-
-// TestCallers counts the tests that call d directly.
-func TestCallers(s *code.Snapshot, d *code.Decl) int { return testCallers(s, d) }
 
 func testCallers(s *code.Snapshot, d *code.Decl) int {
 	n := 0
@@ -139,7 +126,7 @@ func testCallers(s *code.Snapshot, d *code.Decl) int {
 
 func callerRefs(s *code.Snapshot, d *code.Decl, why string) []Ref {
 	var out []Ref
-	for _, c := range prod(s, d.Callers) {
+	for _, c := range s.Production(d.Callers) {
 		out = append(out, Ref{ID: c.ID, Name: label(c), Why: why})
 		if len(out) == maxRelated {
 			break
@@ -172,15 +159,8 @@ func complexity(s *code.Snapshot, ix idx) []Prognosis {
 			Related: callerRefs(s, d, "calls it, so a change in behaviour reaches it"),
 			Check:   fmt.Sprintf("Each function that replaces it stays at or below complexity %d, and the tests pass before and after.", smell.ComplexFuncLimit),
 		}
-		first := "Write tests that pin down what it does today, before changing it."
-		if tests > 0 {
-			first = fmt.Sprintf("Run the %s that call it, and add cases for the paths they miss.", plural(tests, "test"))
-			if tests == 1 {
-				first = "Run the test that calls it, and add cases for the paths it misses."
-			}
-		}
 		p.Do = []string{
-			first,
+			firstStep(tests),
 			"Split it into smaller functions, one per step, each named for what it does.",
 			"Replace nested ifs with early returns where a branch only handles an error or an edge case.",
 			"Run the tests after each split, so a mistake shows up next to its cause.",
@@ -198,23 +178,38 @@ func complexity(s *code.Snapshot, ix idx) []Prognosis {
 		}
 		out = append(out, p)
 		if tests == 0 {
-			out = append(out, Prognosis{
-				Key: "untested:" + d.ID, Lens: Tests, Level: 1 + b2i(churn >= ix.hotChurn && d.Complexity > hotLimit), Target: d.ID, Name: name, File: file, Line: line,
-				Title:   "Complex, and no test calls it",
-				Summary: fmt.Sprintf("%s has %d paths and no test calls it directly. A change here is checked by nothing but luck.", d.Name, d.Complexity),
-				Why:     "Tests are how you find out a change broke something before your users do. Complex code with no test is the riskiest kind: there are many ways to break it and nothing to tell you.",
-				Do: []string{
-					"Write one test for the most common way it is used.",
-					"Add a test for each error it can return.",
-					"Only then refactor it; the tests tell you whether behaviour stayed the same.",
-				},
-				Check:   "At least one test calls it, and the test fails if you break the main path on purpose.",
-				Facts:   facts,
-				Related: callerRefs(s, d, "calls it; its own tests may reach it indirectly"),
-			})
+			out = append(out, untested(s, d, ix, facts))
 		}
 	}
 	return out
+}
+
+func firstStep(tests int) string {
+	switch tests {
+	case 0:
+		return "Write tests that pin down what it does today, before changing it."
+	case 1:
+		return "Run the test that calls it, and add cases for the paths it misses."
+	}
+	return fmt.Sprintf("Run the %s that call it, and add cases for the paths they miss.", plural(tests, "test"))
+}
+
+func untested(s *code.Snapshot, d *code.Decl, ix idx, facts []Fact) Prognosis {
+	name, file, line := declRef(d)
+	return Prognosis{
+		Key: "untested:" + d.ID, Lens: Tests, Level: 1 + b2i(ix.file[d.File].Churn >= ix.hotChurn && d.Complexity > hotLimit), Target: d.ID, Name: name, File: file, Line: line,
+		Title:   "Complex, and no test calls it",
+		Summary: fmt.Sprintf("%s has %d paths and no test calls it directly. A change here is checked by nothing but luck.", d.Name, d.Complexity),
+		Why:     "Tests are how you find out a change broke something before your users do. Complex code with no test is the riskiest kind: there are many ways to break it and nothing to tell you.",
+		Do: []string{
+			"Write one test for the most common way it is used.",
+			"Add a test for each error it can return.",
+			"Only then refactor it; the tests tell you whether behaviour stayed the same.",
+		},
+		Check:   "At least one test calls it, and the test fails if you break the main path on purpose.",
+		Facts:   facts,
+		Related: callerRefs(s, d, "calls it; its own tests may reach it indirectly"),
+	}
 }
 
 // reach flags declarations so many places call that changing them is a
@@ -225,7 +220,7 @@ func reach(s *code.Snapshot, ix idx) []Prognosis {
 		if d.Test {
 			continue
 		}
-		callers := prod(s, d.Callers)
+		callers := s.Production(d.Callers)
 		if len(callers) < reachCallers {
 			continue
 		}
@@ -327,29 +322,11 @@ func wide(s *code.Snapshot) []Prognosis {
 		if len(s.ImportedBy(p.Path)) == 0 {
 			continue
 		}
-		var all, exp []*code.Decl
-		for _, f := range p.Files {
-			if f.Test {
-				continue
-			}
-			for _, d := range f.Decls {
-				all = append(all, d)
-				if d.Exported {
-					exp = append(exp, d)
-				}
-			}
-		}
+		all, exp := p.Surface()
 		if len(all) < wideMin || len(exp)*100 <= len(all)*wideShare {
 			continue
 		}
-		outside := map[*code.Decl]int{}
-		for _, d := range exp {
-			for _, c := range prod(s, d.Callers) {
-				if c.Package != p.Path {
-					outside[d]++
-				}
-			}
-		}
+		outside := s.OutsideCalls(exp)
 		slices.SortStableFunc(exp, func(a, b *code.Decl) int { return cmp.Compare(outside[a], outside[b]) })
 		var rel []Ref
 		for _, d := range exp[:min(len(exp), maxRelated)] {
@@ -392,23 +369,9 @@ func smells(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 		case smell.LargeFile:
 			out = append(out, largeFile(s, ix, f))
 		case smell.UntestedPackage:
-			p := s.Package(f.Package)
-			if p == nil {
-				continue
+			if p := s.Package(f.Package); p != nil {
+				out = append(out, untestedPackage(s, p))
 			}
-			out = append(out, Prognosis{
-				Key: "untested-pkg:" + p.Path, Lens: Tests, Level: 1 + b2i(p.Lines() >= 200), Target: p.Path, Name: pkgShort(s, p.Path),
-				Title:   "No tests at all",
-				Summary: fmt.Sprintf("Nothing tests %s (%d lines). Breaking it would go unnoticed.", pkgShort(s, p.Path), p.Lines()),
-				Why:     "Without tests, the only way to know a change works is to try it by hand, every time. Even one test that runs the package's main path catches the breakage that matters most.",
-				Do: []string{
-					"Write one test that runs the package's main path end to end.",
-					"Add a test whenever you fix a bug here, so it stays fixed.",
-				},
-				Check: say(s, "go test reports at least one test for this package, and it fails when you break the main path on purpose.",
-					"Pkg.test() runs at least one test set for this module, and it fails when you break the main path on purpose."),
-				Facts: []Fact{{"lines", p.Lines(), 0}, {"test files", 0, 0}},
-			})
 		}
 	}
 	for _, pkg := range slices.Sorted(maps.Keys(params)) {
@@ -442,6 +405,22 @@ func smells(s *code.Snapshot, ix idx, fs []smell.Finding) []Prognosis {
 		})
 	}
 	return out
+}
+
+func untestedPackage(s *code.Snapshot, p *code.Package) Prognosis {
+	return Prognosis{
+		Key: "untested-pkg:" + p.Path, Lens: Tests, Level: 1 + b2i(p.Lines() >= 200), Target: p.Path, Name: pkgShort(s, p.Path),
+		Title:   "No tests at all",
+		Summary: fmt.Sprintf("Nothing tests %s (%d lines). Breaking it would go unnoticed.", pkgShort(s, p.Path), p.Lines()),
+		Why:     "Without tests, the only way to know a change works is to try it by hand, every time. Even one test that runs the package's main path catches the breakage that matters most.",
+		Do: []string{
+			"Write one test that runs the package's main path end to end.",
+			"Add a test whenever you fix a bug here, so it stays fixed.",
+		},
+		Check: say(s, "go test reports at least one test for this package, and it fails when you break the main path on purpose.",
+			"Pkg.test() runs at least one test set for this module, and it fails when you break the main path on purpose."),
+		Facts: []Fact{{"lines", p.Lines(), 0}, {"test files", 0, 0}},
+	}
 }
 
 func manyParams(s *code.Snapshot, d *code.Decl) Prognosis {
