@@ -152,6 +152,12 @@ func TestOpenPR_refusesWhenOriginsBranchMovedOnElsewhere(t *testing.T) {
 	assert.Contains(t, r.Snapshot().PR.Err.Error(), "origin's main has commits the run did not start from")
 	assert.Equal(t, theirs, gitOut(t, origin, "rev-parse", "main"), "never forced")
 	assert.NoFileExists(t, filepath.Join(calls, "args"), "gh is never called")
+	pr := r.Snapshot().PR
+	assert.False(t, pr.Opening)
+	assert.Empty(t, pr.URL)
+	assert.Empty(t, gitOut(t, repo, "branch", "--list", "codemesh/*"), "no branch was made")
+	assert.Equal(t, "?? b.go", gitOut(t, r.wt, "status", "--porcelain"), "the change is still uncommitted")
+	assert.True(t, r.Snapshot().CanPR(), "it can be tried again")
 }
 
 func commit(t *testing.T, repo, file, msg string) {

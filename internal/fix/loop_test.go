@@ -280,6 +280,36 @@ func TestRun_stopWhilePreparingKeepsTheStartingCheck(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(calls, "runs"), "Claude never starts")
 }
 
+// lock leaves an index.lock in the worktree's git directory, so the next git
+// write there fails.
+const lock = `touch "$(git rev-parse --git-dir)/index.lock"`
+
+func TestRun_failsWhenARoundCannotBeKept(t *testing.T) {
+	t.Parallel()
+	agent, calls := loopAgent(t, true, fixes)
+	first := `echo '{"type":"result","result":"first"}'`
+	script, err := os.ReadFile(agent)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(agent, []byte(strings.Replace(string(script), first, lock+"; "+first, 1)), 0o755))
+	s := loopRun(t, agent)
+
+	assert.Equal(t, Failed, s.State)
+	require.Error(t, s.Err)
+	assert.Contains(t, s.Err.Error(), "index.lock")
+	assert.NoFileExists(t, filepath.Join(calls, "followup"), "Claude does not go again")
+}
+
+func TestRun_failsWhenAWorseRoundCannotBeUndone(t *testing.T) {
+	t.Parallel()
+	agent, _ := loopAgent(t, true, worse+"; "+lock)
+	s := loopRun(t, agent)
+
+	assert.Equal(t, Failed, s.State)
+	require.Error(t, s.Err)
+	assert.Contains(t, s.Err.Error(), "index.lock")
+	assert.Equal(t, 0, s.Undone)
+}
+
 func TestRun_stopWhileCheckingEndsTheLoop(t *testing.T) {
 	t.Parallel()
 	agent, calls := loopAgent(t, true, fixes)
