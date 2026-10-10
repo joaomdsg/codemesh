@@ -166,3 +166,18 @@ func TestRun_reviewsAChangeAgainstTheTreeItStartedFrom(t *testing.T) {
 	}
 	t.Fatal("no unit for Parse")
 }
+
+// Rounds are committed in the worktree; a pull request still carries one
+// commit with the whole change.
+func TestOpenPR_foldsEveryRoundIntoOneCommit(t *testing.T) {
+	t.Parallel()
+	_, origin, _, rs := pushed(t)
+	rs.Agent, _ = loopAgent(t, true, fixes)
+	r := finish(t, rs)
+
+	s := r.Snapshot()
+	require.NoError(t, s.PR.Err)
+	assert.Equal(t, []int{1, 0}, s.rounds, "two rounds ran")
+	assert.Contains(t, gitOut(t, origin, "show", s.PR.Branch+":c.go"), "func C(a int)", "the branch holds the last round")
+	assert.Equal(t, "1", gitOut(t, origin, "rev-list", "--count", "main.."+s.PR.Branch))
+}
