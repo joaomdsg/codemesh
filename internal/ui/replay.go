@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"strings"
 	"time"
 
@@ -27,10 +28,18 @@ type replayStep struct {
 	New    string         `json:"new,omitempty"`
 	Out    string         `json:"out,omitempty"`
 	Failed bool           `json:"fail,omitempty"`
+	Round  int            `json:"round,omitempty"`
 	T0     int64          `json:"t0"`
 	T1     int64          `json:"t1"`
-	Reads  []string       `json:"reads,omitempty"`
+	Reads  []replayRead   `json:"reads,omitempty"`
 	Diffs  []replayChange `json:"diffs,omitempty"`
+}
+
+type replayRead struct {
+	File  string   `json:"file"`
+	From  int      `json:"from,omitempty"`
+	To    int      `json:"to,omitempty"`
+	Decls []string `json:"decls,omitempty"` // declarations the lines fall in; none for a whole file
 }
 
 type replayChange struct {
@@ -56,26 +65,81 @@ func replayOf(a *live.Analysis, s fix.Snapshot) replay {
 	case s.Before != nil:
 		base = &live.Analysis{At: time.UnixMilli(1), Snap: s.Before.Snap}
 	}
+	// Reads and edits land on the declarations of the tree the run started
+	// from, so their line numbers are taken back to it.
+	start := base.Snap
+	if s.Before != nil {
+		start = s.Before.Snap
+	}
 	decls := map[string][]*code.Decl{}
-	for _, d := range base.Snap.Decls() {
+	for _, d := range start.Decls() {
 		decls[d.File] = append(decls[d.File], d)
 	}
-	out := replay{Map: diagOf(base, nil, ""), Steps: []replayStep{}, Now: s.Took.Milliseconds(), Live: s.Live()}
-	for _, st := range s.Steps {
+	return replay{Map: diagOf(base, nil, ""), Steps: stepsOf(s.Steps, decls), Now: s.Took.Milliseconds(), Live: s.Live()}
+}
+
+// stepsOf lays out the steps with the declarations each read and edit
+// touched. A step's lines are as the file stood then; the edits before it
+// are undone to place them on the starting tree's declarations.
+func stepsOf(steps []fix.Step, decls map[string][]*code.Decl) []replayStep {
+	out := []replayStep{}
+	done := map[string][]fix.Change{}
+	for _, st := range steps {
 		rs := replayStep{Kind: st.Kind, Title: st.Title, Path: st.Path, File: st.File, Text: st.Text,
-			Old: st.Old, New: st.New, Out: st.Output, Failed: st.Failed, T0: st.Start.Milliseconds(), T1: st.End.Milliseconds(), Reads: st.Reads}
-		for _, c := range st.Changes {
-			rs.Diffs = append(rs.Diffs, replayChange{Path: c.Path, File: c.File, Start: c.Start, Old: c.Old, New: c.New, Decls: changedDecls(decls[c.File], c)})
+			Old: st.Old, New: st.New, Out: st.Output, Failed: st.Failed, Round: st.Round, T0: st.Start.Milliseconds(), T1: st.End.Milliseconds()}
+		for _, r := range st.Reads {
+			rr := replayRead{File: r.File, From: r.From, To: r.To}
+			if r.From > 0 {
+				to := math.MaxInt
+				if r.To > 0 {
+					to = back(r.To, done[r.File])
+				}
+				rr.Decls = readDecls(decls[r.File], back(r.From, done[r.File]), to)
+			}
+			rs.Reads = append(rs.Reads, rr)
 		}
-		out.Steps = append(out.Steps, rs)
+		for _, c := range st.Changes {
+			at := c
+			at.Start = back(c.Start, done[c.File])
+			rs.Diffs = append(rs.Diffs, replayChange{Path: c.Path, File: c.File, Start: c.Start, Old: c.Old, New: c.New, Decls: changedDecls(decls[c.File], at)})
+		}
+		for _, c := range st.Changes {
+			done[c.File] = append(done[c.File], c)
+		}
+		out = append(out, rs)
+	}
+	return out
+}
+
+// back takes a line through the edits made to its file, latest first, to
+// the line it was before them. A line an edit added goes to where the edit
+// began.
+func back(line int, edits []fix.Change) int {
+	for i := len(edits) - 1; i >= 0; i-- {
+		from, gone, added := changeSpan(edits[i])
+		switch {
+		case line >= from+added:
+			line += gone - added
+		case line >= from:
+			line = from
+		}
+	}
+	return line
+}
+
+// readDecls lists the declarations lines from to to overlap.
+func readDecls(ds []*code.Decl, from, to int) []string {
+	var out []string
+	for _, d := range ds {
+		if d.Start <= to && d.End >= from {
+			out = append(out, d.ID)
+		}
 	}
 	return out
 }
 
 // changedDecls spreads a change's lines over the declarations they fall in,
-// by the lines the declarations held when the run started. Edits earlier in
-// the run shift later lines, so on a file edited many times this is near,
-// not exact.
+// by the lines the declarations held when the run started.
 func changedDecls(ds []*code.Decl, c fix.Change) map[string]int {
 	if len(ds) == 0 {
 		return nil

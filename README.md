@@ -69,9 +69,11 @@ The smell rules and their thresholds are in [DESIGN.md](DESIGN.md).
 The Diagnose tab marks the places that need attention and explains each in
 plain words: what is wrong, why it matters, what to do and how to check.
 Hover a marker for the short version, click it for the full one. "Try a
-fix" asks Claude Code to treat it in a throwaway worktree, replays what it
-did step by step on the map, and shows the before and after, checked with
-the repository's own `ci.sh` or `make ci` when it has one. See
+fix" asks Claude Code to treat it in a throwaway worktree, hands it back
+what its change left (new smells, the problem, a broken check) for up to
+five rounds, replays what it did step by step on the map, and shows the
+before and after, checked with the repository's own `ci.sh` or `make ci`
+when it has one. See
 [DESIGN.md](DESIGN.md#diagnose-spike).
 
 ## Review

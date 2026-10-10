@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/fix"
@@ -29,6 +30,30 @@ func TestChangedDecls_landsOnTheDeclarationsTheLinesFallIn(t *testing.T) {
 	// A line replaced on B's first line belongs to B, not to A before it.
 	c = fix.Change{Start: 6, Old: "l6\nl7\nl8", New: "l6\nb7\nl8"}
 	assert.Equal(t, map[string]int{"B": 2}, changedDecls(ds, c))
+}
+
+func TestStepsOf_mapsReadsAndEditsOntoTheStartingTree(t *testing.T) {
+	decls := map[string][]*code.Decl{"f.go": {{ID: "A", Start: 1, End: 5}, {ID: "B", Start: 7, End: 12}}}
+	steps := []fix.Step{
+		// Three lines added inside A push everything below them down by three.
+		{Kind: "edit", Changes: []fix.Change{{File: "f.go", Start: 2, Old: "l2\nl3", New: "l2\nx\ny\nz\nl3"}}},
+		{Kind: "read", Reads: []fix.Read{{File: "f.go", From: 13, To: 14}, {File: "f.go"}, {File: "g.go", From: 1, To: 2}}},
+		{Kind: "edit", Changes: []fix.Change{{File: "f.go", Start: 13, Old: "a\nb", New: "a\nc"}}},
+	}
+	got := stepsOf(steps, decls)
+
+	assert.Equal(t, map[string]int{"A": 3}, got[0].Diffs[0].Decls)
+	assert.Equal(t, []replayRead{
+		{File: "f.go", From: 13, To: 14, Decls: []string{"B"}},
+		{File: "f.go"},
+		{File: "g.go", From: 1, To: 2},
+	}, got[1].Reads, "lines 13-14 now were 10-11 at the start; a whole file names no declaration")
+	assert.Equal(t, map[string]int{"B": 2}, got[2].Diffs[0].Decls, "line 14 now was 11 at the start")
+}
+
+func TestRunMeta_namesTheRoundOnceClaudeGoesAgain(t *testing.T) {
+	assert.Equal(t, "round 2 of up to 5 · 1m30s", runMeta(fix.Snapshot{State: fix.Working, Round: 2, Took: 90 * time.Second}))
+	assert.Equal(t, "1m30s", runMeta(fix.Snapshot{State: fix.Working, Round: 1, Took: 90 * time.Second}), "one round says nothing of rounds")
 }
 
 func TestBroken_listsExportedDeclarationsRemovedOrResigned(t *testing.T) {

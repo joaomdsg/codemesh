@@ -37,6 +37,7 @@ func (p *diagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 	was.Broke, now.Broke = gone, resigned
 	return h.Div(h.Class("dx-result"),
 		verdict(g, s),
+		rounds(s),
 		h.Div(h.Class("dx-scores"),
 			score(s.Check.Label+" pass", s.Before.CheckOK, s.After.CheckOK),
 			count("Places needing attention", len(s.Before.Prognoses), len(s.After.Prognoses)),
@@ -86,6 +87,15 @@ func outcome(s fix.Snapshot) (fixed, added []prognosis.Prognosis) {
 		}
 	}
 	return fixed, added
+}
+
+// rounds says what each of Claude's rounds left, when there was more than one.
+func rounds(s fix.Snapshot) h.H {
+	note := s.RoundsNote()
+	if note == "" {
+		return nil
+	}
+	return h.P(h.Class("hint"), h.Str(note))
 }
 
 // verdict says whether the problem is gone; a run that broke the checks

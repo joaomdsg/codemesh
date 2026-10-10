@@ -229,12 +229,21 @@ matters, what to do and how to check it.
    `codemesh prognoses <worktree>` no longer lists the problem and the
    check passes: judged by its own reading, an agent stops at the first
    improvement.
+   When Claude finishes, codemesh analyses and checks the worktree and
+   resumes the same Claude session (`--resume`, with the flags passed
+   again) with what the change left: smells it introduced, the problem if
+   still there, a check it broke. It goes again until nothing is left, a
+   round leaves no fewer than the one before, or five rounds ran. A later
+   round that fails, or a session with no id to resume, ends the loop with
+   the change as it stands. The head shows the round; the result says what
+   each round left and why the loop stopped. The replay marks where each
+   round began.
    The run's head names the model, the models of any helper agents, the
    API calls, the tokens and Claude Code's version, with a table per model
    in a fold. Its cost meter moves with each reply: an estimate, marked ≈,
    from the reply's tokens at list price (`internal/fix/usage.go`, which a
    price change must update), until Claude's own tally replaces it at the
-   end.
+   end of each round; a resumed session's tally covers every round.
 6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
    target in a Makefile or justfile, else `go build ./... && go test ./...`
    in the module, or `Pkg.test()` in a Julia package, with one precompile
@@ -248,11 +257,16 @@ matters, what to do and how to check it.
    after each step codemesh compares the worktree with git: a step that
    changed files is an edit, shown as its diffs (one per separate change),
    not its command. A shell command reads the module files it names as
-   arguments; a path built at run time is missed. The map colours what was
-   touched up to the playhead: files read in blue; in an edited file each
-   declaration's green deepens with the lines changed in it, and the rest
-   of the file keeps a faint tint; older touches fade, and the file edited
-   by the current step is outlined, with an edit count. A legend names each colour. The map is the
+   arguments; a path built at run time is missed. A read knows its lines
+   when it says them: the Read tool's offset and limit, `sed -n`, `head`,
+   `tail`, and the matches `grep -n` or `rg -n` printed; anything else reads
+   the whole file. Line numbers are taken back through the run's earlier
+   edits to the starting tree. The map colours what was touched up to the
+   playhead: the declarations read in blue, a file read whole or searched
+   in pale blue; in an edited file each declaration's green deepens with
+   the lines changed in it, and the rest of the file keeps a faint tint;
+   older touches fade, and the file edited by the current step is
+   outlined, with an edit count. A legend names each colour. The map is the
    tree the run started from, then the tree it left once that is analysed,
    so files Claude created get tiles at the end; until then their edits are
    listed beside the map. Swimlanes, one per kind of step, have a brush to zoom into a

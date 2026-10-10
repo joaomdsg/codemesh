@@ -344,7 +344,8 @@
     // The footprint's legend: what each colour on this map means.
     const key = bar.append("span").attr("class", "rp-key").attr("aria-hidden", "true");
     const item = (cls, text) => { const i = key.append("span").attr("class", "ramp-end"); i.append("span").attr("class", "sw " + cls); i.append("span").text(text); };
-    item("sw-read", "read");
+    item("sw-read", "read lines");
+    item("sw-skim", "read whole");
     const ed = key.append("span").attr("class", "ramp-end");
     ed.append("span").text("edited: 1 line");
     const sws = ed.append("span").attr("class", "ramp-sw");
@@ -427,6 +428,12 @@
         .attr("width", (st) => Math.max(3, s.x(st.t0 + span(st)) - s.x(st.t0)))
         .attr("height", laneH - 8)
         .on("click", (e, st) => { s.follow = false; s.i = steps.indexOf(st); show(s, "lane"); });
+      // Mark where each round after the first begins.
+      const starts = steps.filter((st, i) => st.round > 1 && (i === 0 || steps[i - 1].round !== st.round));
+      s.markG.selectAll("line.rp-round").data(starts).join("line").attr("class", "rp-round")
+        .attr("x1", (st) => s.x(st.t0) - 2).attr("x2", (st) => s.x(st.t0) - 2).attr("y1", 0).attr("y2", H - 14);
+      s.markG.selectAll("text.rp-round-label").data(starts).join("text").attr("class", "rp-round-label")
+        .attr("x", (st) => s.x(st.t0)).attr("y", 10).text((st) => "round " + st.round);
       const ticks = s.x.ticks(Math.max(2, Math.floor(W / 120)));
       s.lsvg.selectAll("text.rp-tick").data(ticks).join("text").attr("class", "rp-tick")
         .attr("x", (t) => s.x(t)).attr("y", H - 4).text((t) => clock(t));
@@ -509,8 +516,8 @@
     h.append("span").attr("class", "rp-kind").text(st.k);
     h.append("span").attr("class", "rp-title").attr("title", titleOf(st)).text(titleOf(st));
     h.append("span").attr("class", "rp-time").text(clock(st.t0) + (span(st) >= 1000 ? " · " + clock(span(st)) : ""));
-    if (st.path && st.k !== "edit") c.append("div").attr("class", "rp-path").text(st.path);
-    if (st.reads && st.reads.length) c.append("div").attr("class", "rp-path").text("reads " + st.reads.join(", "));
+    if (st.path && st.k !== "edit" && !(st.reads && st.reads.length)) c.append("div").attr("class", "rp-path").text(st.path);
+    if (st.reads && st.reads.length) c.append("div").attr("class", "rp-path").text("reads " + st.reads.map(readText).join(", "));
     // A thought whose title already says it all needs no body.
     if (st.k === "think" && st.text !== st.title) c.append("p").attr("class", "rp-text").text(st.text);
     for (const ch of st.diffs || []) {
@@ -569,24 +576,38 @@
     footprint(s);
   }
 
-  // footprint colours what Claude has touched up to the playhead: read files
-  // blue, edited files green with their edit count, older touches fainter.
-  // The file at the playhead is outlined.
+  // readText names a read: the file, and its lines when not all of them.
+  function readText(r) {
+    if (!r.from) return r.file;
+    return r.file + ":" + r.from + (r.to === r.from ? "" : "–" + (r.to || "end"));
+  }
+
+  // footprint colours what Claude has touched up to the playhead: the
+  // declarations it read blue, a file read whole pale blue, edited files green
+  // with their edit count, older touches fainter. The file at the playhead is
+  // outlined.
   function footprint(s) {
     const steps = s.r.steps.slice(0, s.i + 1);
-    const last = new Map(), edits = new Map(), outside = new Set();
+    const edited = new Map(), edits = new Map(), outside = new Set();
+    const read = new Map(), skim = new Map();
     // A step touches the file its tool named, the files its command names,
-    // and the files the tree shows it changed.
+    // and the files the tree shows it changed. A touch that says no lines,
+    // such as a search, counts as reading the whole file.
     const touch = (j, file, path, edit) => {
       if (!file || !s.fileTile.has(file)) { if (edit && (file || path)) outside.add(file || path); return; }
-      const prev = last.get(file) || { j: -1, edit: false };
-      last.set(file, { j, edit: prev.edit || edit });
-      if (edit) edits.set(file, (edits.get(file) || 0) + 1);
+      if (!edit) { skim.set(file, j); return; }
+      edited.set(file, j);
+      edits.set(file, (edits.get(file) || 0) + 1);
     };
     steps.forEach((st, j) => {
       const diffs = st.diffs || [];
-      if (st.file || st.path) touch(j, st.file, st.path, st.k === "edit" && !diffs.length);
-      for (const f of st.reads || []) touch(j, f, f, false);
+      const reads = st.reads || [];
+      // A read says which lines it took; its tool's file would light all of it.
+      if ((st.file || st.path) && !reads.length) touch(j, st.file, st.path, st.k === "edit" && !diffs.length);
+      for (const r of reads) {
+        if (!r.from) { if (s.fileTile.has(r.file)) skim.set(r.file, j); continue; }
+        for (const id of r.decls || []) { const di = s.byId.get(id); if (di !== undefined) read.set(di, j); }
+      }
       for (const ch of diffs) touch(j, ch.file, ch.path, true);
     });
     // Changed lines per declaration up to the playhead: the green deepens with
@@ -605,11 +626,12 @@
     });
     const most = Math.max(1, ...lines.values());
     const tone = new Map();
-    for (const [f, v] of last) {
-      const age = s.i - v.j;
-      const op = Math.max(0.35, 1 - age / Math.max(8, steps.length));
-      for (const di of s.declsOf.get(f) || []) tone.set(di, { cls: v.edit ? "fp-file" : "fp-read", op: v.edit ? 1 : op });
-    }
+    const fade = (j) => Math.max(0.35, 1 - (s.i - j) / Math.max(8, steps.length));
+    // Later sets win: a file read whole, the faint tint of an edited file,
+    // the declarations read, then the declarations edited.
+    for (const [f, j] of skim) for (const di of s.declsOf.get(f) || []) tone.set(di, { cls: "fp-skim", op: fade(j) });
+    for (const f of edited.keys()) for (const di of s.declsOf.get(f) || []) tone.set(di, { cls: "fp-file", op: 1 });
+    for (const [di, j] of read) tone.set(di, { cls: "fp-read", op: fade(j) });
     for (const [di, n] of lines) tone.set(di, { cls: "fp-edit", op: 0.3 + 0.7 * Math.log1p(n) / Math.log1p(most) });
     s.rects
       .attr("class", (t, i) => "t-" + t[K] + (t[K] === "d" ? " " + (tone.has(i) ? tone.get(i).cls : "h0") + (now.has(i) ? " fp-now" : "") : ""))
@@ -617,7 +639,7 @@
     const counted = [...edits].map(([f, n]) => [s.d.tiles[s.fileTile.get(f)], n]);
     s.counts.selectAll("text").data(counted).join("text").attr("class", "rp-count").text(([, n]) => n + "×");
     const cur = s.r.steps[s.i];
-    const curFile = cur && [cur.file, ...((cur.diffs || []).map((c) => c.file)), ...(cur.reads || [])].find((f) => f && s.fileTile.has(f));
+    const curFile = cur && [cur.file, ...((cur.diffs || []).map((c) => c.file)), ...(cur.reads || []).map((r) => r.file)].find((f) => f && s.fileTile.has(f));
     const ct = curFile ? s.d.tiles[s.fileTile.get(curFile)] : null;
     s.cur.attr("display", ct ? null : "none");
     if (ct) s.cur.datum(ct).attr("x", ct[X]).attr("y", ct[Y]).attr("width", ct[W]).attr("height", ct[H]).raise();

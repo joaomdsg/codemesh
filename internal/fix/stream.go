@@ -18,10 +18,18 @@ import (
 // It may run any command there, unsandboxed: the push ban and the throwaway
 // worktree are the only guards.
 func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
-	cmd := exec.CommandContext(ctx, agent, "-p", prompt,
+	// A resumed session keeps the conversation, not these flags. Each round's
+	// init names the session, so the latest is the one resumed.
+	args := []string{"-p", prompt,
 		"--output-format", "stream-json", "--verbose",
 		"--permission-mode", "bypassPermissions",
-		"--disallowedTools", "Bash(git push *)")
+		"--disallowedTools", "Bash(git push *)"}
+	r.mu.Lock()
+	if r.round > 1 && r.usage.Session != "" {
+		args = append(args, "--resume", r.usage.Session)
+	}
+	r.mu.Unlock()
+	cmd := exec.CommandContext(ctx, agent, args...)
 	cmd.Dir = dir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -71,11 +79,16 @@ func (r *Run) apply(e parsed, at time.Duration) {
 func (r *Run) addStep(st Step, at time.Duration) {
 	st.Start, st.End = at, at
 	st.Path, st.File = r.place(st.Path)
-	if st.Command != "" {
-		st.Reads = r.tree.named(st.Command)
+	switch {
+	case st.Command != "":
+		st.Reads = r.tree.reads(st.Command)
 		st.Kind = shellKind(st.Command, st.Reads)
+	case st.Kind == kindRead && st.File != "":
+		st.Reads = []Read{{File: st.File, From: st.lines.From, To: st.lines.To}}
 	}
+	st.lines = Read{}
 	r.set(func() {
+		st.Round = r.round
 		// A thought lasts until the next step begins.
 		if n := len(r.steps); n > 0 && r.steps[n-1].Kind == kindThink {
 			r.steps[n-1].End = at
@@ -84,15 +97,32 @@ func (r *Run) addStep(st Step, at time.Duration) {
 	})
 }
 
+// command is the shell command of the call with the given id, if any.
+func (r *Run) command(id string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.steps) - 1; i >= 0; i-- {
+		if r.steps[i].ID == id {
+			return r.steps[i].Command
+		}
+	}
+	return ""
+}
+
 // settleStep closes the call a result answers and, when the call changed
 // files, asks for a fresh analysis if one of them is new.
 func (r *Run) settleStep(res toolResult, at time.Duration) {
 	changes := r.tree.changes()
+	// Placing grep's matches stats files, so it runs outside the lock.
+	matched := r.tree.matched(r.command(res.id), res.output)
 	r.set(func() {
 		for i := len(r.steps) - 1; i >= 0; i-- {
 			if r.steps[i].ID == res.id {
 				st := &r.steps[i]
 				st.End, st.Output, st.Failed, st.Changes = at, res.output, res.failed, changes
+				if matched != nil {
+					st.Reads = matched
+				}
 				if len(changes) > 0 && st.Kind != kindEdit {
 					st.Kind = kindEdit
 				}
@@ -266,6 +296,8 @@ func toolStep(id, name string, input json.RawMessage) *Step {
 		OldString    string `json:"old_string"`
 		NewString    string `json:"new_string"`
 		Content      string `json:"content"`
+		Offset       int    `json:"offset"`
+		Limit        int    `json:"limit"`
 		Edits        []struct {
 			OldString string `json:"old_string"`
 			NewString string `json:"new_string"`
@@ -277,6 +309,13 @@ func toolStep(id, name string, input json.RawMessage) *Step {
 		st.Kind = kindOther
 	}
 	switch st.Kind {
+	case kindRead:
+		if in.Offset > 0 || in.Limit > 0 {
+			st.lines.From = max(in.Offset, 1)
+			if in.Limit > 0 {
+				st.lines.To = st.lines.From + in.Limit - 1
+			}
+		}
 	case kindEdit:
 		st.Old, st.New = in.OldString, cmp.Or(in.NewString, in.Content)
 		for _, e := range in.Edits {

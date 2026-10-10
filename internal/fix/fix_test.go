@@ -80,8 +80,12 @@ func TestRead_timesStepsAndPlacesTheirFilesInTheModule(t *testing.T) {
 	r.read(strings.NewReader(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/wt/m/sub/a.go"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/wt/README.md"}}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"package sub"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Read","input":{"file_path":"/wt/m/sub/a.go","offset":10,"limit":5}}]}}
 `))
-	require.Len(t, r.steps, 2)
+	require.Len(t, r.steps, 3)
+	assert.Equal(t, []Read{{File: "sub/a.go"}}, r.steps[0].Reads, "no offset or limit: the whole file")
+	assert.Empty(t, r.steps[1].Reads)
+	assert.Equal(t, []Read{{File: "sub/a.go", From: 10, To: 14}}, r.steps[2].Reads)
 	assert.Equal(t, "sub/a.go", r.steps[0].File)
 	assert.Equal(t, "m/sub/a.go", r.steps[0].Path)
 	assert.Equal(t, "package sub", r.steps[0].Output, "the result lands on the call it answers")
@@ -119,14 +123,40 @@ func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
 	assert.Len(t, tr.changes(), 1, "putting the file back is a change too")
 }
 
-func TestTree_namesTheModuleFilesAShellCommandReads(t *testing.T) {
-	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n", "b.go": "package m\n"}, nil)
+func TestTree_readsTheLinesAShellCommandNames(t *testing.T) {
+	b := "package m\n" + strings.Repeat("x\n", 9)
+	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n", "b.go": b}, nil)
 	tr := newTree(wt, wt)
-	reads := tr.named(`sed -n 1,5p sub/a.go && cat "b.go" missing.go | head`)
-	assert.Equal(t, []string{"sub/a.go", "b.go"}, reads)
-	assert.Equal(t, kindRead, shellKind("sed -n 1,5p sub/a.go", reads))
+	for cmd, want := range map[string][]Read{
+		`cat "b.go" missing.go`:                   {{File: "b.go"}},
+		`sed -n '3,5p' sub/a.go`:                  {{File: "sub/a.go", From: 3, To: 5}},
+		`sed -n 7p b.go`:                          {{File: "b.go", From: 7, To: 7}},
+		`sed -n '4,$p' b.go`:                      {{File: "b.go", From: 4}},
+		`head -n 20 b.go`:                         {{File: "b.go", From: 1, To: 20}},
+		`head -3 b.go`:                            {{File: "b.go", From: 1, To: 3}},
+		`tail -n +4 b.go`:                         {{File: "b.go", From: 4}},
+		`tail -n 2 b.go`:                          {{File: "b.go", From: 9, To: 10}},
+		`sed -n 1,5p sub/a.go && cat b.go | head`: {{File: "sub/a.go", From: 1, To: 5}, {File: "b.go"}},
+		`awk 'NR<5' b.go`:                         {{File: "b.go"}},
+		`go test ./...`:                           nil,
+	} {
+		assert.Equal(t, want, tr.reads(cmd), cmd)
+	}
+	assert.Equal(t, kindRead, shellKind("sed -n 1,5p sub/a.go", tr.reads("sed -n 1,5p sub/a.go")))
 	assert.Equal(t, kindSearch, shellKind(`grep -rn "A" .`, nil))
 	assert.Equal(t, kindExec, shellKind("go test ./...", nil))
+}
+
+func TestTree_placesGrepMatchesOnTheirLines(t *testing.T) {
+	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n", "b.go": "package m\n", "my-2-x.go": "package m\n"}, nil)
+	tr := newTree(wt, wt)
+	assert.Equal(t, []Read{{File: "sub/a.go", From: 3, To: 4}, {File: "b.go", From: 7, To: 7}},
+		tr.matched(`grep -rn A .`, "sub/a.go:3:x\nsub/a.go:4-y\nb.go:7:z\n"), "context lines count; neighbours merge")
+	assert.Equal(t, []Read{{File: "b.go", From: 2, To: 2}}, tr.matched("grep -n x b.go", "2:x\n"), "one file: no path in the output")
+	assert.Equal(t, []Read{{File: "b.go", From: 5, To: 5}}, tr.matched("rg -n x", "b.go:5:x\n"))
+	assert.Equal(t, []Read{{File: "my-2-x.go", From: 9, To: 9}}, tr.matched("rg -n x", "my-2-x.go:9:x\n"), "digits and - in a path")
+	assert.Nil(t, tr.matched("grep -r A .", "sub/a.go:3:x\n"), "without -n a number may be text")
+	assert.Nil(t, tr.matched("go vet ./...", "b.go:3: unused"))
 }
 
 func TestHunks_keepsEditsFarApartSeparate(t *testing.T) {

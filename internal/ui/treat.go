@@ -118,9 +118,12 @@ var runTitles = map[fix.State]string{
 func runTitle(s fix.Snapshot) string { return cmp.Or(runTitles[s.State], "Claude's attempt") }
 
 // runMeta is the run's clock and cost: an estimate, marked ≈, while Claude
-// works, and Claude's own tally once it ends.
+// works, and Claude's own tally once each round ends.
 func runMeta(s fix.Snapshot) string {
 	meta := s.Took.Round(time.Second).String()
+	if r := s.RoundsLabel(); r != "" {
+		meta = r + " · " + meta
+	}
 	usd, all := s.Usage.USD()
 	if usd == 0 {
 		return meta
@@ -146,7 +149,7 @@ func runInfo(s fix.Snapshot) h.H {
 		}
 		return nil
 	}
-	how := "Costs are estimated from list prices while Claude works; Claude's own tally replaces them when it ends."
+	how := "Costs are estimated from list prices while Claude works; Claude's own tally replaces them when each round ends."
 	if u.Exact {
 		how = "Costs are Claude's own tally."
 	}

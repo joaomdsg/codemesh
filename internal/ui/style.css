@@ -612,6 +612,8 @@ kbd {
 .rp-lane-bg { fill: var(--bg); }
 .rp-lane-label { fill: var(--muted); font-size: 11px; }
 .rp-tick { fill: var(--muted); font: 10px var(--mono); text-anchor: middle; }
+.rp-round { stroke: var(--muted); stroke-dasharray: 3 3; }
+.rp-round-label { fill: var(--muted); font-size: 10px; }
 .rp-mark { cursor: pointer; rx: 2; }
 .rp-mark.on { stroke: var(--ink); stroke-width: 1.5; }
 .rp-mark.fail { stroke: var(--bad); stroke-width: 1.5; }
@@ -627,6 +629,7 @@ kbd {
 .rp-head { stroke: var(--ink); stroke-width: 1.5; pointer-events: none; }
 .rp-osvg .selection { fill: var(--accent); fill-opacity: .12; stroke: var(--accent); }
 .atlas .fp-read { fill: color-mix(in srgb, var(--accent) 45%, var(--surface)); }
+.atlas .fp-skim { fill: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
 .atlas .fp-edit { fill: var(--ok); }
 .atlas .fp-file { fill: color-mix(in srgb, var(--ok) 18%, var(--surface)); }
 .atlas .fp-now { stroke: var(--ink); stroke-width: 1.5; }
@@ -652,6 +655,7 @@ kbd {
 .sw-exp { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid color-mix(in srgb, var(--ink) 55%, var(--surface)); }
 .dx-side > .ramp { margin-bottom: var(--sp4); }
 .sw-read { background: color-mix(in srgb, var(--accent) 45%, var(--surface)); }
+.sw-skim { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
 .sw-edit1 { background: color-mix(in srgb, var(--ok) 30%, var(--surface)); }
 .sw-edit2 { background: color-mix(in srgb, var(--ok) 55%, var(--surface)); }
 .sw-edit3 { background: color-mix(in srgb, var(--ok) 78%, var(--surface)); }

@@ -126,35 +126,9 @@ func hunks(a, b string) []hunk {
 	return hs
 }
 
-// named lists the module files a shell command names, so a `cat` or `sed -n`
-// counts as reading them. It reads arguments, not the shell: a path built
-// at run time is missed.
-func (t *tree) named(cmd string) []string {
-	if t == nil {
-		return nil
-	}
-	var out []string
-	seen := map[string]bool{}
-	for _, f := range strings.FieldsFunc(cmd, func(r rune) bool { return strings.ContainsRune(" \t\n;|&<>()'\"`=,", r) }) {
-		p := f
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(t.mod, p)
-		}
-		rel, err := filepath.Rel(t.mod, p)
-		if err != nil || strings.HasPrefix(rel, "..") || seen[rel] {
-			continue
-		}
-		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
-			seen[rel] = true
-			out = append(out, filepath.ToSlash(rel))
-		}
-	}
-	return out
-}
-
 // shellKind sorts a shell command into a lane by its first word: reading and
 // searching tools read, everything else runs.
-func shellKind(cmd string, reads []string) string {
+func shellKind(cmd string, reads []Read) string {
 	fields := strings.Fields(cmd)
 	if len(fields) == 0 {
 		return kindExec

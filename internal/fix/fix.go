@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -58,10 +59,12 @@ type Step struct {
 	Output     string // the call's result, clipped
 	Failed     bool
 	Start, End time.Duration
-	// What the step did to the tree, whatever tool it used: the module files
-	// a shell command named, and the files that differ once it finished.
-	Reads   []string
+	Round      int // the round it belongs to, from 1
+	// What the step did to the tree, whatever tool it used: the module lines
+	// it read, and the files that differ once it finished.
+	Reads   []Read
 	Changes []Change
+	lines   Read // the Read tool's offset and limit, until addStep places its file
 }
 
 // Side is one analysed tree.
@@ -152,6 +155,9 @@ type Run struct {
 	done     chan struct{}
 	finished time.Time
 	updates  *topic.Topic[int64]
+	round    int   // the round under way, from 1
+	rounds   []int // what each round left
+	ended    string
 }
 
 // Snapshot is a consistent copy of a run's progress.
@@ -173,6 +179,9 @@ type Snapshot struct {
 	Check  Check
 	Base   string // the branch a pull request targets; "" when detached
 	PR     PR
+	Round  int
+	rounds []int
+	ended  string
 }
 
 // Live reports whether the run is still going: setting up, editing or checking.
@@ -193,7 +202,8 @@ func (r *Run) Snapshot() Snapshot {
 		took = r.finished.Sub(r.Started)
 	}
 	return Snapshot{Key: r.Key, State: r.state, Events: append([]Event(nil), r.events...), Steps: append([]Step(nil), r.steps...), Err: r.err,
-		Usage: r.usage.clone(), Summary: r.summary, Took: took, Before: r.before, After: r.after, Now: r.now, NowN: r.nowN, Review: r.review, Check: r.check, Base: r.base, PR: r.pr}
+		Usage: r.usage.clone(), Summary: r.summary, Took: took, Before: r.before, After: r.after, Now: r.now, NowN: r.nowN, Review: r.review, Check: r.check, Base: r.base, PR: r.pr,
+		Round: r.round, rounds: slices.Clone(r.rounds), ended: r.ended}
 }
 
 // Stop ends Claude early; the run keeps what it had.
@@ -344,11 +354,70 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 		r.fail(err)
 		return
 	}
-	r.set(func() { r.before, r.state = before, Working })
-	if !r.work(ctx, rs.Agent, rs.Self, before) {
-		return
+	r.set(func() { r.before, r.state, r.round = before, Working, 1 })
+	r.note("Stop ends it early and keeps what it changed so far.")
+	prompt := r.p.Prompt(r.brief(rs.Self, before))
+	for n := 1; ; n++ {
+		err := r.work(ctx, rs.Agent, prompt)
+		if err != nil && n == 1 {
+			r.fail(err)
+			return
+		}
+		if err != nil {
+			r.note(fmt.Sprintf("Round %d ended with an error, so the change stands as it is: %v", n, err))
+		}
+		after, rev, ok := r.result(life, before)
+		if !ok {
+			return
+		}
+		left := leftover(r.p, r.check.Name, before, after, rev)
+		if !r.endRound(len(left), ctx.Err() != nil, err != nil) {
+			r.finish(after, rev)
+			return
+		}
+		r.set(func() {
+			// The analysed tree stands in as the map while Claude goes again;
+			// the live estimate counts again until the next tally.
+			r.now, r.nowN, r.state, r.usage.Exact = after.Snap, r.nowN+1, Working, false
+		})
+		r.note(fmt.Sprintf("Round %d: Claude goes again on what its change left.", n+1))
+		prompt = followUp(left)
 	}
-	r.finish(life, before)
+}
+
+// endRound records how much a round left and reports whether Claude goes
+// again.
+func (r *Run) endRound(left int, stopped, failed bool) bool {
+	var more, resumable bool
+	r.set(func() {
+		prev := 0
+		if n := len(r.rounds); n > 0 {
+			prev = r.rounds[n-1]
+		}
+		r.rounds = append(r.rounds, left)
+		more, r.ended = nextRound(r.round, prev, left, stopped, failed)
+		resumable = r.usage.Session != ""
+		if more && resumable {
+			r.round++
+		}
+	})
+	if more && !resumable {
+		// A fresh session would get the follow-up without the change it
+		// refers to.
+		r.note("Claude's session has no id to resume, so it cannot go again.")
+		return false
+	}
+	return more
+}
+
+func (r *Run) finish(after *Side, rev *review.Review) {
+	r.set(func() {
+		r.after, r.review = after, rev
+		if r.state != Stopped {
+			r.state = Done
+		}
+		r.finished = time.Now()
+	})
 }
 
 // prepare opens the repository and cuts the two worktrees; it returns the
@@ -417,53 +486,51 @@ func (r *Run) worktrees(repo *gitx.Repo, head string) (wt, start string, err err
 	return wt, start, nil
 }
 
-// work lets Claude edit the worktree. It reports false when the run failed.
-func (r *Run) work(ctx context.Context, agent, self string, before *Side) bool {
-	r.note("Stop ends it early and keeps what it changed so far.")
-	brief := prognosis.Brief{Check: r.check.Name, Where: r.check.Where, Nearby: prognosis.Nearby(before.Prognoses, r.p)}
+// brief is what the first prompt needs beyond the prognosis.
+func (r *Run) brief(self string, before *Side) prognosis.Brief {
+	b := prognosis.Brief{Check: r.check.Name, Where: r.check.Where, Nearby: prognosis.Nearby(before.Prognoses, r.p)}
 	if self != "" {
-		brief.List = self + " prognoses " + r.mod
+		b.List = self + " prognoses " + r.mod
 	}
+	return b
+}
+
+// work lets Claude edit the worktree. It returns Claude's error when the
+// run was not stopped.
+func (r *Run) work(ctx context.Context, agent, prompt string) error {
 	working, worked := context.WithCancel(ctx)
 	go r.remapping(working, r.mod)
-	err := r.claude(ctx, agent, r.mod, r.p.Prompt(brief))
+	err := r.claude(ctx, agent, r.mod, prompt)
 	worked()
-	if err != nil && ctx.Err() == nil {
-		r.fail(err)
-		return false
-	}
 	if ctx.Err() != nil {
 		r.set(func() { r.state = Stopped })
 		r.note("Stopped. Showing what changed so far.")
-	} else {
-		r.set(func() { r.state = Checking })
+		return nil
+	}
+	r.set(func() { r.state = Checking })
+	if err == nil {
 		r.note("Analysing the result and running the checks again.")
 	}
-	return true
+	return err
 }
 
-func (r *Run) finish(life context.Context, before *Side) {
+// result analyses and checks the worktree and reviews it against the start.
+func (r *Run) result(life context.Context, before *Side) (*Side, *review.Review, bool) {
 	if life.Err() != nil {
-		return
+		return nil, nil, false
 	}
 	after, err := analyse(life, r.mod, r.check)
 	if err != nil {
 		r.fail(fmt.Errorf("the edited code did not load: %w", err))
-		return
+		return nil, nil, false
 	}
 	diffs, err := (&gitx.Repo{Dir: r.wt}).Diff(r.head)
 	if err != nil {
 		r.fail(err)
-		return
+		return nil, nil, false
 	}
 	rev := review.Build(review.Input{Base: before.Snap, Head: after.Snap, Diffs: diffs, BaseFindings: before.Findings, HeadFindings: after.Findings})
-	r.set(func() {
-		r.after, r.review = after, rev
-		if r.state != Stopped {
-			r.state = Done
-		}
-		r.finished = time.Now()
-	})
+	return after, rev, true
 }
 
 // addsFiles reports whether changes write a Go file the starting tree lacks.
