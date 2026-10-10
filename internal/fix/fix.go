@@ -387,8 +387,8 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 		if !ok {
 			return
 		}
-		left := leftover(r.p, r.check.Name, before, after, rev)
-		now := outcome{after: after, rev: rev, left: len(left), stopped: ctx.Err() != nil, failed: err != nil}
+		left, total := leftover(r.p, r.check.Name, before, after, rev)
+		now := outcome{after: after, rev: rev, left: total, stopped: ctx.Err() != nil, failed: err != nil}
 		if !r.settle(life, n, now, &kept) {
 			return
 		}
@@ -403,8 +403,8 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 }
 
 // endRound records how much a round left and reports whether Claude goes
-// again, and how the rounds ended when it does not.
-func (r *Run) endRound(left int, stopped, failed bool) (more bool, ended string) {
+// again, and whether the round left more than the one before it.
+func (r *Run) endRound(left int, stopped, failed bool) (more, worse bool) {
 	var resumable bool
 	r.set(func() {
 		prev := 0
@@ -412,6 +412,7 @@ func (r *Run) endRound(left int, stopped, failed bool) (more bool, ended string)
 			prev = r.rounds[n-1]
 		}
 		r.rounds = append(r.rounds, left)
+		worse = r.round > 1 && left > prev
 		more, r.ended = nextRound(r.round, prev, left, stopped, failed)
 		if stopped {
 			r.ended = halted
@@ -419,7 +420,6 @@ func (r *Run) endRound(left int, stopped, failed bool) (more bool, ended string)
 				r.ended = cut
 			}
 		}
-		ended = r.ended
 		resumable = r.usage.Session != ""
 		if more && resumable {
 			r.round++
@@ -429,9 +429,9 @@ func (r *Run) endRound(left int, stopped, failed bool) (more bool, ended string)
 		// A fresh session would get the follow-up without the change it
 		// refers to.
 		r.note("Claude's session has no id to resume, so it cannot go again.")
-		return false, ended
+		return false, worse
 	}
-	return more, ended
+	return more, worse
 }
 
 func (r *Run) finish(after *Side, rev *review.Review) {

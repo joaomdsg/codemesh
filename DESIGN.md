@@ -235,14 +235,15 @@ matters, what to do and how to check it.
    still there, a check it broke. It goes again until nothing is left, a
    round leaves as many as the one before, or five rounds ran. Each round
    is committed in the worktree; a round that leaves more than the one
-   before is undone back to it, so the result and a pull request never
-   carry a worse round. A pull request folds these commits into one. A later
-   round that fails, or a session with no id to resume, ends the loop with
-   the change as it stands. The head shows the round; the result says what
-   each round left and why the loop stopped, including an error's first
-   line or a stop. Stop ends Claude's work and keeps what it changed;
-   pressed during the checks, the round finishes, the head says it is
-   stopping, and Claude does not go again. The replay marks where each
+   before is undone back to it, even when it failed or was stopped, so the
+   result and a pull request never carry a worse round. A pull request
+   folds these commits into one. A later round that fails, or a session
+   with no id to resume, ends the loop with the change as it stands. The
+   head shows the round; the result says what each round left and why the
+   loop stopped, including an error's first line or a stop. Stop ends
+   Claude's work and keeps what it changed; pressed during the checks, the
+   round finishes, the head says it is stopping, and Claude does not go
+   again. The replay marks where each
    round began; an undone round's steps stay, faded and labelled undone,
    and leave nothing on the map.
    The run's head names the model, the models of any helper agents, the

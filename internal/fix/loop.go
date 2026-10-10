@@ -18,7 +18,8 @@ const maxRounds = 5
 // maxListed caps the new smells one follow-up names.
 const maxListed = 20
 
-// How a run's rounds ended; "" while it runs and when it was stopped.
+// How a run's rounds ended; "" while it runs and when it was stopped. A round
+// that left more is undone however the loop ended.
 const (
 	clean   = "clean"   // the last round left nothing
 	stalled = "stalled" // a round left as many as the one before
@@ -49,11 +50,12 @@ func nextRound(n, prev, left int, stopped, broke bool) (more bool, ended string)
 	return true, ""
 }
 
-// leftover lists what a change left to do: smells it introduced, the
-// problem if it is still there, and a check it broke. A check that failed
-// before the run is not the run's to fix.
-func leftover(p prognosis.Prognosis, check string, before, after *Side, rev *review.Review) []string {
+// leftover lists what a change left to do, and counts it: smells it
+// introduced, the problem if it is still there, and a check it broke. A check
+// that failed before the run is not the run's to fix.
+func leftover(p prognosis.Prognosis, check string, before, after *Side, rev *review.Review) ([]string, int) {
 	var out []string
+	total := len(rev.Introduced)
 	for i, f := range rev.Introduced {
 		// A long list buries the rest; the next round brings the remainder.
 		if i == maxListed {
@@ -64,11 +66,13 @@ func leftover(p prognosis.Prognosis, check string, before, after *Side, rev *rev
 	}
 	if slices.ContainsFunc(after.Prognoses, func(g prognosis.Prognosis) bool { return g.Key == p.Key }) {
 		out = append(out, fmt.Sprintf("The problem is still there: %s, %s [%s]", p.Title, p.Name, p.Key))
+		total++
 	}
 	if before.CheckOK && !after.CheckOK {
 		out = append(out, fmt.Sprintf("`%s` now fails. Its output ends:\n%s", check, after.Output))
+		total++
 	}
-	return out
+	return out, total
 }
 
 // outcome is how a round ended: its analysed result, how much it left,
@@ -84,11 +88,12 @@ type outcome struct {
 }
 
 // settle ends round n: it undoes the round when it left more than the one
-// kept before it, finishes the run when Claude does not go again, and
-// otherwise keeps the round. It reports whether Claude goes again.
+// kept before it, even when it failed or was stopped, finishes the run when
+// Claude does not go again, and otherwise keeps the round. It reports
+// whether Claude goes again.
 func (r *Run) settle(ctx context.Context, n int, now outcome, kept *outcome) bool {
-	more, ended := r.endRound(now.left, now.stopped, now.failed)
-	if ended == undone {
+	more, worse := r.endRound(now.left, now.stopped, now.failed)
+	if worse {
 		if err := r.undo(ctx, kept.sha); err != nil {
 			r.fail(err)
 			return false
@@ -180,8 +185,6 @@ func (s Snapshot) RoundsNote() string {
 	switch s.ended {
 	case stalled:
 		text += " Stopped: as many left as the round before."
-	case undone:
-		text += fmt.Sprintf(" Round %d left more, so its changes were undone.", last)
 	case capped:
 		text += fmt.Sprintf(" Stopped at the %d-round limit.", maxRounds)
 	case failed:
@@ -191,6 +194,9 @@ func (s Snapshot) RoundsNote() string {
 		text += " Stopped by you; Claude did not go again."
 	case cut:
 		text += fmt.Sprintf(" Stopped by you during round %d.", last)
+	}
+	if s.Undone > 0 {
+		text += fmt.Sprintf(" Round %d left more, so its changes were undone.", s.Undone)
 	}
 	return text
 }

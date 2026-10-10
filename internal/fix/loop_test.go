@@ -3,11 +3,13 @@ package fix
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/joaomdsg/codemesh/internal/review"
+	"github.com/joaomdsg/codemesh/internal/smell"
 	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,10 +88,24 @@ func loopBegin(t *testing.T, agent string, extra map[string]string) *Run {
 		files[k] = v
 	}
 	repo := testrepo.New(t, files, nil)
+	if _, ok := extra["ci.sh"]; ok {
+		// checkOf runs ci.sh only when it is executable.
+		require.NoError(t, os.Chmod(filepath.Join(repo, "ci.sh"), 0o755))
+		require.NoError(t, testrepo.Git(repo, "update-index", "--chmod=+x", "ci.sh"))
+		require.NoError(t, testrepo.Git(repo, "commit", "--quiet", "--amend", "--no-edit"))
+	}
 	rs := NewRuns(repo)
 	rs.Agent = agent
 	t.Cleanup(rs.Close)
 	return rs.Start(prognosis.Prognosis{Key: "complex:m.A", Title: "Complex function", Name: "A"})
+}
+
+// modOf reads the run's module directory, which prepare sets while the
+// run goes.
+func modOf(r *Run) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mod
 }
 
 func TestRun_feedsBackWhatTheChangeLeftUntilItIsClean(t *testing.T) {
@@ -187,12 +203,22 @@ func TestSnapshot_roundsSayWhatEachLeftAndWhyTheLoopStopped(t *testing.T) {
 func TestLeftover_namesTheProblemStillThereAndACheckTheChangeBroke(t *testing.T) {
 	p := prognosis.Prognosis{Key: "complex:m.A", Title: "Complex function", Name: "A"}
 	still := &Side{Prognoses: []prognosis.Prognosis{p}, Output: "FAIL m"}
+	list, total := leftover(p, "go test", &Side{CheckOK: true}, still, &review.Review{})
 	assert.Equal(t, []string{
 		"The problem is still there: Complex function, A [complex:m.A]",
 		"`go test` now fails. Its output ends:\nFAIL m",
-	}, leftover(p, "go test", &Side{CheckOK: true}, still, &review.Review{}))
-	assert.Equal(t, []string{"The problem is still there: Complex function, A [complex:m.A]"},
-		leftover(p, "go test", &Side{}, still, &review.Review{}), "a check that failed at the start is not the run's to fix")
+	}, list)
+	assert.Equal(t, 2, total)
+	list, _ = leftover(p, "go test", &Side{}, still, &review.Review{})
+	assert.Equal(t, []string{"The problem is still there: Complex function, A [complex:m.A]"}, list, "a check that failed at the start is not the run's to fix")
+}
+
+func TestLeftover_countsEverySmellButListsAFew(t *testing.T) {
+	rev := &review.Review{Introduced: make([]smell.Finding, maxListed+5)}
+	list, total := leftover(prognosis.Prognosis{}, "go test", &Side{}, &Side{}, rev)
+	assert.Len(t, list, maxListed+1)
+	assert.Equal(t, "5 more new smells", list[maxListed])
+	assert.Equal(t, maxListed+5, total)
 }
 
 func TestRun_stopsAtTheRoundCap(t *testing.T) {
@@ -244,4 +270,77 @@ func TestRun_stopWhileCheckingEndsTheLoop(t *testing.T) {
 	assert.NoFileExists(t, filepath.Join(calls, "followup"), "Claude does not go again")
 	assert.Equal(t, halted, s.ended)
 	assert.Equal(t, "Stopped by you; Claude did not go again.", s.RoundsNote())
+	assert.Equal(t, "./ci.sh", s.Check.Name)
+}
+
+func TestRun_undoesAWorseRoundThatFailed(t *testing.T) {
+	t.Parallel()
+	agent, _ := loopAgent(t, true, worse+"\n  exit 1")
+	r := loopStart(t, agent)
+	s := r.Snapshot()
+
+	assert.Equal(t, []int{1, 2}, s.rounds)
+	assert.Equal(t, failed, s.ended)
+	assert.Equal(t, 2, s.Undone)
+	assert.Nil(t, s.After.Snap.Decl("m.D"), "the result is round 1's")
+	assert.Equal(t, "2 rounds, left after each: 1 → 2. Stopped: round 2 ended with an error: claude: exit status 1. Round 2 left more, so its changes were undone.", s.RoundsNote())
+}
+
+func TestRun_undoesAWorseRoundStoppedDuringItsChecks(t *testing.T) {
+	t.Parallel()
+	agent, _ := loopAgent(t, true, worse)
+	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 2\n"})
+	// Round already reads 2 while round 1's commit is made; the worse code
+	// marks round 2's checks.
+	require.Eventually(t, func() bool {
+		c, _ := os.ReadFile(filepath.Join(modOf(r), "c.go"))
+		return r.Snapshot().State == Checking && strings.Contains(string(c), "func D")
+	}, time.Minute, 20*time.Millisecond)
+	r.Stop()
+	require.Eventually(t, func() bool { return !r.Snapshot().Live() }, time.Minute, 20*time.Millisecond)
+
+	s := r.Snapshot()
+	assert.Equal(t, Done, s.State)
+	assert.Equal(t, []int{1, 2}, s.rounds)
+	assert.Equal(t, halted, s.ended)
+	assert.Equal(t, 2, s.Undone)
+	assert.Nil(t, s.After.Snap.Decl("m.D"), "a pull request would carry round 1")
+	c, err := os.ReadFile(filepath.Join(r.mod, "c.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(c), "func D")
+}
+
+func TestRun_undoesAWorseRoundStoppedWhileClaudeWorked(t *testing.T) {
+	t.Parallel()
+	agent, _ := loopAgent(t, true, worse+"\n  exec sleep 30")
+	r := loopBegin(t, agent, nil)
+	require.Eventually(t, func() bool {
+		c, _ := os.ReadFile(filepath.Join(modOf(r), "c.go"))
+		return r.Snapshot().Round == 2 && strings.Contains(string(c), "func D")
+	}, time.Minute, 20*time.Millisecond)
+	r.Stop()
+	require.Eventually(t, func() bool { return r.Snapshot().After != nil }, time.Minute, 20*time.Millisecond)
+
+	s := r.Snapshot()
+	assert.Equal(t, Stopped, s.State)
+	assert.Equal(t, cut, s.ended)
+	assert.Equal(t, 2, s.Undone)
+	assert.Nil(t, s.After.Snap.Decl("m.D"))
+}
+
+func TestRun_undoesARoundThatLeavesMoreThanTheListShows(t *testing.T) {
+	t.Parallel()
+	// Round 1 leaves 25 functions with too many parameters, round 2 leaves
+	// 100: both lists stop at maxListed, the counts do not.
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\n"+
+		`echo '{"type":"system","subtype":"init","session_id":"s1","model":"m","claude_code_version":"t"}'`+"\n"+
+		`case "$*" in *"--resume s1"*) n=100 ;; *) n=25 ;; esac`+"\n"+
+		"printf 'package m\\n' > c.go\n"+
+		"i=1; while [ $i -le $n ]; do printf 'func C%d(a, b, c, d, e, f int) int { return a }\\n' $i >> c.go; i=$((i+1)); done\n"), 0o755))
+	s := loopRun(t, agent)
+
+	assert.Equal(t, []int{25, 100}, s.rounds)
+	assert.Equal(t, undone, s.ended)
+	assert.Len(t, s.Review.Introduced, 25)
 }
