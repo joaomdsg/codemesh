@@ -78,35 +78,46 @@ func (t *tree) moduleFile(p string) (string, bool) {
 func shown(words []string, file string) (from, to int) {
 	switch filepath.Base(words[0]) {
 	case "sed":
-		if !slices.Contains(words, "-n") {
-			return 0, 0
-		}
-		for _, w := range words[1:] {
-			if m := sedScript.FindStringSubmatch(w); m != nil {
-				from, _ = strconv.Atoi(m[1])
-				switch m[2] {
-				case "":
-					return from, from
-				case "$":
-					return from, 0
-				}
-				to, _ = strconv.Atoi(m[2])
-				return from, to
-			}
-		}
+		return sedRange(words)
 	case "head":
 		if n, _ := count(words); n > 0 {
 			return 1, n
 		}
 	case "tail":
-		n, plus := count(words)
-		switch {
-		case plus:
-			return n, 0
-		case n > 0:
-			total := lineCount(file)
-			return max(1, total-n+1), total
+		return tailRange(words, file)
+	}
+	return 0, 0
+}
+
+// sedRange reads `sed -n` with a script such as 5p, 5,9p or 5,$p.
+func sedRange(words []string) (from, to int) {
+	if !slices.Contains(words, "-n") {
+		return 0, 0
+	}
+	for _, w := range words[1:] {
+		if m := sedScript.FindStringSubmatch(w); m != nil {
+			from, _ = strconv.Atoi(m[1])
+			switch m[2] {
+			case "":
+				return from, from
+			case "$":
+				return from, 0
+			}
+			to, _ = strconv.Atoi(m[2])
+			return from, to
 		}
+	}
+	return 0, 0
+}
+
+func tailRange(words []string, file string) (from, to int) {
+	n, plus := count(words)
+	switch {
+	case plus:
+		return n, 0
+	case n > 0:
+		total := lineCount(file)
+		return max(1, total-n+1), total
 	}
 	return 0, 0
 }

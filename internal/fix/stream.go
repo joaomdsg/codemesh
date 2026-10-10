@@ -287,43 +287,33 @@ func parseResults(blocks []streamBlock) []parsed {
 	return out
 }
 
+// toolInput is the part of a tool call's input a step shows.
+type toolInput struct {
+	FilePath     string `json:"file_path"`
+	NotebookPath string `json:"notebook_path"`
+	Path         string `json:"path"`
+	Pattern      string `json:"pattern"`
+	Command      string `json:"command"`
+	OldString    string `json:"old_string"`
+	NewString    string `json:"new_string"`
+	Content      string `json:"content"`
+	Offset       int    `json:"offset"`
+	Limit        int    `json:"limit"`
+	Edits        []struct {
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	} `json:"edits"`
+}
+
 func toolStep(id, name string, input json.RawMessage) *Step {
-	var in struct {
-		FilePath     string `json:"file_path"`
-		NotebookPath string `json:"notebook_path"`
-		Path         string `json:"path"`
-		Pattern      string `json:"pattern"`
-		Command      string `json:"command"`
-		OldString    string `json:"old_string"`
-		NewString    string `json:"new_string"`
-		Content      string `json:"content"`
-		Offset       int    `json:"offset"`
-		Limit        int    `json:"limit"`
-		Edits        []struct {
-			OldString string `json:"old_string"`
-			NewString string `json:"new_string"`
-		} `json:"edits"`
-	}
+	var in toolInput
 	_ = json.Unmarshal(input, &in)
-	st := &Step{ID: id, Kind: kinds[name], Path: cmp.Or(in.FilePath, in.NotebookPath), Command: in.Command}
-	if st.Kind == "" {
-		st.Kind = kindOther
-	}
+	st := &Step{ID: id, Kind: cmp.Or(kinds[name], kindOther), Path: cmp.Or(in.FilePath, in.NotebookPath), Command: in.Command}
 	switch st.Kind {
 	case kindRead:
-		if in.Offset > 0 || in.Limit > 0 {
-			st.lines.From = max(in.Offset, 1)
-			if in.Limit > 0 {
-				st.lines.To = st.lines.From + in.Limit - 1
-			}
-		}
+		st.lines = in.lines()
 	case kindEdit:
-		st.Old, st.New = in.OldString, cmp.Or(in.NewString, in.Content)
-		for _, e := range in.Edits {
-			st.Old += e.OldString + "\n"
-			st.New += e.NewString + "\n"
-		}
-		st.Old, st.New = clip(st.Old, false), clip(st.New, false)
+		st.Old, st.New = in.edit()
 	case kindSearch:
 		if st.Path == "" && in.Path != "" && !strings.ContainsAny(in.Path, "*?") {
 			st.Path = in.Path
@@ -332,6 +322,28 @@ func toolStep(id, name string, input json.RawMessage) *Step {
 	arg := cmp.Or(firstLine(in.Command), in.Pattern, path.Base(st.Path))
 	st.Title = strings.TrimSpace(name + " " + arg)
 	return st
+}
+
+// lines is the stretch a Read call asked for; zero for the whole file.
+func (in toolInput) lines() Read {
+	var r Read
+	if in.Offset > 0 || in.Limit > 0 {
+		r.From = max(in.Offset, 1)
+		if in.Limit > 0 {
+			r.To = r.From + in.Limit - 1
+		}
+	}
+	return r
+}
+
+// edit is the text an edit replaced and its replacement, clipped.
+func (in toolInput) edit() (old, new string) {
+	old, new = in.OldString, cmp.Or(in.NewString, in.Content)
+	for _, e := range in.Edits {
+		old += e.OldString + "\n"
+		new += e.NewString + "\n"
+	}
+	return clip(old, false), clip(new, false)
 }
 
 // resultText reads a tool result's content: a string, or a list of blocks

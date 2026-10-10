@@ -117,28 +117,41 @@ func (r *Repo) Diff(base string) ([]FileDiff, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse diff: %w", err)
 	}
-	var fds []FileDiff
+	fds := make([]FileDiff, 0, len(files))
 	for _, f := range files {
-		fd := FileDiff{OldPath: f.OldName, NewPath: f.NewName, Status: Modified, Binary: f.IsBinary}
-		switch {
-		case f.IsNew:
-			fd.Status = Added
-		case f.IsDelete:
-			fd.Status = Deleted
-		case f.IsRename:
-			fd.Status = Renamed
-		}
-		for _, tf := range f.TextFragments {
-			fd.Hunks = append(fd.Hunks, Hunk{int(tf.OldPosition), int(tf.OldLines), int(tf.NewPosition), int(tf.NewLines)})
-		}
-		fds = append(fds, fd)
+		fds = append(fds, fileDiff(f))
 	}
-
-	untracked, err := run(r.Dir, "ls-files", "--others", "--exclude-standard", "-z")
+	added, err := r.untrackedDiffs()
 	if err != nil {
 		return nil, err
 	}
-	for _, p := range strings.Split(string(untracked), "\x00") {
+	return append(fds, added...), nil
+}
+
+func fileDiff(f *gitdiff.File) FileDiff {
+	fd := FileDiff{OldPath: f.OldName, NewPath: f.NewName, Status: Modified, Binary: f.IsBinary}
+	switch {
+	case f.IsNew:
+		fd.Status = Added
+	case f.IsDelete:
+		fd.Status = Deleted
+	case f.IsRename:
+		fd.Status = Renamed
+	}
+	for _, tf := range f.TextFragments {
+		fd.Hunks = append(fd.Hunks, Hunk{int(tf.OldPosition), int(tf.OldLines), int(tf.NewPosition), int(tf.NewLines)})
+	}
+	return fd
+}
+
+// untrackedDiffs lists the untracked files git does not ignore as added.
+func (r *Repo) untrackedDiffs() ([]FileDiff, error) {
+	out, err := run(r.Dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	var fds []FileDiff
+	for _, p := range strings.Split(string(out), "\x00") {
 		if p == "" {
 			continue
 		}

@@ -181,24 +181,30 @@ func (s Snapshot) RoundsNote() string {
 	if s.ended == cut {
 		left[last-1] += " (stopped)"
 	}
-	text := fmt.Sprintf("%d rounds, left after each: %s.", last, strings.Join(left, " → "))
-	switch s.ended {
-	case stalled:
-		text += " Stopped: as many left as the round before."
-	case capped:
-		text += fmt.Sprintf(" Stopped at the %d-round limit.", maxRounds)
-	case failed:
-		why, _, _ := strings.Cut(s.roundErr, "\n")
-		text += fmt.Sprintf(" Stopped: round %d ended with an error: %s.", last, strings.TrimRight(why, ": ."))
-	case halted:
-		text += " Stopped by you; Claude did not go again."
-	case cut:
-		text += fmt.Sprintf(" Stopped by you during round %d.", last)
-	}
+	text := fmt.Sprintf("%d rounds, left after each: %s.", last, strings.Join(left, " → ")) + s.endedWhy(last)
 	if s.Undone > 0 {
 		text += fmt.Sprintf(" Round %d left more, so its changes were undone.", s.Undone)
 	}
 	return text
+}
+
+// endedWhy says why the loop stopped after last rounds; "" when it was clean
+// or a round was undone, which RoundsNote says itself.
+func (s Snapshot) endedWhy(last int) string {
+	switch s.ended {
+	case stalled:
+		return " Stopped: as many left as the round before."
+	case capped:
+		return fmt.Sprintf(" Stopped at the %d-round limit.", maxRounds)
+	case failed:
+		why, _, _ := strings.Cut(s.roundErr, "\n")
+		return fmt.Sprintf(" Stopped: round %d ended with an error: %s.", last, strings.TrimRight(why, ": ."))
+	case halted:
+		return " Stopped by you; Claude did not go again."
+	case cut:
+		return fmt.Sprintf(" Stopped by you during round %d.", last)
+	}
+	return ""
 }
 
 // SummaryTitle heads Claude's summary, naming its round when a later round
