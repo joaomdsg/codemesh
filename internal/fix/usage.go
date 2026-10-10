@@ -1,6 +1,8 @@
 package fix
 
 import (
+	"cmp"
+	"fmt"
 	"maps"
 	"strings"
 )
@@ -83,13 +85,14 @@ func (u *Usage) add(id, model string, t tokens) {
 }
 
 // settle replaces the estimate with Claude's tally. A resumed session's
-// tally covers its earlier rounds too, from Claude Code 2.1.277 on; one
-// smaller than the last covers only its own call and adds to it.
+// tally covers its earlier rounds too, from Claude Code 2.1.277 on. An older
+// Claude Code's covers only its own call, as does one smaller than the last,
+// from a round that did not exit cleanly; those add to the last.
 func (u *Usage) settle(by map[string]tally) {
 	if len(by) == 0 {
 		return
 	}
-	if total(by) < total(u.settled) {
+	if !restoresTotals(u.Version) || total(by) < total(u.settled) {
 		by = sum(u.settled, by)
 	}
 	u.settled = by
@@ -101,6 +104,16 @@ func (u *Usage) settle(by map[string]tally) {
 	u.Models, u.Exact = models, true
 }
 
+// restoresTotals reports whether Claude Code version v carries a session's
+// totals into a resumed call; a version it cannot read is taken as current.
+func restoresTotals(v string) bool {
+	var major, minor, patch int
+	if _, err := fmt.Sscanf(v, "%d.%d.%d", &major, &minor, &patch); err != nil {
+		return true
+	}
+	return cmp.Or(cmp.Compare(major, 2), cmp.Compare(minor, 1), cmp.Compare(patch, 277)) >= 0
+}
+
 func total(by map[string]tally) (n int) {
 	for _, t := range by {
 		n += t.Input + t.Output + t.CacheRead + t.CacheWrite
@@ -109,7 +122,8 @@ func total(by map[string]tally) (n int) {
 }
 
 func sum(a, b map[string]tally) map[string]tally {
-	out := maps.Clone(a)
+	out := make(map[string]tally, len(a)+len(b))
+	maps.Copy(out, a)
 	for name, t := range b {
 		s := out[name]
 		out[name] = tally{Input: s.Input + t.Input, Output: s.Output + t.Output, CacheRead: s.CacheRead + t.CacheRead,

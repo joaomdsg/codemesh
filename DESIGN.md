@@ -256,7 +256,7 @@ matters, what to do and how to check it.
    from the reply's tokens at list price (`internal/fix/usage.go`, which a
    price change must update), until Claude's own tally replaces it at the
    end of each round. A resumed session's tally covers every round from
-   Claude Code 2.1.277 on; a smaller one, from an older Claude Code or a
+   Claude Code 2.1.277 on; an older Claude Code's, or a smaller one from a
    round that did not exit cleanly, covers only its call and is added.
 6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
    target in a Makefile or justfile, else `go build ./... && go test ./...`

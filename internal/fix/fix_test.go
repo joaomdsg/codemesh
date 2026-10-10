@@ -188,6 +188,11 @@ func TestUsage_settle_addsATallyThatCoversOnlyItsOwnCall(t *testing.T) {
 	u.settle(map[string]tally{"m": {Input: 30, USD: 0.3}})
 	assert.Equal(t, 180, u.Models["m"].Input, "a smaller one does not, as before Claude Code 2.1.277")
 	assert.InDelta(t, 1.8, u.Models["m"].USD, 1e-9)
+
+	old := Usage{Version: "2.1.276"}
+	old.settle(map[string]tally{"m": {Input: 100}})
+	old.settle(map[string]tally{"m": {Input: 150}})
+	assert.Equal(t, 250, old.Models["m"].Input, "before 2.1.277 each call's tally is its own, larger or not")
 }
 
 func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
