@@ -213,6 +213,19 @@ func TestInside_takesNamesStartingWithDotsAsInside(t *testing.T) {
 	}
 }
 
+func TestTree_showsALinkAsItsTarget(t *testing.T) {
+	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n"}, nil)
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("SECRET\n"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(wt, "link")))
+	require.NoError(t, syscall.Mkfifo(filepath.Join(wt, "fifo"), 0o600))
+
+	cs := newTree(wt, wt).changes()
+	require.Len(t, cs, 1, "a fifo has no content to show, and is not read")
+	assert.Equal(t, "link", cs[0].Path)
+	assert.Equal(t, outside, cs[0].New, "the target, as git stores it")
+}
+
 func TestTree_readsTheLinesAShellCommandNames(t *testing.T) {
 	b := "package m\n" + strings.Repeat("x\n", 9)
 	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n", "b.go": b}, nil)

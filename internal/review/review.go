@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -150,26 +149,10 @@ func (b *builder) lines(s *code.Snapshot, rel string) []string {
 	return l
 }
 
-// readLines reads a file's lines. A link reads as its target, as git shows
-// it, never what it points to: that may be outside the tree, huge or endless.
-// Anything else that is not a regular file has no lines.
+// readLines reads a file's lines as git stores it.
 func readLines(p string) []string {
-	info, err := os.Lstat(p)
-	if err != nil {
-		return nil
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		target, err := os.Readlink(p)
-		if err != nil {
-			return nil
-		}
-		return []string{target}
-	}
-	if !info.Mode().IsRegular() {
-		return nil
-	}
-	data, err := os.ReadFile(p)
-	if err != nil {
+	data, err := gitx.Content(p)
+	if err != nil || data == nil {
 		return nil
 	}
 	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")

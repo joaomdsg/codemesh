@@ -76,7 +76,7 @@ func (t *tree) diff(p string) []Change {
 		head, _ := gitIn(t.wt, "show", "HEAD:"+p)
 		before = string(head)
 	}
-	data, _ := os.ReadFile(filepath.Join(t.wt, p))
+	data, _ := gitx.Content(filepath.Join(t.wt, p))
 	after := string(data)
 	if after == before {
 		return nil
