@@ -50,8 +50,10 @@ func loopAgent(t *testing.T, init bool, resumed string) (agent, calls string) {
 		`echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t'$$'","name":"Bash","input":{"command":"true"}}]}}'`+"\n"+
 		`case "$*" in *"--resume s1"*)`+"\n"+
 		`  printf '%s' "$2" > `+calls+"/followup\n"+
-		"  "+resumed+" ;;\n"+
-		`*) printf 'package m\n\nfunc C(a, b, c, d, e, f int) int { return a }\n' > c.go ;;`+"\n"+
+		"  "+resumed+"\n"+
+		`  echo '{"type":"result","result":"second"}' ;;`+"\n"+
+		`*) printf 'package m\n\nfunc C(a, b, c, d, e, f int) int { return a }\n' > c.go`+"\n"+
+		`  echo '{"type":"result","result":"first"}' ;;`+"\n"+
 		"esac\n"), 0o755))
 	return agent, calls
 }
@@ -102,6 +104,8 @@ func TestRun_feedsBackWhatTheChangeLeftUntilItIsClean(t *testing.T) {
 	require.NoError(t, err, "the second round resumes Claude's session")
 	assert.Contains(t, string(followup), "many-params C", "it is told what the first round left")
 	assert.Empty(t, s.Review.Introduced)
+	assert.Equal(t, "second", s.Summary)
+	assert.False(t, s.CanPR(), "no origin to push to")
 	require.Len(t, s.Steps, 2)
 	assert.Equal(t, []int{1, 2}, []int{s.Steps[0].Round, s.Steps[1].Round})
 }
@@ -131,6 +135,9 @@ func TestRun_undoesARoundThatLeavesMore(t *testing.T) {
 	assert.NotContains(t, string(c), "func D", "and so is the worktree a pull request would commit")
 	assert.Len(t, s.Review.Introduced, 1)
 	assert.Equal(t, "2 rounds, left after each: 1 → 2. Round 2 left more, so its changes were undone.", s.RoundsNote())
+	assert.Equal(t, "first", s.Summary, "the summary of the round kept")
+	assert.Equal(t, "Claude's summary", s.SummaryTitle())
+	assert.Equal(t, 2, s.Undone)
 }
 
 func TestRun_keepsTheChangeWhenALaterRoundFails(t *testing.T) {
@@ -143,7 +150,9 @@ func TestRun_keepsTheChangeWhenALaterRoundFails(t *testing.T) {
 	require.NotNil(t, s.After)
 	assert.Len(t, s.Review.Introduced, 1)
 	assert.Equal(t, failed, s.ended)
-	assert.Equal(t, "2 rounds, left after each: 1 → 1. Stopped: round 2 ended with an error.", s.RoundsNote())
+	assert.Equal(t, "2 rounds, left after each: 1 → 1. Stopped: round 2 ended with an error: claude: exit status 1.", s.RoundsNote())
+	assert.Equal(t, "first", s.Summary)
+	assert.Equal(t, "Claude's summary, from round 1", s.SummaryTitle(), "round 2 left no summary of its own")
 }
 
 func TestRun_endsAfterOneRoundWithoutASessionToResume(t *testing.T) {
@@ -163,6 +172,12 @@ func TestSnapshot_roundsSayWhatEachLeftAndWhyTheLoopStopped(t *testing.T) {
 	assert.Equal(t, "2 rounds, left after each: 2 → 0.", Snapshot{rounds: []int{2, 0}, ended: clean}.RoundsNote())
 	assert.Equal(t, "5 rounds, left after each: 5 → 4 → 3 → 2 → 1. Stopped at the 5-round limit.",
 		Snapshot{rounds: []int{5, 4, 3, 2, 1}, ended: capped}.RoundsNote())
+	assert.Equal(t, "2 rounds, left after each: 2 → 1. Stopped by you; Claude did not go again.",
+		Snapshot{rounds: []int{2, 1}, ended: halted}.RoundsNote())
+	assert.Equal(t, "2 rounds, left after each: 2 → 2 (stopped). Stopped by you during round 2.",
+		Snapshot{rounds: []int{2, 2}, ended: cut}.RoundsNote())
+	assert.Equal(t, "2 rounds, left after each: 2 → 2. Stopped: round 2 ended with an error: boom.",
+		Snapshot{rounds: []int{2, 2}, ended: failed, roundErr: "boom\nmore"}.RoundsNote(), "the first line of the error")
 	assert.Empty(t, Snapshot{rounds: []int{0}, ended: clean}.RoundsNote())
 	assert.Equal(t, "round 2 of up to 5", Snapshot{State: Working, Round: 2}.RoundsLabel())
 	assert.Equal(t, "2 rounds", Snapshot{State: Done, rounds: []int{2, 2}}.RoundsLabel())
@@ -209,7 +224,8 @@ func TestRun_stopInALaterRoundKeepsWhatItHas(t *testing.T) {
 	s := r.Snapshot()
 	assert.Equal(t, Stopped, s.State)
 	assert.Equal(t, []int{1, 1}, s.rounds)
-	assert.Empty(t, s.ended)
+	assert.Equal(t, cut, s.ended)
+	assert.Equal(t, "2 rounds, left after each: 1 → 1 (stopped). Stopped by you during round 2.", s.RoundsNote())
 	require.NotNil(t, s.After, "what Claude changed so far is analysed")
 }
 
@@ -219,11 +235,13 @@ func TestRun_stopWhileCheckingEndsTheLoop(t *testing.T) {
 	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 2\n"})
 	require.Eventually(t, func() bool { return r.Snapshot().State == Checking }, time.Minute, 20*time.Millisecond)
 	r.Stop()
+	assert.True(t, r.Snapshot().Stopping, "the page can say the stop is coming")
 	require.Eventually(t, func() bool { return !r.Snapshot().Live() }, time.Minute, 20*time.Millisecond)
 
 	s := r.Snapshot()
 	assert.Equal(t, Done, s.State, "the round finished; its result can still become a pull request")
 	assert.Equal(t, []int{1}, s.rounds)
 	assert.NoFileExists(t, filepath.Join(calls, "followup"), "Claude does not go again")
-	assert.Equal(t, "Stopped, so Claude does not go again.", s.Events[len(s.Events)-1].Text)
+	assert.Equal(t, halted, s.ended)
+	assert.Equal(t, "Stopped by you; Claude did not go again.", s.RoundsNote())
 }

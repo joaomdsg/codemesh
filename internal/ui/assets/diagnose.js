@@ -422,7 +422,7 @@
     s.clip.attr("x", label).attr("y", 0).attr("width", W - label - 8).attr("height", H);
     const draw = () => {
       s.markG.selectAll("rect.rp-mark").data(steps).join("rect")
-        .attr("class", (st, i) => "rp-mark rk-" + st.k + (st.fail ? " fail" : "") + (i === s.i ? " on" : ""))
+        .attr("class", (st, i) => "rp-mark rk-" + st.k + (st.fail ? " fail" : "") + (st.round === s.r.undone ? " undone" : "") + (i === s.i ? " on" : ""))
         .attr("x", (st) => s.x(st.t0))
         .attr("y", (st) => y(LANES.includes(st.k) ? st.k : "other") + 2)
         .attr("width", (st) => Math.max(3, s.x(st.t0 + span(st)) - s.x(st.t0)))
@@ -433,7 +433,7 @@
       s.markG.selectAll("line.rp-round").data(starts).join("line").attr("class", "rp-round")
         .attr("x1", (st) => s.x(st.t0) - 2).attr("x2", (st) => s.x(st.t0) - 2).attr("y1", 0).attr("y2", H - 14);
       s.markG.selectAll("text.rp-round-label").data(starts).join("text").attr("class", "rp-round-label")
-        .attr("x", (st) => s.x(st.t0)).attr("y", 10).text((st) => "round " + st.round);
+        .attr("x", (st) => s.x(st.t0) + 4).attr("y", 10).text((st) => "round " + st.round + (st.round === s.r.undone ? " · undone" : ""));
       const ticks = s.x.ticks(Math.max(2, Math.floor(W / 120)));
       s.lsvg.selectAll("text.rp-tick").data(ticks).join("text").attr("class", "rp-tick")
         .attr("x", (t) => s.x(t)).attr("y", H - 4).text((t) => clock(t));
@@ -488,7 +488,7 @@
     s.listBox.selectAll("div.rp-empty").data(steps.length ? [] : [0]).join("div").attr("class", "rp-empty")
       .text("Claude has not acted yet.");
     s.listBox.selectAll("article.rp-card").data(steps).join("article")
-      .attr("class", (st, i) => "rp-card rk-" + st.k + (st.fail ? " fail" : ""))
+      .attr("class", (st, i) => "rp-card rk-" + st.k + (st.fail ? " fail" : "") + (st.round === s.r.undone ? " undone" : ""))
       .each(function (st, i) {
         const sig = [st.t1, st.out ? st.out.length : 0, st.fail].join("/");
         if (this.__sig === sig) return;
@@ -600,6 +600,8 @@
       edits.set(file, (edits.get(file) || 0) + 1);
     };
     steps.forEach((st, j) => {
+      // An undone round left nothing in the tree the map shows.
+      if (st.round === s.r.undone) return;
       const diffs = st.diffs || [];
       const reads = st.reads || [];
       // A read says which lines it took; its tool's file would light all of it.
@@ -615,6 +617,7 @@
     // rest of it, which keeps only a faint tint.
     const lines = new Map(), now = new Set();
     steps.forEach((st, j) => {
+      if (st.round === s.r.undone) return;
       for (const ch of st.diffs || []) {
         for (const [id, n] of Object.entries(ch.decls || {})) {
           const di = s.byId.get(id);

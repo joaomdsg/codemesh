@@ -15,7 +15,10 @@ type replay struct {
 	Map   diag         `json:"map"`
 	Steps []replayStep `json:"steps"`
 	Live  bool         `json:"live"`
-	Now   int64        `json:"now"` // ms since the start
+	// Undone is the round whose changes were undone for leaving more; its
+	// steps stay in the replay, marked.
+	Undone int   `json:"undone,omitempty"`
+	Now    int64 `json:"now"` // ms since the start
 }
 
 type replayStep struct {
@@ -75,7 +78,7 @@ func replayOf(a *live.Analysis, s fix.Snapshot) replay {
 	for _, d := range start.Decls() {
 		decls[d.File] = append(decls[d.File], d)
 	}
-	return replay{Map: diagOf(base, nil, ""), Steps: stepsOf(s.Steps, decls), Now: s.Took.Milliseconds(), Live: s.Live()}
+	return replay{Map: diagOf(base, nil, ""), Steps: stepsOf(s.Steps, decls), Now: s.Took.Milliseconds(), Live: s.Live(), Undone: s.Undone}
 }
 
 // stepsOf lays out the steps with the declarations each read and edit

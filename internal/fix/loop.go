@@ -25,6 +25,8 @@ const (
 	undone  = "undone"  // a round left more than the one before, and was undone
 	capped  = "capped"  // maxRounds rounds ran
 	failed  = "failed"  // Claude failed in a round after the first
+	halted  = "halted"  // stopped during a round's checks; the round finished
+	cut     = "cut"     // stopped while Claude worked; the round was cut short
 )
 
 // nextRound decides whether Claude goes again after round n left left and
@@ -77,23 +79,22 @@ type outcome struct {
 	left            int
 	stopped, failed bool
 	sha             string
+	summary         string // Claude's summary as the round was kept
+	summaryRound    int
 }
 
 // settle ends round n: it undoes the round when it left more than the one
 // kept before it, finishes the run when Claude does not go again, and
 // otherwise keeps the round. It reports whether Claude goes again.
 func (r *Run) settle(ctx context.Context, n int, now outcome, kept *outcome) bool {
-	if now.stopped && r.Snapshot().State == Checking {
-		r.note("Stopped, so Claude does not go again.")
-	}
 	more, ended := r.endRound(now.left, now.stopped, now.failed)
 	if ended == undone {
 		if err := r.undo(ctx, kept.sha); err != nil {
 			r.fail(err)
 			return false
 		}
-		r.note(fmt.Sprintf("Round %d left more than round %d, so its changes were undone.", n, n-1))
 		now = *kept
+		r.set(func() { r.summary, r.summaryRound, r.undone = now.summary, now.summaryRound, n })
 	}
 	if !more {
 		r.finish(now.after, now.rev)
@@ -105,6 +106,9 @@ func (r *Run) settle(ctx context.Context, n int, now outcome, kept *outcome) boo
 		return false
 	}
 	now.sha = sha
+	r.mu.Lock()
+	now.summary, now.summaryRound = r.summary, r.summaryRound
+	r.mu.Unlock()
 	*kept = now
 	return true
 }
@@ -158,25 +162,48 @@ func (s Snapshot) RoundsLabel() string {
 }
 
 // RoundsNote says how much each round left and why the loop stopped when it
-// was not clean; "" for a single round.
+// was not clean; for a single round, only that it was stopped.
 func (s Snapshot) RoundsNote() string {
 	if len(s.rounds) < 2 {
+		if s.ended == halted {
+			return "Stopped by you; Claude did not go again."
+		}
 		return ""
 	}
 	left := make([]string, len(s.rounds))
 	for i, n := range s.rounds {
 		left[i] = strconv.Itoa(n)
 	}
-	text := fmt.Sprintf("%d rounds, left after each: %s.", len(s.rounds), strings.Join(left, " → "))
+	last := len(s.rounds)
+	if s.ended == cut {
+		left[last-1] += " (stopped)"
+	}
+	text := fmt.Sprintf("%d rounds, left after each: %s.", last, strings.Join(left, " → "))
 	switch s.ended {
 	case stalled:
 		text += " Stopped: as many left as the round before."
 	case undone:
-		text += fmt.Sprintf(" Round %d left more, so its changes were undone.", len(s.rounds))
+		text += fmt.Sprintf(" Round %d left more, so its changes were undone.", last)
 	case capped:
 		text += fmt.Sprintf(" Stopped at the %d-round limit.", maxRounds)
 	case failed:
-		text += fmt.Sprintf(" Stopped: round %d ended with an error.", len(s.rounds))
+		why, _, _ := strings.Cut(s.roundErr, "\n")
+		text += fmt.Sprintf(" Stopped: round %d ended with an error: %s.", last, strings.TrimRight(why, ": ."))
+	case halted:
+		text += " Stopped by you; Claude did not go again."
+	case cut:
+		text += fmt.Sprintf(" Stopped by you during round %d.", last)
 	}
 	return text
+}
+
+// SummaryTitle heads Claude's summary, naming its round when a later round
+// failed or was stopped before summing up.
+func (s Snapshot) SummaryTitle() string { return "Claude's summary" + s.summaryFrom() }
+
+func (s Snapshot) summaryFrom() string {
+	if n := len(s.rounds); s.Undone == 0 && s.SummaryRound > 0 && s.SummaryRound < n {
+		return fmt.Sprintf(", from round %d", s.SummaryRound)
+	}
+	return ""
 }

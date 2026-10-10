@@ -25,7 +25,7 @@ type PR struct {
 // CanPR reports whether a run may become a pull request: Claude finished,
 // the check passes on the result, and there is a branch to target.
 func (s Snapshot) CanPR() bool {
-	return s.State == Done && s.After != nil && s.After.CheckOK && s.Base != ""
+	return s.State == Done && s.After != nil && s.After.CheckOK && s.Base != "" && s.Origin
 }
 
 // OpenPR commits the run's change on a new branch, pushes it to origin and
@@ -34,13 +34,14 @@ func (s Snapshot) CanPR() bool {
 // origin lacks it. It returns at once; the outcome shows in the snapshot.
 func (r *Run) OpenPR() {
 	r.mu.Lock()
-	s := Snapshot{State: r.state, After: r.after, Base: r.base}
+	s := Snapshot{State: r.state, Before: r.before, After: r.after, Base: r.base, Check: r.check, Summary: r.summary,
+		Origin: r.origin, rounds: r.rounds, SummaryRound: r.summaryRound, Undone: r.undone}
 	if !s.CanPR() || r.pr.Opening || r.pr.URL != "" {
 		r.mu.Unlock()
 		return
 	}
 	r.pr = PR{Opening: true, Branch: r.pr.Branch}
-	t := prText(r.p, r.check, r.before, r.after, r.summary)
+	t := prText(r.p, s)
 	r.bg.Add(1)
 	r.mu.Unlock()
 	r.updates.Publish(time.Now().UnixNano())
@@ -139,7 +140,8 @@ type text struct{ title, body string }
 
 // prText writes the pull request from the run: the problem, whether it is
 // gone, the check before and after, and Claude's own summary.
-func prText(p prognosis.Prognosis, c Check, before, after *Side, summary string) text {
+func prText(p prognosis.Prognosis, s Snapshot) text {
+	before, after := s.Before, s.After
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s** in `%s`: %s\n\n", p.Title, p.Name, p.Summary)
 	gone := true
@@ -157,10 +159,10 @@ func prText(p prognosis.Prognosis, c Check, before, after *Side, summary string)
 	if before.CheckOK {
 		was = "passed"
 	}
-	fmt.Fprintf(&b, "- `%s` %s before and passes after.\n", c.Name, was)
+	fmt.Fprintf(&b, "- `%s` %s before and passes after.\n", s.Check.Name, was)
 	fmt.Fprintf(&b, "- Places needing attention: %d before, %d after.\n", len(before.Prognoses), len(after.Prognoses))
-	if s := strings.TrimSpace(summary); s != "" {
-		b.WriteString("\n## Summary of the change\n\n" + s + "\n")
+	if sum := strings.TrimSpace(s.Summary); sum != "" {
+		b.WriteString("\n## Summary of the change" + s.summaryFrom() + "\n\n" + sum + "\n")
 	}
 	fmt.Fprintf(&b, "\n<sub>codemesh prognosis `%s`</sub>\n", p.Key)
 	return text{title: p.Title + ": " + p.Name, body: b.String()}

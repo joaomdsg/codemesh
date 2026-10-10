@@ -61,7 +61,7 @@ func (p *diagnosePage) result(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		smellDelta("New smells", "new", s.Review.Introduced),
 		smellDelta("Smells fixed", "gone", s.Review.Fixed),
 		via.When(s.Summary != "", func() h.H {
-			return group([]h.H{h.H3(h.Str("Claude's summary")), h.Div(h.Class("dx-claude"), markdown(s.Summary))})
+			return group([]h.H{h.H3(h.Str(s.SummaryTitle())), h.Div(h.Class("dx-claude"), markdown(s.Summary))})
 		}),
 		via.When(!s.After.CheckOK, func() h.H {
 			return h.Details(h.Class("dx-fold"), h.Summary(h.Str(s.Check.Name+" output")), h.Pre(h.Class("code dx-out"), h.Str(s.After.Output)))

@@ -66,7 +66,7 @@ func (r *Run) apply(e parsed, at time.Duration) {
 		r.settleStep(*e.result, at)
 	case e.final != nil:
 		r.set(func() {
-			r.summary = e.final.summary
+			r.summary, r.summaryRound = e.final.summary, r.round
 			r.usage.settle(e.final.by)
 		})
 	case e.init != nil:

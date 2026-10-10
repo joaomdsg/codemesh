@@ -158,6 +158,12 @@ type Run struct {
 	round    int   // the round under way, from 1
 	rounds   []int // what each round left
 	ended    string
+	roundErr string // why a round after the first failed
+	stopping bool   // Stop was pressed and the run has yet to wind down
+	origin   bool   // the repository has a remote to open a pull request on
+	// summaryRound is the round Claude's summary came from; undone is the
+	// round undone, 0 for none.
+	summaryRound, undone int
 }
 
 // Snapshot is a consistent copy of a run's progress.
@@ -182,6 +188,12 @@ type Snapshot struct {
 	Round  int
 	rounds []int
 	ended  string
+	// Stopping says Stop was pressed while the round's checks still run.
+	Stopping     bool
+	SummaryRound int // the round Summary describes
+	Undone       int // the round undone for leaving more, 0 for none
+	roundErr     string
+	Origin       bool // the repository has an origin remote to open a pull request on
 }
 
 // Live reports whether the run is still going: setting up, editing or checking.
@@ -203,11 +215,15 @@ func (r *Run) Snapshot() Snapshot {
 	}
 	return Snapshot{Key: r.Key, State: r.state, Events: append([]Event(nil), r.events...), Steps: append([]Step(nil), r.steps...), Err: r.err,
 		Usage: r.usage.clone(), Summary: r.summary, Took: took, Before: r.before, After: r.after, Now: r.now, NowN: r.nowN, Review: r.review, Check: r.check, Base: r.base, PR: r.pr,
-		Round: r.round, rounds: slices.Clone(r.rounds), ended: r.ended}
+		Round: r.round, rounds: slices.Clone(r.rounds), ended: r.ended, roundErr: r.roundErr,
+		Stopping: r.stopping && r.state == Checking, SummaryRound: r.summaryRound, Undone: r.undone, Origin: r.origin}
 }
 
 // Stop ends Claude early; the run keeps what it had.
-func (r *Run) Stop() { r.stop() }
+func (r *Run) Stop() {
+	r.set(func() { r.stopping = true })
+	r.stop()
+}
 
 func (r *Run) set(f func()) {
 	r.mu.Lock()
@@ -365,7 +381,7 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 			return
 		}
 		if err != nil {
-			r.note(fmt.Sprintf("Round %d ended with an error, so the change stands as it is: %v", n, err))
+			r.set(func() { r.roundErr = err.Error() })
 		}
 		after, rev, ok := r.result(life, before)
 		if !ok {
@@ -397,6 +413,12 @@ func (r *Run) endRound(left int, stopped, failed bool) (more bool, ended string)
 		}
 		r.rounds = append(r.rounds, left)
 		more, r.ended = nextRound(r.round, prev, left, stopped, failed)
+		if stopped {
+			r.ended = halted
+			if r.state == Stopped {
+				r.ended = cut
+			}
+		}
 		ended = r.ended
 		resumable = r.usage.Session != ""
 		if more && resumable {
@@ -469,7 +491,8 @@ func (r *Run) open(dir string) (*gitx.Repo, string, bool) {
 		r.fail(err)
 		return nil, "", false
 	}
-	r.set(func() { r.repo, r.head, r.base = repo.Dir, head, base })
+	_, originErr := command(context.Background(), repo.Dir, nil, "git", "remote", "get-url", "origin")
+	r.set(func() { r.repo, r.head, r.base, r.origin = repo.Dir, head, base, originErr == nil })
 	r.note("Copying the last commit (" + head[:7] + ") into a throwaway worktree. Uncommitted edits are not included.")
 	return repo, head, true
 }

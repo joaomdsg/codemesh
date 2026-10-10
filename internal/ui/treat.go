@@ -45,7 +45,7 @@ func (p *diagnosePage) runHead(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		h.Div(h.Class("dx-acts"),
 			// Stopped during the checks, the round still finishes; Claude
 			// just does not go again.
-			via.When(s.Live(), func() h.H {
+			via.When(s.Live() && !s.Stopping, func() h.H {
 				return h.Button(h.Class("btn"), on.Click(on.Bind(p.Stop, g.Key)), h.Str("Stop"))
 			}),
 			p.prAct(g, s),
@@ -60,6 +60,9 @@ func (p *diagnosePage) runHead(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 // runNote is Claude's latest word while the run is going. It stays up for the
 // whole run, so the replay below it does not shift between phases.
 func runNote(s fix.Snapshot) string {
+	if s.Stopping {
+		return "Stopping once the checks finish."
+	}
 	waiting := s.Live() || s.State == fix.Stopped && s.After == nil // a stopped run still checks what it has
 	if n := len(s.Events); n > 0 && waiting {
 		return s.Events[n-1].Text
@@ -76,7 +79,7 @@ func runBanners(s fix.Snapshot) []h.H {
 		out = append(out, h.P(h.Class("banner err"), h.Str("It did not finish: "+s.Err.Error()+". Nothing in your files changed. Discard and try again.")))
 	}
 	if s.PR.Err != nil {
-		out = append(out, h.P(h.Class("banner err"), h.Str("The pull request did not open: "+s.PR.Err.Error()+". The change is still here; you can try again.")))
+		out = append(out, h.P(h.Class("banner err"), h.Str("The pull request did not open: "+strings.TrimRight(s.PR.Err.Error(), ". ")+". The change is still here; you can try again.")))
 	}
 	return out
 }
@@ -105,6 +108,8 @@ func (p *diagnosePage) prAct(g *prognosis.Prognosis, s fix.Snapshot) h.H {
 		return nil
 	case s.Base == "":
 		return h.Span(h.Class("hint"), h.Str("No PR: the repository was on no branch when the run started."))
+	case !s.Origin:
+		return h.Span(h.Class("hint"), h.Str("No PR: the repository has no origin remote."))
 	}
 	return h.Span(h.Class("hint"), h.Str("A PR needs the checks to pass."))
 }

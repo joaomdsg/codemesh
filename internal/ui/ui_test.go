@@ -374,6 +374,7 @@ func TestDiagnose_replaysWhatTheAgentDid(t *testing.T) {
 		`echo '{"type":"assistant","message":{"id":"m1","model":"claude-haiku-5-5","usage":{"input_tokens":2000000,"output_tokens":4},"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"calc/calc.go"}}]}}'`+"\n"+
 		`printf 'package calc\n\nfunc Extra() int { return 1 }\n' > calc/extra.go`+"\n"), 0o755))
 	e.runs.Agent = agent
+	require.NoError(t, testrepo.Git(e.runs.Dir, "remote", "add", "origin", t.TempDir()), "a pull request needs a remote")
 	const key = "complex:example.com/calc/calc.tangle"
 	g := findPrognosis(t, e, key)
 	run := e.runs.Start(g)

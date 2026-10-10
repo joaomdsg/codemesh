@@ -590,6 +590,7 @@ kbd {
 .rp-card { border: 1px solid var(--line-soft); border-left: 3px solid var(--line); border-radius: 4px; padding: var(--sp1) var(--sp2); cursor: pointer; font-size: 13px; }
 .rp-card.on { border-color: var(--accent); border-left-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
 .rp-card.fail { border-left-color: var(--bad); }
+.rp-card.undone, .rp-mark.undone { opacity: 0.45; }
 .rp-card header { display: flex; gap: var(--sp2); align-items: baseline; }
 .rp-no { color: var(--muted); font: 11px var(--mono); min-width: 2ch; text-align: right; }
 .rp-kind { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; min-width: 5ch; }
@@ -613,7 +614,8 @@ kbd {
 .rp-lane-label { fill: var(--muted); font-size: 11px; }
 .rp-tick { fill: var(--muted); font: 10px var(--mono); text-anchor: middle; }
 .rp-round { stroke: var(--muted); stroke-dasharray: 3 3; }
-.rp-round-label { fill: var(--muted); font-size: 10px; }
+/* The halo keeps the label legible where it crosses a step's mark. */
+.rp-round-label { fill: var(--muted); font-size: 10px; paint-order: stroke; stroke: var(--bg); stroke-width: 3px; }
 .rp-mark { cursor: pointer; rx: 2; }
 .rp-mark.on { stroke: var(--ink); stroke-width: 1.5; }
 .rp-mark.fail { stroke: var(--bad); stroke-width: 1.5; }
