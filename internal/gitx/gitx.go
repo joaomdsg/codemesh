@@ -199,23 +199,6 @@ func (r *Repo) untracked(path string) (fd FileDiff, ok bool, err error) {
 	return fd, true, nil
 }
 
-// Content reads path as git stores it: a link as its target, never what it
-// points to, which may be outside the tree, huge or endless. Anything else
-// that is not a regular file has no content.
-func Content(path string) ([]byte, error) {
-	info, err := os.Lstat(path)
-	switch {
-	case err != nil:
-		return nil, err
-	case info.Mode()&os.ModeSymlink != 0:
-		target, err := os.Readlink(path)
-		return []byte(target), err
-	case !info.Mode().IsRegular():
-		return nil, nil
-	}
-	return os.ReadFile(path)
-}
-
 // Lines counts data's lines, the last one counted without its newline.
 func Lines(data []byte) int {
 	n := bytes.Count(data, []byte{'\n'})
