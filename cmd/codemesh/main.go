@@ -37,58 +37,74 @@ func main() {
 	}
 }
 
-func run() error {
-	addr := flag.String("addr", "localhost:7777", "address to serve on")
-	base := flag.String("base", "", "ref to review against (default: origin/HEAD, main or master)")
-	poll := flag.Duration("poll", time.Second, "how often to check the tree for changes")
-	agent := flag.String("agent", "claude", "command that treats a prognosis, called like claude -p")
+// options are the server's flags and the module to serve.
+type options struct {
+	addr, base, agent, dir string
+	poll                   time.Duration
+}
+
+func parseFlags() options {
+	var o options
+	flag.StringVar(&o.addr, "addr", "localhost:7777", "address to serve on")
+	flag.StringVar(&o.base, "base", "", "ref to review against (default: origin/HEAD, main or master)")
+	flag.DurationVar(&o.poll, "poll", time.Second, "how often to check the tree for changes")
+	flag.StringVar(&o.agent, "agent", "claude", "command that treats a prognosis, called like claude -p")
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "usage: codemesh [flags] [dir]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	dir := "."
+	o.dir = "."
 	if flag.NArg() > 0 {
-		dir = flag.Arg(0)
+		o.dir = flag.Arg(0)
 	}
+	return o
+}
+
+func run() error {
+	o := parseFlags()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	state, err := review.OpenState(live.StatePath(dir))
+	state, err := review.OpenState(live.StatePath(o.dir))
 	if err != nil {
 		return fmt.Errorf("review state: %w", err)
 	}
-	sweep(dir, log)
-	src := live.New(dir, *base, log)
+	sweep(o.dir, log)
+	src := live.New(o.dir, o.base, log)
 	defer src.Close()
 
-	ln, err := net.Listen("tcp", *addr)
+	ln, err := net.Listen("tcp", o.addr)
 	if err != nil {
 		return err
 	}
-	origin, err := originOf(*addr)
+	origin, err := originOf(o.addr)
 	if err != nil {
 		return err
 	}
-	runs := fix.NewRuns(dir)
-	runs.Agent = *agent
+	runs := fix.NewRuns(o.dir)
+	runs.Agent = o.agent
 	if self, err := os.Executable(); err == nil {
 		runs.Self = self
 	}
 	defer runs.Close()
 	srv := &http.Server{Handler: ui.New(src, state, runs, origin), ReadHeaderTimeout: 10 * time.Second}
+	log.Info("serving", "url", origin)
+	return serve(srv, ln, func(ctx context.Context) {
+		if a := src.Refresh(); a.Err != nil {
+			log.Error("first analysis failed", "err", a.Err)
+		}
+		go src.Watch(ctx, o.poll)
+	})
+}
 
+// serve serves on ln and starts watching until a signal or a server error,
+// then shuts the server down.
+func serve(srv *http.Server, ln net.Listener, watch func(context.Context)) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
-
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
-	log.Info("serving", "url", origin)
-
-	if a := src.Refresh(); a.Err != nil {
-		log.Error("first analysis failed", "err", a.Err)
-	}
-	go src.Watch(ctx, *poll)
-
+	watch(ctx)
 	select {
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {

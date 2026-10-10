@@ -164,8 +164,9 @@ func (s Snapshot) RoundsLabel() string {
 	return ""
 }
 
-// RoundsNote says how much each round left and why the loop stopped when it
-// was not clean; for a single round, only that it was stopped.
+// RoundsNote says how much each round left, why the loop stopped when it
+// was not clean, and which round was undone; for a single round, only that
+// it was stopped.
 func (s Snapshot) RoundsNote() string {
 	if len(s.rounds) < 2 {
 		if s.ended == halted {
