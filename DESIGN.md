@@ -255,7 +255,9 @@ matters, what to do and how to check it.
    in a fold. Its cost meter moves with each reply: an estimate, marked ≈,
    from the reply's tokens at list price (`internal/fix/usage.go`, which a
    price change must update), until Claude's own tally replaces it at the
-   end of each round; a resumed session's tally covers every round.
+   end of each round. A resumed session's tally covers every round from
+   Claude Code 2.1.277 on; a smaller one, from an older Claude Code or a
+   round that did not exit cleanly, covers only its call and is added.
 6. **The check** is the repository's own gate: `./ci.sh`, else a `ci`
    target in a Makefile or justfile, else `go build ./... && go test ./...`
    in the module, or `Pkg.test()` in a Julia package, with one precompile

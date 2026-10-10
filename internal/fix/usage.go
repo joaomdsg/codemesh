@@ -15,7 +15,8 @@ type Usage struct {
 	Session string
 	Exact   bool // the cost is Claude's own tally, not an estimate
 	Models  map[string]ModelUse
-	seen    map[string]bool // replies counted: stream-json repeats one per content block
+	seen    map[string]bool  // replies counted: stream-json repeats one per content block
+	settled map[string]tally // Claude's last tally, the session's so far
 }
 
 // ModelUse is one model's share of a run.
@@ -81,17 +82,40 @@ func (u *Usage) add(id, model string, t tokens) {
 	u.Models[model] = m
 }
 
-// settle replaces the estimate with Claude's tally.
+// settle replaces the estimate with Claude's tally. A resumed session's
+// tally covers its earlier rounds too, from Claude Code 2.1.277 on; one
+// smaller than the last covers only its own call and adds to it.
 func (u *Usage) settle(by map[string]tally) {
 	if len(by) == 0 {
 		return
 	}
+	if total(by) < total(u.settled) {
+		by = sum(u.settled, by)
+	}
+	u.settled = by
 	models := map[string]ModelUse{}
 	for name, t := range by {
 		models[name] = ModelUse{Calls: u.Models[name].Calls, Input: t.Input, CacheWrite: t.CacheWrite, CacheRead: t.CacheRead,
 			Output: t.Output, USD: t.USD, Priced: true}
 	}
 	u.Models, u.Exact = models, true
+}
+
+func total(by map[string]tally) (n int) {
+	for _, t := range by {
+		n += t.Input + t.Output + t.CacheRead + t.CacheWrite
+	}
+	return n
+}
+
+func sum(a, b map[string]tally) map[string]tally {
+	out := maps.Clone(a)
+	for name, t := range b {
+		s := out[name]
+		out[name] = tally{Input: s.Input + t.Input, Output: s.Output + t.Output, CacheRead: s.CacheRead + t.CacheRead,
+			CacheWrite: s.CacheWrite + t.CacheWrite, USD: s.USD + t.USD}
+	}
+	return out
 }
 
 // tokens is a reply's usage as stream-json reports it.

@@ -179,6 +179,17 @@ func running(t *testing.T, file string) bool {
 	return p.Signal(syscall.Signal(0)) == nil
 }
 
+func TestUsage_settle_addsATallyThatCoversOnlyItsOwnCall(t *testing.T) {
+	var u Usage
+	u.settle(map[string]tally{"m": {Input: 100, USD: 1}})
+	u.settle(map[string]tally{"m": {Input: 150, USD: 1.5}})
+	assert.Equal(t, 150, u.Models["m"].Input, "a resumed session's tally covers the rounds before")
+
+	u.settle(map[string]tally{"m": {Input: 30, USD: 0.3}})
+	assert.Equal(t, 180, u.Models["m"].Input, "a smaller one does not, as before Claude Code 2.1.277")
+	assert.InDelta(t, 1.8, u.Models["m"].USD, 1e-9)
+}
+
 func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
 	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n\nfunc A() int {\n\treturn 1\n}\n"}, nil)
 	tr := newTree(wt, wt)
