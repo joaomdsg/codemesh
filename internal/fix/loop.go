@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -20,7 +21,8 @@ const maxListed = 20
 // How a run's rounds ended; "" while it runs and when it was stopped.
 const (
 	clean   = "clean"   // the last round left nothing
-	stalled = "stalled" // a round left no fewer than the one before
+	stalled = "stalled" // a round left as many as the one before
+	undone  = "undone"  // a round left more than the one before, and was undone
 	capped  = "capped"  // maxRounds rounds ran
 	failed  = "failed"  // Claude failed in a round after the first
 )
@@ -35,7 +37,9 @@ func nextRound(n, prev, left int, stopped, broke bool) (more bool, ended string)
 		return false, failed
 	case left == 0:
 		return false, clean
-	case n > 1 && left >= prev:
+	case n > 1 && left > prev:
+		return false, undone
+	case n > 1 && left == prev:
 		return false, stalled
 	case n >= maxRounds:
 		return false, capped
@@ -65,6 +69,66 @@ func leftover(p prognosis.Prognosis, check string, before, after *Side, rev *rev
 	return out
 }
 
+// outcome is how a round ended: its analysed result, how much it left,
+// and the commit keep made of it.
+type outcome struct {
+	after           *Side
+	rev             *review.Review
+	left            int
+	stopped, failed bool
+	sha             string
+}
+
+// settle ends round n: it undoes the round when it left more than the one
+// kept before it, finishes the run when Claude does not go again, and
+// otherwise keeps the round. It reports whether Claude goes again.
+func (r *Run) settle(ctx context.Context, n int, now outcome, kept *outcome) bool {
+	more, ended := r.endRound(now.left, now.stopped, now.failed)
+	if ended == undone {
+		if err := r.undo(ctx, kept.sha); err != nil {
+			r.fail(err)
+			return false
+		}
+		r.note(fmt.Sprintf("Round %d left more than round %d, so its changes were undone.", n, n-1))
+		now = *kept
+	}
+	if !more {
+		r.finish(now.after, now.rev)
+		return false
+	}
+	sha, err := r.keep(ctx, n)
+	if err != nil {
+		r.fail(err)
+		return false
+	}
+	now.sha = sha
+	*kept = now
+	return true
+}
+
+// keep commits the worktree as it stands, so a worse round can be undone
+// back to it. A pull request folds these commits into one.
+func (r *Run) keep(ctx context.Context, n int) (string, error) {
+	if err := r.git(ctx, "add", "--all"); err != nil {
+		return "", err
+	}
+	// The worktree's repository may have no identity configured.
+	if err := r.git(ctx, "-c", "user.name=codemesh", "-c", "user.email=codemesh@localhost",
+		"commit", "--quiet", "--no-verify", "--allow-empty", "-m", fmt.Sprintf("codemesh round %d", n)); err != nil {
+		return "", err
+	}
+	out, err := command(ctx, r.wt, nil, "git", "rev-parse", "HEAD")
+	return strings.TrimSpace(out), err
+}
+
+// undo puts the worktree back to a commit keep made.
+func (r *Run) undo(ctx context.Context, rev string) error {
+	if err := r.git(ctx, "reset", "--quiet", "--hard", rev); err != nil {
+		return err
+	}
+	return r.git(ctx, "clean", "--quiet", "-fd")
+}
+
 // followUp is the prompt that resumes Claude's session with what its
 // change left.
 func followUp(left []string) string {
@@ -73,6 +137,7 @@ func followUp(left []string) string {
 	for _, l := range left {
 		fmt.Fprintf(&w, "- %s\n", l)
 	}
+	w.WriteString("\nA round that leaves more than this one is undone.")
 	w.WriteString("\nFix them without undoing what the change achieved. Do not commit and do not push. End with three lines saying what the whole change does and why.\n")
 	return w.String()
 }
@@ -102,7 +167,9 @@ func (s Snapshot) RoundsNote() string {
 	text := fmt.Sprintf("%d rounds, left after each: %s.", len(s.rounds), strings.Join(left, " → "))
 	switch s.ended {
 	case stalled:
-		text += " Stopped: no fewer left than the round before."
+		text += " Stopped: as many left as the round before."
+	case undone:
+		text += fmt.Sprintf(" Round %d left more, so its changes were undone.", len(s.rounds))
 	case capped:
 		text += fmt.Sprintf(" Stopped at the %d-round limit.", maxRounds)
 	case failed:

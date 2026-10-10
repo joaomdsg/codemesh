@@ -357,6 +357,7 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 	r.set(func() { r.before, r.state, r.round = before, Working, 1 })
 	r.note("Stop ends it early and keeps what it changed so far.")
 	prompt := r.p.Prompt(r.brief(rs.Self, before))
+	var kept outcome
 	for n := 1; ; n++ {
 		err := r.work(ctx, rs.Agent, prompt)
 		if err != nil && n == 1 {
@@ -371,8 +372,8 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 			return
 		}
 		left := leftover(r.p, r.check.Name, before, after, rev)
-		if !r.endRound(len(left), ctx.Err() != nil, err != nil) {
-			r.finish(after, rev)
+		now := outcome{after: after, rev: rev, left: len(left), stopped: ctx.Err() != nil, failed: err != nil}
+		if !r.settle(life, n, now, &kept) {
 			return
 		}
 		r.set(func() {
@@ -386,9 +387,9 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 }
 
 // endRound records how much a round left and reports whether Claude goes
-// again.
-func (r *Run) endRound(left int, stopped, failed bool) bool {
-	var more, resumable bool
+// again, and how the rounds ended when it does not.
+func (r *Run) endRound(left int, stopped, failed bool) (more bool, ended string) {
+	var resumable bool
 	r.set(func() {
 		prev := 0
 		if n := len(r.rounds); n > 0 {
@@ -396,6 +397,7 @@ func (r *Run) endRound(left int, stopped, failed bool) bool {
 		}
 		r.rounds = append(r.rounds, left)
 		more, r.ended = nextRound(r.round, prev, left, stopped, failed)
+		ended = r.ended
 		resumable = r.usage.Session != ""
 		if more && resumable {
 			r.round++
@@ -405,9 +407,9 @@ func (r *Run) endRound(left int, stopped, failed bool) bool {
 		// A fresh session would get the follow-up without the change it
 		// refers to.
 		r.note("Claude's session has no id to resume, so it cannot go again.")
-		return false
+		return false, ended
 	}
-	return more
+	return more, ended
 }
 
 func (r *Run) finish(after *Side, rev *review.Review) {

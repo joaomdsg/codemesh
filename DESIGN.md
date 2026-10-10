@@ -233,7 +233,10 @@ matters, what to do and how to check it.
    resumes the same Claude session (`--resume`, with the flags passed
    again) with what the change left: smells it introduced, the problem if
    still there, a check it broke. It goes again until nothing is left, a
-   round leaves no fewer than the one before, or five rounds ran. A later
+   round leaves as many as the one before, or five rounds ran. Each round
+   is committed in the worktree; a round that leaves more than the one
+   before is undone back to it, so the result and a pull request never
+   carry a worse round. A pull request folds these commits into one. A later
    round that fails, or a session with no id to resume, ends the loop with
    the change as it stands. The head shows the round; the result says what
    each round left and why the loop stopped. The replay marks where each

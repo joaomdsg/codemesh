@@ -24,7 +24,7 @@ func TestNextRound_stopsCleanAtTheCapOrWhenStuck(t *testing.T) {
 		{1, 0, 3, false, false, true, ""},
 		{2, 3, 2, false, false, true, ""},
 		{2, 3, 3, false, false, false, stalled},
-		{2, 3, 4, false, false, false, stalled},
+		{2, 3, 4, false, false, false, undone},
 		{maxRounds, 5, 1, false, false, false, capped},
 		{1, 0, 3, true, false, false, ""},
 		{2, 3, 2, false, true, false, failed},
@@ -60,9 +60,15 @@ const (
 	fixes  = `printf 'package m\n\nfunc C(a int) int { return a }\n' > c.go`
 	stuck  = "true"
 	breaks = "exit 1"
+	worse  = `printf 'package m\n\nfunc C(a, b, c, d, e, f int) int { return a }\n\nfunc D(a, b, c, d, e, f int) int { return a }\n' > c.go`
 )
 
 func loopRun(t *testing.T, agent string) Snapshot {
+	t.Helper()
+	return loopStart(t, agent).Snapshot()
+}
+
+func loopStart(t *testing.T, agent string) *Run {
 	t.Helper()
 	repo := testrepo.New(t, map[string]string{"go.mod": "module m\n\ngo 1.27\n", "m.go": "package m\n\nfunc A() int { return 1 }\n"}, nil)
 	rs := NewRuns(repo)
@@ -70,7 +76,7 @@ func loopRun(t *testing.T, agent string) Snapshot {
 	t.Cleanup(rs.Close)
 	r := rs.Start(prognosis.Prognosis{Key: "complex:m.A", Title: "Complex function", Name: "A"})
 	require.Eventually(t, func() bool { s := r.Snapshot(); return s.State == Done || s.State == Failed }, 2*time.Minute, 50*time.Millisecond)
-	return r.Snapshot()
+	return r
 }
 
 func TestRun_feedsBackWhatTheChangeLeftUntilItIsClean(t *testing.T) {
@@ -98,6 +104,24 @@ func TestRun_stopsWhenARoundMakesNoProgress(t *testing.T) {
 	assert.Equal(t, stalled, s.ended)
 }
 
+func TestRun_undoesARoundThatLeavesMore(t *testing.T) {
+	t.Parallel()
+	agent, _ := loopAgent(t, true, worse)
+	r := loopStart(t, agent)
+	s := r.Snapshot()
+
+	assert.Equal(t, Done, s.State)
+	assert.Equal(t, []int{1, 2}, s.rounds)
+	assert.Equal(t, undone, s.ended)
+	require.NotNil(t, s.After)
+	assert.Nil(t, s.After.Snap.Decl("m.D"), "the result is round 1's")
+	c, err := os.ReadFile(filepath.Join(r.mod, "c.go"))
+	require.NoError(t, err)
+	assert.NotContains(t, string(c), "func D", "and so is the worktree a pull request would commit")
+	assert.Len(t, s.Review.Introduced, 1)
+	assert.Equal(t, "2 rounds, left after each: 1 → 2. Round 2 left more, so its changes were undone.", s.RoundsNote())
+}
+
 func TestRun_keepsTheChangeWhenALaterRoundFails(t *testing.T) {
 	t.Parallel()
 	agent, _ := loopAgent(t, true, breaks)
@@ -123,7 +147,7 @@ func TestRun_endsAfterOneRoundWithoutASessionToResume(t *testing.T) {
 }
 
 func TestSnapshot_roundsSayWhatEachLeftAndWhyTheLoopStopped(t *testing.T) {
-	assert.Equal(t, "2 rounds, left after each: 2 → 2. Stopped: no fewer left than the round before.",
+	assert.Equal(t, "2 rounds, left after each: 2 → 2. Stopped: as many left as the round before.",
 		Snapshot{rounds: []int{2, 2}, ended: stalled}.RoundsNote())
 	assert.Equal(t, "2 rounds, left after each: 2 → 0.", Snapshot{rounds: []int{2, 0}, ended: clean}.RoundsNote())
 	assert.Equal(t, "5 rounds, left after each: 5 → 4 → 3 → 2 → 1. Stopped at the 5-round limit.",
