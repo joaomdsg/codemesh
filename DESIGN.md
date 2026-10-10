@@ -225,7 +225,8 @@ matters, what to do and how to check it.
    their own, killed when they end, so a server one starts with `&` stops
    with it. On Linux, Discard and shutdown also kill what escaped its
    group: every process whose environment holds the run's `CODEMESH_RUN`
-   token.
+   token. A second Ctrl-C while the runs close waits for them; a third
+   quits at once and leaves what they run behind.
    The prompt asks for the whole fix: restructuring, moving code to other
    or new files and changing unexported code are in scope; exported names,
    signatures and behaviour stay unless the problem is about them. It lists

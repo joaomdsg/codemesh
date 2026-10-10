@@ -80,17 +80,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	// Registered before runs.Close, so it unregisters after: a second signal
-	// while the runs are closing waits for them instead of killing codemesh
-	// and leaving Claude and the checks running.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	// Registered before closeRuns, so it unregisters after: a second signal
+	// while the runs close waits for them instead of killing codemesh and
+	// leaving Claude and the checks running.
+	ctx, stop := stopOn(log)
 	defer stop()
 	runs := fix.NewRuns(o.dir)
 	runs.Agent = o.agent
 	if self, err := os.Executable(); err == nil {
 		runs.Self = self
 	}
-	defer runs.Close()
+	defer closeRuns(runs)
 	srv := &http.Server{Handler: ui.New(src, state, runs, origin), ReadHeaderTimeout: 10 * time.Second}
 	log.Info("serving", "url", origin)
 	return serve(ctx, srv, ln, func(ctx context.Context) {
@@ -99,6 +99,44 @@ func run() error {
 		}
 		go src.Watch(ctx, o.poll)
 	})
+}
+
+// closeRuns and exit are swapped by tests.
+var (
+	closeRuns = (*fix.Runs).Close
+	exit      = os.Exit
+)
+
+// stopOn ends the context at the first signal. A second one says codemesh
+// is still closing its runs, which ends what Claude and the checks run; a
+// third quits at once and leaves them running.
+func stopOn(log *slog.Logger) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	done := make(chan struct{})
+	go func() {
+		for n := 1; ; n++ {
+			select {
+			case <-done:
+				return
+			case <-sig:
+			}
+			switch n {
+			case 1:
+				cancel()
+			case 2:
+				log.Warn("closing the runs; signal again to quit now and leave Claude and the checks running")
+			default:
+				exit(1)
+			}
+		}
+	}()
+	return ctx, func() {
+		signal.Stop(sig)
+		close(done)
+		cancel()
+	}
 }
 
 // serve serves on ln, then calls watch. The end of ctx or a server error
