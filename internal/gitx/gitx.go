@@ -48,10 +48,15 @@ type FileDiff struct {
 func Env(extra ...string) []string {
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		k, _, _ := strings.Cut(kv, "=")
-		return k == "GIT_DIR" || k == "GIT_WORK_TREE" || k == "GIT_INDEX_FILE"
+		return slices.Contains(elsewhere, k)
 	})
 	return append(env, extra...)
 }
+
+// elsewhere are the variables of `git rev-parse --local-env-vars` that locate
+// a repository; the config ones stay.
+var elsewhere = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_PREFIX"}
 
 func run(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)

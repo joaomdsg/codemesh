@@ -76,14 +76,13 @@ func TestOpenPR_pushesTheChangeAndOpensADraftAgainstTheStartingBranch(t *testing
 	assert.Empty(t, gitOut(t, repo, "branch", "--list", "codemesh/*"), "the local branch goes with the worktree")
 }
 
-func TestOpenPR_commitsInARepositoryWithNoIdentity(t *testing.T) {
+func TestOpenPR_commitsInARepositoryWithNoIdentityOrAnEmptyOne(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("EMAIL", "")
 	_, origin, _, rs := pushed(t)
-	for _, key := range []string{"user.name", "user.email"} {
-		require.NoError(t, testrepo.Git(rs.Dir, "config", "--unset", key))
-	}
+	require.NoError(t, testrepo.Git(rs.Dir, "config", "user.name", ""))
+	require.NoError(t, testrepo.Git(rs.Dir, "config", "--unset", "user.email"))
 	r := finish(t, rs)
 
 	pr := r.Snapshot().PR

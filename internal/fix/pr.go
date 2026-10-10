@@ -79,11 +79,15 @@ func (r *Run) push(ctx context.Context, branch string, t text) (string, error) {
 // git runs git in the run's worktree; never elsewhere, as undo resets and
 // cleans where it runs.
 func (r *Run) git(ctx context.Context, args ...string) error {
-	if r.wt == "" {
-		return errors.New("the run has no worktree")
-	}
-	_, err := command(ctx, r.wt, nil, "git", args...)
+	_, err := r.gitOut(ctx, args...)
 	return err
+}
+
+func (r *Run) gitOut(ctx context.Context, args ...string) (string, error) {
+	if r.wt == "" {
+		return "", errors.New("the run has no worktree")
+	}
+	return command(ctx, r.wt, nil, "git", args...)
 }
 
 // commit commits what is staged. A repository with no identity configured
@@ -91,11 +95,12 @@ func (r *Run) git(ctx context.Context, args ...string) error {
 // request.
 func (r *Run) commit(ctx context.Context, args ...string) error {
 	var id []string
-	if r.git(ctx, "config", "user.name") != nil {
-		id = append(id, "-c", "user.name=codemesh")
-	}
-	if r.git(ctx, "config", "user.email") != nil {
-		id = append(id, "-c", "user.email=codemesh@localhost")
+	for _, kv := range []string{"user.name=codemesh", "user.email=codemesh@localhost"} {
+		key, _, _ := strings.Cut(kv, "=")
+		// An empty value is no identity either.
+		if v, err := r.gitOut(ctx, "config", key); err != nil || strings.TrimSpace(v) == "" {
+			id = append(id, "-c", kv)
+		}
 	}
 	return r.git(ctx, slices.Concat(id, []string{"commit", "--quiet"}, args)...)
 }

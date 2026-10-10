@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -353,6 +354,10 @@ func TestRepo_ignoresAGitDirFromTheEnvironment(t *testing.T) {
 	want := git(t, a, "rev-parse", "HEAD")
 	t.Setenv("GIT_DIR", filepath.Join(b, ".git"))
 	t.Setenv("GIT_WORK_TREE", b)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(b, ".git", "objects"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(b, ".git"))
+	// A bool, not the list: the environment may hold secrets.
+	assert.False(t, slices.ContainsFunc(gitx.Env(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_OBJECT_DIRECTORY=") }))
 
 	got, err := (&gitx.Repo{Dir: a}).Head()
 	require.NoError(t, err)

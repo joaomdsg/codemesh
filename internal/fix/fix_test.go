@@ -144,6 +144,17 @@ func TestRun_keepsTheCheckAndClaudeInTheWorktree(t *testing.T) {
 	assert.NoError(t, r.claude(context.Background(), agent, dir, "p"), "nor does Claude")
 }
 
+func TestClaude_doesNotWaitForAChildHoldingItsOutput(t *testing.T) {
+	t.Parallel()
+	agent := filepath.Join(t.TempDir(), "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\nsleep 20 &\necho '{\"type\":\"result\",\"result\":\"done\"}'\n"), 0o755))
+	r := &Run{updates: topic.New[int64]()}
+	start := time.Now()
+	require.NoError(t, r.claude(context.Background(), agent, t.TempDir(), "p"))
+	assert.Less(t, time.Since(start), 15*time.Second)
+	assert.Equal(t, "done", r.summary, "what it printed is read")
+}
+
 func TestTree_seesEditsWhateverToolMadeThem(t *testing.T) {
 	wt := testrepo.New(t, map[string]string{"go.mod": "module m\n", "sub/a.go": "package sub\n\nfunc A() int {\n\treturn 1\n}\n"}, nil)
 	tr := newTree(wt, wt)

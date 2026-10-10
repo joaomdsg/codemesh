@@ -244,7 +244,7 @@ matters, what to do and how to check it.
    Claude's work and keeps what it changed, unless that left more than the
    round before; pressed during the checks, the starting point's or a
    round's, they finish, the head says it is stopping, and Claude does not
-   go again. The replay marks where each round began; an undone round's steps stay, faded and labelled undone,
+   start or go again. The replay marks where each round began; an undone round's steps stay, faded and labelled undone,
    and leave nothing on the map.
    The run's head names the model, the models of any helper agents, the
    API calls, the tokens and Claude Code's version, with a table per model

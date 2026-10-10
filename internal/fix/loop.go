@@ -127,7 +127,7 @@ func (r *Run) keep(ctx context.Context, n int) (string, error) {
 	if err := r.commit(ctx, "--no-verify", "--allow-empty", "-m", fmt.Sprintf("codemesh round %d", n)); err != nil {
 		return "", err
 	}
-	out, err := command(ctx, r.wt, nil, "git", "rev-parse", "HEAD")
+	out, err := r.gitOut(ctx, "rev-parse", "HEAD")
 	return strings.TrimSpace(out), err
 }
 
@@ -136,7 +136,8 @@ func (r *Run) undo(ctx context.Context, rev string) error {
 	if err := r.git(ctx, "reset", "--quiet", "--hard", rev); err != nil {
 		return err
 	}
-	return r.git(ctx, "clean", "--quiet", "-fd")
+	// -f twice removes a repository the round created inside the worktree.
+	return r.git(ctx, "clean", "--quiet", "-ffd")
 }
 
 // followUp is the prompt that resumes Claude's session with what its

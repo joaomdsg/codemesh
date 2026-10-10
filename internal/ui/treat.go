@@ -78,7 +78,7 @@ type banner struct{ class, text string }
 func banners(s fix.Snapshot) []banner {
 	var out []banner
 	if s.State == fix.Stopped {
-		out = append(out, banner{"hint", "Stopped early. Below is what Claude had changed by then, checked the same way."})
+		out = append(out, banner{"hint", stoppedText(s)})
 	}
 	if s.Err != nil {
 		out = append(out, banner{"banner err", "It did not finish: " + s.Err.Error() + ". Nothing in your files changed. Discard and try again."})
@@ -87,6 +87,16 @@ func banners(s fix.Snapshot) []banner {
 		out = append(out, banner{"banner err", "The pull request did not open: " + strings.TrimRight(s.PR.Err.Error(), ". ") + ". The change is still here; you can try again."})
 	}
 	return out
+}
+
+func stoppedText(s fix.Snapshot) string {
+	switch {
+	case s.Round == 0:
+		return "Stopped before Claude started; nothing changed."
+	case s.Undone > 0:
+		return "Stopped early. The round you stopped left more than the one before, so it was undone; below is the round before it."
+	}
+	return "Stopped early. Below is what Claude had changed by then, checked the same way."
 }
 
 func runBanners(s fix.Snapshot) []h.H {

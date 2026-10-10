@@ -137,13 +137,14 @@ func TestRun_stopsWhenARoundMakesNoProgress(t *testing.T) {
 
 func TestRun_undoesARoundThatLeavesMore(t *testing.T) {
 	t.Parallel()
-	agent, _ := loopAgent(t, true, worse)
+	agent, _ := loopAgent(t, true, worse+"; git init --quiet nested")
 	r := loopStart(t, agent)
 	s := r.Snapshot()
 
 	assert.Equal(t, Done, s.State)
 	assert.Equal(t, []int{1, 2}, s.rounds)
 	assert.Equal(t, undone, s.ended)
+	assert.NoDirExists(t, filepath.Join(r.mod, "nested"), "a repository the round made goes too")
 	require.NotNil(t, s.After)
 	assert.Nil(t, s.After.Snap.Decl("m.D"), "the result is round 1's")
 	c, err := os.ReadFile(filepath.Join(r.mod, "c.go"))
@@ -270,7 +271,7 @@ func TestRun_stopEndsWhatClaudeStarted(t *testing.T) {
 func TestRun_stopWhilePreparingKeepsTheStartingCheck(t *testing.T) {
 	t.Parallel()
 	agent, calls := loopAgent(t, true, fixes)
-	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 1\n"})
+	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\necho x >> " + calls + "/checks\nsleep 1\n"})
 	r.Stop()
 	assert.True(t, r.Snapshot().Stopping, "the page says the stop waits for the starting check")
 	require.Eventually(t, func() bool { return r.Snapshot().After != nil }, time.Minute, 20*time.Millisecond)
@@ -279,6 +280,8 @@ func TestRun_stopWhilePreparingKeepsTheStartingCheck(t *testing.T) {
 	assert.Equal(t, Stopped, s.State)
 	assert.True(t, s.Before.CheckOK, "a stop is not a failed check")
 	assert.NoFileExists(t, filepath.Join(calls, "runs"), "Claude never starts")
+	checks, _ := os.ReadFile(filepath.Join(calls, "checks"))
+	assert.Equal(t, "x\n", string(checks), "the unchanged tree is not checked again")
 }
 
 // lock leaves an index.lock in the worktree's git directory, so the next git
@@ -345,7 +348,7 @@ func TestRun_undoesAWorseRoundThatFailed(t *testing.T) {
 func TestRun_undoesAWorseRoundStoppedDuringItsChecks(t *testing.T) {
 	t.Parallel()
 	agent, _ := loopAgent(t, true, worse)
-	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 2\n"})
+	r := loopBegin(t, agent, map[string]string{"ci.sh": "#!/bin/sh\nsleep 5\n"})
 	// Round already reads 2 while round 1's commit is made; the worse code
 	// marks round 2's checks.
 	require.Eventually(t, func() bool {

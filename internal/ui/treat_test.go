@@ -55,7 +55,10 @@ func TestRunNote_saysAStopIsComing(t *testing.T) {
 
 func TestBanners_sayWhatWentWrong(t *testing.T) {
 	assert.Empty(t, banners(done()))
-	assert.Equal(t, []banner{{"hint", "Stopped early. Below is what Claude had changed by then, checked the same way."}}, banners(fix.Snapshot{State: fix.Stopped}))
+	assert.Equal(t, []banner{{"hint", "Stopped early. Below is what Claude had changed by then, checked the same way."}}, banners(fix.Snapshot{State: fix.Stopped, Round: 1}))
+	assert.Equal(t, []banner{{"hint", "Stopped early. The round you stopped left more than the one before, so it was undone; below is the round before it."}},
+		banners(fix.Snapshot{State: fix.Stopped, Round: 2, Undone: 2}))
+	assert.Equal(t, []banner{{"hint", "Stopped before Claude started; nothing changed."}}, banners(fix.Snapshot{State: fix.Stopped}))
 	assert.Equal(t, []banner{{"banner err", "It did not finish: boom. Nothing in your files changed. Discard and try again."}},
 		banners(fix.Snapshot{State: fix.Failed, Err: errors.New("boom")}))
 	s := done()

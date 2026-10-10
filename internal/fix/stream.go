@@ -34,17 +34,24 @@ func (r *Run) claude(ctx context.Context, agent, dir, prompt string) error {
 	cmd := exec.CommandContext(ctx, agent, args...)
 	group(cmd)
 	cmd.Dir, cmd.Env = dir, gitx.Env()
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
+	// A pipe of our own, not StdoutPipe: Wait then copies the output and
+	// gives up on it WaitDelay after Claude exits, should a child of Claude's
+	// hold it open.
+	out, in := io.Pipe()
 	var stderr strings.Builder
-	cmd.Stderr = &stderr
+	cmd.Stdout, cmd.Stderr = in, &stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("could not start claude: %w", err)
 	}
-	r.read(stdout)
-	if err := exited(cmd.Wait()); err != nil {
+	read := make(chan struct{})
+	go func() {
+		defer close(read)
+		r.read(out)
+	}()
+	err := exited(cmd.Wait())
+	in.Close()
+	<-read
+	if err != nil {
 		return fmt.Errorf("claude: %w: %s", err, tail(stderr.String(), 5))
 	}
 	return nil
@@ -59,6 +66,9 @@ func (r *Run) read(out io.Reader) {
 			r.apply(e, at)
 		}
 	}
+	// A line past the buffer ends the scan; the rest still has to be read
+	// for Claude's output to drain.
+	_, _ = io.Copy(io.Discard, out)
 }
 
 func (r *Run) apply(e parsed, at time.Duration) {

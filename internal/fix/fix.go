@@ -326,6 +326,10 @@ func (r *Run) run(life, ctx context.Context, rs *Runs) {
 		r.fail(err)
 		return
 	}
+	if ctx.Err() != nil {
+		r.stoppedBeforeClaude(before)
+		return
+	}
 	r.set(func() { r.before, r.state, r.round = before, Working, 1 })
 	r.note("Stop ends it early and keeps what it changed so far.")
 	prompt := r.p.Prompt(r.brief(rs.Self, before))
@@ -388,6 +392,14 @@ func (r *Run) endRound(left int, stopped, failed bool) (more, worse bool) {
 		return false, worse
 	}
 	return more, worse
+}
+
+// stoppedBeforeClaude ends a run stopped during its starting check: the
+// result is the starting point, which needs no second check.
+func (r *Run) stoppedBeforeClaude(before *Side) {
+	r.set(func() { r.before, r.state = before, Stopped })
+	r.note("Stopped before Claude started.")
+	r.finish(before, review.Build(review.Input{Base: before.Snap, Head: before.Snap, BaseFindings: before.Findings, HeadFindings: before.Findings}))
 }
 
 func (r *Run) finish(after *Side, rev *review.Review) {
