@@ -80,6 +80,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Registered before runs.Close, so it unregisters after: a second signal
+	// while the runs are closing waits for them instead of killing codemesh
+	// and leaving Claude and the checks running.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
 	runs := fix.NewRuns(o.dir)
 	runs.Agent = o.agent
 	if self, err := os.Executable(); err == nil {
@@ -88,7 +93,7 @@ func run() error {
 	defer runs.Close()
 	srv := &http.Server{Handler: ui.New(src, state, runs, origin), ReadHeaderTimeout: 10 * time.Second}
 	log.Info("serving", "url", origin)
-	return serve(srv, ln, func(ctx context.Context) {
+	return serve(ctx, srv, ln, func(ctx context.Context) {
 		if a := src.Refresh(); a.Err != nil {
 			log.Error("first analysis failed", "err", a.Err)
 		}
@@ -96,11 +101,9 @@ func run() error {
 	})
 }
 
-// serve serves on ln, then calls watch. A signal or a server error shuts the
-// server down.
-func serve(srv *http.Server, ln net.Listener, watch func(context.Context)) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	defer stop()
+// serve serves on ln, then calls watch. The end of ctx or a server error
+// shuts the server down.
+func serve(ctx context.Context, srv *http.Server, ln net.Listener, watch func(context.Context)) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
 	watch(ctx)
