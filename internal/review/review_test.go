@@ -2,6 +2,7 @@ package review_test
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -325,4 +326,17 @@ func TestBuild_givesTestFunctionsNoExportedChip(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotContains(t, unit(t, f.rev, "TestK").Reasons, "exported")
+}
+
+func TestBuild_showsALinkAsItsTargetLikeGit(t *testing.T) {
+	t.Parallel()
+	dir, outside := t.TempDir(), filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("SECRET\n"), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, "link")))
+	rev := review.Build(review.Input{Base: &code.Snapshot{Dir: t.TempDir()}, Head: &code.Snapshot{Dir: dir},
+		Diffs: []gitx.FileDiff{{NewPath: "link", Status: gitx.Added}}})
+
+	u := unit(t, rev, "link")
+	require.Len(t, u.Lines, 1)
+	assert.Equal(t, outside, u.Lines[0].Text, "the target, not what it points to")
 }
