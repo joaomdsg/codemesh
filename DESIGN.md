@@ -108,6 +108,8 @@ Each smell is a rule with a documented threshold:
 | leans on another package | most of its references go to one other package | it may live in the wrong package |
 | imports a less stable package | depends on a package more unstable than itself | breaks the Stable Dependencies Principle: its changes ripple back |
 | untested package | no test files, and no test in another package refers to its declarations; not a main package | changes land unguarded |
+| pass-through | the body is one call whose arguments are the function's own parameters, in order; not `main`, `init` or a `Deprecated:` wrapper | a layer that adds an interface and no behaviour |
+| same argument everywhere | a func (not a method, which interfaces may call unseen) with ≥ 3 production call sites, none of them as a value, all passing one constant for a parameter; not an export of an importable package | the parameter should be a default |
 
 A finding past the high limit is high severity and names that limit
 ("121 lines, high limit 120").
@@ -122,6 +124,10 @@ no longer shows how many paths a test must cover.
 
 Code lines are lines holding a Go token. A long string literal (see Other
 below) counts as one line, so an inlined script does not make a large file.
+
+Pass-through and same argument everywhere are Go only. Tests' call sites
+do not count against same argument everywhere: a parameter only tests
+vary is a test seam in the production interface.
 
 Test code and generated files are exempt from every rule. Functions in a
 main package are exempt from leans-on-another-package, since wiring other packages

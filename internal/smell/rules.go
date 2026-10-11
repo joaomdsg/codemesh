@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	pathpkg "path"
+	"strings"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 )
@@ -38,6 +39,28 @@ func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl)
 			f.Target = other
 			out = append(out, f)
 		}
+		out = append(out, at.layers()...)
+	}
+	return out
+}
+
+// layers flags a func that adds a layer and no behaviour: it only forwards
+// its parameters, or its callers all pass one value it could default.
+func (at site) layers() []Finding {
+	d := at.d
+	var out []Finding
+	if d.Forwards != "" && !(at.p.Name == "main" && d.Name == "main") && d.Name != "init" {
+		out = append(out, at.finding(PassThrough, Info, 0, 0, "only calls "+d.Forwards+" with its own arguments"))
+	}
+	// An importable package's exports have callers this module cannot see.
+	open := d.Exported && at.s.Importable(at.p.Path)
+	if len(d.Fixed) > 0 && d.Calls >= fixedArgMinCalls && !d.Escapes && !open {
+		var fixed []string
+		for _, a := range d.Fixed {
+			fixed = append(fixed, a.Param+" is "+a.Value)
+		}
+		out = append(out, at.finding(FixedArg, Info, d.Calls, fixedArgMinCalls,
+			fmt.Sprintf("%s at all %d production call sites", strings.Join(fixed, ", "), d.Calls)))
 	}
 	return out
 }

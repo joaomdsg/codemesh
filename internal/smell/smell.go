@@ -41,6 +41,8 @@ const (
 	EnviousFunc     Rule = "envious-func"
 	UnstableDep     Rule = "unstable-dep"
 	UntestedPackage Rule = "untested-package"
+	PassThrough     Rule = "pass-through"
+	FixedArg        Rule = "fixed-arg"
 )
 
 // Thresholds: a measure above the limit is a finding. The High limits raise
@@ -57,6 +59,9 @@ const (
 	// enviousFuncMinRefs is the fewest references to the other package that
 	// count as envy.
 	enviousFuncMinRefs = 4
+	// fixedArgMinCalls is the fewest production call sites that make one
+	// constant a pattern rather than a coincidence.
+	fixedArgMinCalls = 3
 )
 
 var why = map[Rule]string{
@@ -70,6 +75,8 @@ var why = map[Rule]string{
 	EnviousFunc:     "Most of its references go to one other package; it may belong there.",
 	UnstableDep:     "Imports a package that changes more freely than itself, so that package's changes ripple into this one.",
 	UntestedPackage: "No test refers to it: changes land unguarded.",
+	PassThrough:     "It only hands its arguments to another function: a layer that adds an interface and no behaviour.",
+	FixedArg:        "Every caller passes the same value: make it the default and drop the parameter.",
 }
 
 // Why is the one-line reason a rule matters.

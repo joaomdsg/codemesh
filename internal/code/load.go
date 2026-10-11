@@ -40,10 +40,11 @@ func loadGo(abs string) (*Snapshot, error) {
 		return nil, fmt.Errorf("load %s: %w", abs, err)
 	}
 	l := &loader{
-		s:    &Snapshot{Lang: Go, decls: map[string]*Decl{}, pkgs: map[string]*Package{}},
-		fset: cfg.Fset,
-		objs: map[string]*Decl{},
-		seen: map[string]bool{},
+		s:     &Snapshot{Lang: Go, decls: map[string]*Decl{}, pkgs: map[string]*Package{}},
+		fset:  cfg.Fset,
+		objs:  map[string]*Decl{},
+		seen:  map[string]bool{},
+		calls: map[*Decl]*callSites{},
 	}
 	for _, p := range loaded {
 		if p.Module != nil && p.Module.Main {
@@ -78,6 +79,7 @@ type loader struct {
 	objs  map[string]*Decl // objKey → decl
 	seen  map[string]bool  // absolute file names already taken
 	units []unit
+	calls map[*Decl]*callSites
 }
 
 func (l *loader) addPackage(p *packages.Package) {
@@ -183,6 +185,9 @@ func (l *loader) funcUnit(p *packages.Package, gd *ast.FuncDecl) unit {
 	if gd.Body != nil {
 		d.Complexity, d.Nesting = complexity(gd.Body), nesting(gd.Body)
 	}
+	if fn := forwards(gd, p.TypesInfo); fn != nil {
+		d.Forwards = callName(fn, p.PkgPath)
+	}
 	if obj := p.TypesInfo.Defs[gd.Name]; obj != nil {
 		d.Signature = types.TypeString(obj.Type(), types.RelativeTo(p.Types))
 		l.index(obj, d)
@@ -237,6 +242,7 @@ func (l *loader) index(obj types.Object, d *Decl) {
 
 // resolve records every reference from u's syntax to a module declaration.
 func (l *loader) resolve(u unit) {
+	calls := callees(u.node)
 	ast.Inspect(u.node, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.SelectorExpr:
@@ -245,13 +251,15 @@ func (l *loader) resolve(u unit) {
 				l.use(u, sel.Type())
 			}
 		case *ast.Ident:
-			l.ref(u, n)
+			l.ref(u, n, calls[n])
 		}
 		return true
 	})
 }
 
-func (l *loader) ref(u unit, id *ast.Ident) {
+// ref records a reference through id, and call when id names the function
+// it calls.
+func (l *loader) ref(u unit, id *ast.Ident, call *ast.CallExpr) {
 	obj := u.info.Uses[id]
 	if obj == nil || obj.Pkg() == nil {
 		return
@@ -260,7 +268,13 @@ func (l *loader) ref(u unit, id *ast.Ident) {
 		l.use(u, c.Type())
 	}
 	to := l.objs[objKey(origin(obj))]
-	if to == nil || to == u.d {
+	if to == nil {
+		return
+	}
+	if fn, ok := origin(obj).(*types.Func); ok && to.Kind == Func {
+		l.site(u, to, fn, call)
+	}
+	if to == u.d {
 		return
 	}
 	if u.d.Refs == nil {
@@ -291,6 +305,7 @@ func (l *loader) use(u unit, t types.Type) {
 }
 
 func (l *loader) finish() {
+	l.finishCalls()
 	slices.SortFunc(l.s.Packages, func(a, b *Package) int { return cmp.Compare(a.Path, b.Path) })
 	for _, p := range l.s.Packages {
 		slices.SortFunc(p.Files, func(a, b *File) int { return cmp.Compare(a.Path, b.Path) })

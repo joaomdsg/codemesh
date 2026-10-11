@@ -95,6 +95,24 @@ type Decl struct {
 	// Users are the IDs of decls reaching this type through one of its
 	// constants, fields or methods, or a field holding it, sorted.
 	Users []string
+
+	// Forwards names the function a func or method's body only calls,
+	// passing its own parameters through in order; "" otherwise. Go only.
+	Forwards string
+	// Calls counts the production call sites of a func; Escapes is set when
+	// it is also used as a value, whose calls nobody can see. Go only.
+	Calls   int
+	Escapes bool
+	// Fixed lists the parameters every production call site passes the
+	// same constant, in parameter order.
+	Fixed []FixedArg
+}
+
+// FixedArg is a parameter and the one constant its callers pass, as written
+// at the first call site.
+type FixedArg struct {
+	Param string
+	Value string
 }
 
 // Decl returns the declaration with the given ID, or nil.

@@ -333,6 +333,8 @@ var ruleLabels = map[smell.Rule]string{
 	smell.EnviousFunc:     "Leans on another package",
 	smell.UnstableDep:     "Imports a less stable package",
 	smell.UntestedPackage: "Untested package",
+	smell.PassThrough:     "Pass-through",
+	smell.FixedArg:        "Same argument everywhere",
 }
 
 func ruleLabel(r smell.Rule) string {
