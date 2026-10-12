@@ -80,6 +80,61 @@ func (at site) fixedArg() (Finding, bool) {
 		fmt.Sprintf("%s at all %d production call sites", strings.Join(fixed, ", "), d.Calls)), true
 }
 
+// middleMen flags a type at least half of whose hand-written methods only
+// call the same-named method of one field. Methods are counted across the
+// package's files, since a type's methods need not sit next to it.
+func middleMen(p *code.Package) []Finding {
+	type tally struct {
+		methods int
+		byField map[string]int
+	}
+	byType := map[string]*tally{}
+	for _, f := range p.Files {
+		if f.Generated {
+			continue
+		}
+		for _, d := range f.Decls {
+			if d.Kind != code.Method || d.Test {
+				continue
+			}
+			recv, _, _ := strings.Cut(d.Name, ".")
+			t := byType[recv]
+			if t == nil {
+				t = &tally{byField: map[string]int{}}
+				byType[recv] = t
+			}
+			t.methods++
+			if d.Delegates != "" {
+				t.byField[d.Delegates]++
+			}
+		}
+	}
+	var out []Finding
+	for _, f := range p.Files {
+		if f.Test || f.Generated {
+			continue
+		}
+		for _, d := range f.Decls {
+			t := byType[d.Name]
+			if d.Kind != code.Type || d.Deprecated || t == nil || t.methods < middleManMinMethods {
+				continue
+			}
+			field, n := "", 0
+			for name, c := range t.byField {
+				if c > n || c == n && name < field {
+					field, n = name, c
+				}
+			}
+			if 2*n < t.methods {
+				continue
+			}
+			out = append(out, site{p: p, f: f, d: d}.finding(MiddleMan, Info, 0, 0,
+				fmt.Sprintf("%d of %d methods only call %s's", n, t.methods, field)))
+		}
+	}
+	return out
+}
+
 // site is the declaration a finding is about, and where it sits.
 type site struct {
 	s *code.Snapshot

@@ -13,6 +13,8 @@ func Use() {
 	_, _ = readAll("x")
 	_ = packed(1, 2)
 	box{}.put("x")
+	_ = relay{}.c(1) + generic[int]{}.c(1) + split{}.c(1) + renamer{}.c(1) + dropper{}.c(1) + pair{}.a(1) + legacy{}.c(1)
+	_ = decorator{in: relay{}}.c(1) + halfgen{}.c(1)
 
 	_ = render("a", true, 1) + render("b", true, 2) + render("c", true, 3)
 	_ = Render(true) + Render(true) + Render(true)

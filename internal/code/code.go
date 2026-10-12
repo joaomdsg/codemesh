@@ -99,6 +99,12 @@ type Decl struct {
 	// Forwards names the function a func or method's body only calls,
 	// passing its own parameters through in order; "" otherwise. Go only.
 	Forwards string
+	// Delegates names the receiver field whose same-named method a method
+	// only calls, unless the receiver implements that field's interface
+	// type; "" otherwise. Go only.
+	Delegates string
+	// Deprecated is set when the doc comment says "Deprecated:". Go only.
+	Deprecated bool
 	// Calls counts the production call sites of a func; Escapes is set when
 	// it is also used as a value, whose calls nobody can see. Go only.
 	Calls   int

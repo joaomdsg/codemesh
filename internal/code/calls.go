@@ -11,7 +11,7 @@ import (
 // parameters as the arguments in order, or nil. A deprecated wrapper is
 // left alone: keeping an old name working is its job.
 func forwards(fn *ast.FuncDecl, info *types.Info) *types.Func {
-	if fn.Doc != nil && strings.Contains(fn.Doc.Text(), "Deprecated:") {
+	if deprecated(fn.Doc) {
 		return nil
 	}
 	call := onlyCall(fn.Body)
@@ -23,6 +23,60 @@ func forwards(fn *ast.FuncDecl, info *types.Info) *types.Func {
 		return nil
 	}
 	return callee
+}
+
+// delegates returns the receiver field whose same-named method fn only
+// calls, passing its parameters and handing back the results, or "". A
+// call that drops results the callee returns does more than delegate.
+func delegates(fn *ast.FuncDecl, info *types.Info) string {
+	if fn.Recv == nil || len(fn.Recv.List[0].Names) == 0 || forwards(fn, info) == nil {
+		return ""
+	}
+	call := onlyCall(fn.Body)
+	method, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok || method.Sel.Name != fn.Name.Name {
+		return ""
+	}
+	if _, dropped := fn.Body.List[0].(*ast.ExprStmt); dropped {
+		if sig, _ := info.TypeOf(call.Fun).(*types.Signature); sig == nil || sig.Results().Len() > 0 {
+			return ""
+		}
+	}
+	field, ok := ast.Unparen(method.X).(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	recv, ok := ast.Unparen(field.X).(*ast.Ident)
+	if !ok || info.Uses[recv] == nil || info.Uses[recv] != info.Defs[fn.Recv.List[0].Names[0]] {
+		return ""
+	}
+	sel := info.Selections[field]
+	if sel == nil || sel.Kind() != types.FieldVal || len(sel.Index()) != 1 {
+		return ""
+	}
+	if decorates(info.Defs[fn.Recv.List[0].Names[0]], sel.Type()) {
+		return ""
+	}
+	return field.Sel.Name
+}
+
+// decorates reports whether recv's type implements its field's interface
+// type: a decorator, proxy or bridge stands in for what it wraps, so its
+// forwarding is the point of the design.
+func decorates(recv types.Object, field types.Type) bool {
+	iface, ok := field.Underlying().(*types.Interface)
+	if recv == nil || !ok {
+		return false
+	}
+	t := recv.Type()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	return types.Implements(t, iface) || types.Implements(types.NewPointer(t), iface)
+}
+
+func deprecated(doc *ast.CommentGroup) bool {
+	return doc != nil && strings.Contains(doc.Text(), "Deprecated:")
 }
 
 // onlyCall returns the call that is body's one statement, returned or not.

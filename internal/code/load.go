@@ -188,6 +188,8 @@ func (l *loader) funcUnit(p *packages.Package, gd *ast.FuncDecl) unit {
 	if fn := forwards(gd, p.TypesInfo); fn != nil {
 		d.Forwards = callName(fn, p.PkgPath)
 	}
+	d.Delegates = delegates(gd, p.TypesInfo)
+	d.Deprecated = deprecated(gd.Doc)
 	if obj := p.TypesInfo.Defs[gd.Name]; obj != nil {
 		d.Signature = types.TypeString(obj.Type(), types.RelativeTo(p.Types))
 		l.index(obj, d)
@@ -205,6 +207,7 @@ func (l *loader) specUnit(p *packages.Package, gd *ast.GenDecl, spec ast.Spec) (
 		doc, start, end = gd.Doc, gd.Pos(), gd.End()
 	}
 	d.Start, d.End = l.span(doc, start, end)
+	d.Deprecated = deprecated(doc)
 	var typ []string
 	for _, id := range specNames(spec) {
 		if d.Name == "" {

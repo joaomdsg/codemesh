@@ -335,6 +335,7 @@ var ruleLabels = map[smell.Rule]string{
 	smell.UntestedPackage: "Untested package",
 	smell.PassThrough:     "Pass-through",
 	smell.FixedArg:        "Same argument everywhere",
+	smell.MiddleMan:       "Middle man",
 }
 
 func ruleLabel(r smell.Rule) string {

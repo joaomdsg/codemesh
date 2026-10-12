@@ -254,21 +254,49 @@ func TestFind_flagsFunctionsThatOnlyForwardTheirParameters(t *testing.T) {
 	_, fs := loadSmelly(t)
 
 	assert.Equal(t, map[string]smell.Severity{
-		"fwd.plain":    smell.Info,
-		"fwd.readAll":  smell.Info,
-		"fwd.variadic": smell.Info,
-		"fwd.box.put":  smell.Info,
-		"core.helper":  smell.Info,
-		"core.Used":    smell.Info,
-		"flaky.Probe":  smell.Info,
-		"chaina.Run":   smell.Info,
-		"chainb.Run":   smell.Info,
-		"envy.local":   smell.Info,
+		"fwd.plain":       smell.Info,
+		"fwd.readAll":     smell.Info,
+		"fwd.variadic":    smell.Info,
+		"fwd.box.put":     smell.Info,
+		"fwd.relay.a":     smell.Info,
+		"fwd.relay.b":     smell.Info,
+		"fwd.relay.put":   smell.Info,
+		"fwd.generic.a":   smell.Info,
+		"fwd.generic.b":   smell.Info,
+		"fwd.split.a":     smell.Info,
+		"fwd.split.b":     smell.Info,
+		"fwd.renamer.a":   smell.Info,
+		"fwd.renamer.b":   smell.Info,
+		"fwd.dropper.e":   smell.Info,
+		"fwd.dropper.f":   smell.Info,
+		"fwd.pair.a":      smell.Info,
+		"fwd.pair.b":      smell.Info,
+		"fwd.legacy.a":    smell.Info,
+		"fwd.legacy.b":    smell.Info,
+		"fwd.decorator.a": smell.Info,
+		"fwd.decorator.b": smell.Info,
+		"core.helper":     smell.Info,
+		"core.Used":       smell.Info,
+		"flaky.Probe":     smell.Info,
+		"chaina.Run":      smell.Info,
+		"chainb.Run":      smell.Info,
+		"envy.local":      smell.Info,
 	}, of(fs, smell.PassThrough), "not swapped, fixedOne, twoSteps, packed, nor the deprecated old")
 	assert.Equal(t, "only calls target with its own arguments", one(t, fs, smell.PassThrough, "fwd.plain").Detail)
 	assert.Equal(t, "only calls os.ReadFile with its own arguments", one(t, fs, smell.PassThrough, "fwd.readAll").Detail)
 	assert.Equal(t, "only calls inner.put with its own arguments", one(t, fs, smell.PassThrough, "fwd.box.put").Detail)
 	assert.Equal(t, "only calls flaky.Probe with its own arguments", one(t, fs, smell.PassThrough, "core.helper").Detail)
+}
+
+func TestFind_flagsTypesMostOfWhoseMethodsOnlyCallOneField(t *testing.T) {
+	t.Parallel()
+	_, fs := loadSmelly(t)
+
+	assert.Equal(t, map[string]smell.Severity{
+		"fwd.relay":   smell.Info,
+		"fwd.generic": smell.Info,
+	}, of(fs, smell.MiddleMan), "not split, renamer, dropper, pair, the decorator, halfgen, nor the deprecated legacy")
+	assert.Equal(t, "3 of 4 methods only call in's", one(t, fs, smell.MiddleMan, "fwd.relay").Detail)
 }
 
 func TestFind_flagsParametersEveryCallerFixes(t *testing.T) {
@@ -365,7 +393,7 @@ func TestFind_reportsEveryRuleWithAReason(t *testing.T) {
 		seen[f.Rule] = true
 		assert.NotEmpty(t, f.Rule.Why(), f.Rule)
 	}
-	assert.Len(t, seen, 12)
+	assert.Len(t, seen, 13)
 }
 
 func TestSeverity_stringNamesLevels(t *testing.T) {

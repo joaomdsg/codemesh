@@ -43,6 +43,7 @@ const (
 	UntestedPackage Rule = "untested-package"
 	PassThrough     Rule = "pass-through"
 	FixedArg        Rule = "fixed-arg"
+	MiddleMan       Rule = "middle-man"
 )
 
 // Thresholds: a measure above the limit is a finding. The High limits raise
@@ -62,6 +63,9 @@ const (
 	// fixedArgMinCalls is the fewest production call sites that make one
 	// constant a pattern rather than a coincidence.
 	fixedArgMinCalls = 3
+	// middleManMinMethods is the fewest methods that make a type a layer of
+	// its own; below it, pass-through already names each forwarder.
+	middleManMinMethods = 3
 )
 
 var why = map[Rule]string{
@@ -77,6 +81,7 @@ var why = map[Rule]string{
 	UntestedPackage: "No test refers to it: changes land unguarded.",
 	PassThrough:     "It only hands its arguments to another function: a layer that adds an interface and no behaviour.",
 	FixedArg:        "Every caller passes the same value: make it the default and drop the parameter.",
+	MiddleMan:       "Half or more of its methods only hand the call to one field: callers could use that field directly.",
 }
 
 // Why is the one-line reason a rule matters.
@@ -119,6 +124,7 @@ func Find(s *code.Snapshot) []Finding {
 				out = append(out, declFindings(s, p, f, d)...)
 			}
 		}
+		out = append(out, middleMen(p)...)
 	}
 	out = append(out, unstableDeps(s)...)
 	slices.SortFunc(out, func(a, b Finding) int {
