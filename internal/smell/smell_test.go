@@ -131,7 +131,7 @@ func TestFind_flagsLongFunctionsAboveSixtyLines(t *testing.T) {
 	assert.Equal(t, s.Decl(prefix+"size.Long121").Start, f.Line)
 	assert.Equal(t, prefix+"size", f.Package)
 	assert.Equal(t, 121, f.Measure)
-	assert.Equal(t, smell.LongFuncHighLimit, f.Limit)
+	assert.Equal(t, 120, f.Limit)
 	assert.Equal(t, "121 lines, high limit 120", f.Detail)
 	assert.Equal(t, "61 lines, limit 60", one(t, fs, smell.LongFunc, "size.Long61").Detail)
 }
@@ -160,7 +160,7 @@ func TestFind_flagsNestingAboveFour(t *testing.T) {
 	assert.Equal(t, map[string]smell.Severity{"size.Nest5": smell.Warn}, of(fs, smell.DeepNesting))
 	f := one(t, fs, smell.DeepNesting, "size.Nest5")
 	assert.Equal(t, 5, f.Measure)
-	assert.Equal(t, smell.DeepNestingLimit, f.Limit)
+	assert.Equal(t, 4, f.Limit)
 	assert.Equal(t, "nesting 5, limit 4", f.Detail)
 }
 
@@ -191,7 +191,7 @@ func TestFind_flagsFilesAboveSixHundredLines(t *testing.T) {
 	assert.Equal(t, 601, f.Measure)
 	assert.Equal(t, smell.LargeFileLimit, f.Limit)
 	assert.Equal(t, "601 lines, limit 600", f.Detail)
-	assert.Equal(t, smell.LargeFileHighLimit, one(t, fs, smell.LargeFile, "big/f1201.go").Limit)
+	assert.Equal(t, 1200, one(t, fs, smell.LargeFile, "big/f1201.go").Limit)
 	assert.Equal(t, "1201 lines, high limit 1200", one(t, fs, smell.LargeFile, "big/f1201.go").Detail)
 }
 
@@ -208,7 +208,7 @@ func TestFind_flagsUnusedExportsOfClosedPackagesOnly(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{"example.com/quiet/internal/priv.Orphan: no use outside its package"}, got,
-		"lib.E is API for other modules; priv.Used has a caller in lib")
+		"lib.E is API for other modules; priv.Used has a caller in lib; lib uses Mode through Fast, Item through its field and Tag through that field's value; Slow and Hot belong to used types")
 }
 
 func TestFind_leavesImportableExportsAlone(t *testing.T) {
@@ -247,6 +247,43 @@ func TestFind_flagsFunctionsReferencingAnotherPackageMoreThanTheirOwn(t *testing
 	assert.Equal(t, "4 refs to hub, 1 to own package", f.Detail)
 	assert.Equal(t, prefix+"hub", f.Target)
 	assert.Equal(t, "4 refs to hub, 3 to own package", one(t, fs, smell.EnviousFunc, "envy.Outnumbered").Detail)
+}
+
+func TestFind_flagsFunctionsThatOnlyForwardTheirParameters(t *testing.T) {
+	t.Parallel()
+	_, fs := loadSmelly(t)
+
+	assert.Equal(t, map[string]smell.Severity{
+		"fwd.plain":    smell.Info,
+		"fwd.readAll":  smell.Info,
+		"fwd.variadic": smell.Info,
+		"fwd.box.put":  smell.Info,
+		"core.helper":  smell.Info,
+		"core.Used":    smell.Info,
+		"flaky.Probe":  smell.Info,
+		"chaina.Run":   smell.Info,
+		"chainb.Run":   smell.Info,
+		"envy.local":   smell.Info,
+	}, of(fs, smell.PassThrough), "not swapped, fixedOne, twoSteps, packed, nor the deprecated old")
+	assert.Equal(t, "only calls target with its own arguments", one(t, fs, smell.PassThrough, "fwd.plain").Detail)
+	assert.Equal(t, "only calls os.ReadFile with its own arguments", one(t, fs, smell.PassThrough, "fwd.readAll").Detail)
+	assert.Equal(t, "only calls inner.put with its own arguments", one(t, fs, smell.PassThrough, "fwd.box.put").Detail)
+	assert.Equal(t, "only calls flaky.Probe with its own arguments", one(t, fs, smell.PassThrough, "core.helper").Detail)
+}
+
+func TestFind_flagsParametersEveryCallerFixes(t *testing.T) {
+	t.Parallel()
+	_, fs := loadSmelly(t)
+
+	assert.Equal(t, map[string]smell.Severity{
+		"fwd.render": smell.Info,
+		"fwd.mode":   smell.Info,
+	}, of(fs, smell.FixedArg), "not Render (API), twice (2 calls), valued (used as a value), mixed (1, 1, 2)")
+	f := one(t, fs, smell.FixedArg, "fwd.render")
+	assert.Equal(t, 3, f.Measure)
+	assert.Equal(t, 3, f.Limit)
+	assert.Equal(t, "wide is true at all 3 production call sites", f.Detail, "the test's false does not count")
+	assert.Equal(t, "m is modeFast at all 3 production call sites", one(t, fs, smell.FixedArg, "fwd.mode").Detail)
 }
 
 func TestFind_flagsImportsOfLessStablePackages(t *testing.T) {
@@ -290,7 +327,7 @@ func TestFind_flagsPackagesWithoutTests(t *testing.T) {
 		"flaky":  smell.Info,
 		"chaina": smell.Info,
 		"chainb": smell.Info,
-	}, of(fs, smell.UntestedPackage), "not size or core (tested), kit (core's test uses it), nor cmd/app (main)")
+	}, of(fs, smell.UntestedPackage), "not size, core or fwd (tested), kit (core's test uses it), nor cmd/app (main)")
 	f := one(t, fs, smell.UntestedPackage, "hub")
 	assert.Equal(t, "hub", f.Subject)
 	assert.Equal(t, "no test refers to it", f.Detail)
@@ -328,7 +365,7 @@ func TestFind_reportsEveryRuleWithAReason(t *testing.T) {
 		seen[f.Rule] = true
 		assert.NotEmpty(t, f.Rule.Why(), f.Rule)
 	}
-	assert.Len(t, seen, 10)
+	assert.Len(t, seen, 12)
 }
 
 func TestSeverity_stringNamesLevels(t *testing.T) {

@@ -1,5 +1,6 @@
-// Package code loads a Go module into a Snapshot: its packages, files and
-// declarations, with metrics and type-checked references between them.
+// Package code loads a Go module or a Julia package into a Snapshot: its
+// packages, files and declarations, with metrics and references between
+// them, type-checked for Go and matched by name for Julia.
 package code
 
 import (
@@ -9,7 +10,8 @@ import (
 
 // Snapshot is one module as analysed at one point in time.
 type Snapshot struct {
-	Module   string // module path
+	Lang     Lang
+	Module   string // module path; the package name for Julia
 	Dir      string // absolute module root
 	Packages []*Package
 	// Nested are the directories, relative to Dir, of modules inside this
@@ -24,7 +26,7 @@ type Snapshot struct {
 // files (package foo_test) are attributed to it.
 type Package struct {
 	Path    string   // import path
-	Rel     string   // directory relative to the module root, "." for the root
+	Rel     string   // directory relative to the module root, "." for the root; for Julia the module path below the root
 	Name    string   // package name
 	Imports []string // module-internal import paths of non-test files, sorted
 	Files   []*File
@@ -41,6 +43,14 @@ type File struct {
 	Churn     int // commits touching the file in the churn window; set by the caller
 	Decls     []*Decl
 }
+
+// Lang is the language of a Snapshot.
+type Lang string
+
+const (
+	Go    Lang = "go"
+	Julia Lang = "julia"
+)
 
 // Kind is the kind of a declaration.
 type Kind string
@@ -82,6 +92,27 @@ type Decl struct {
 	Refs map[string]int
 	// Callers are the IDs of other decls referencing this one, sorted.
 	Callers []string
+	// Users are the IDs of decls reaching this type through one of its
+	// constants, fields or methods, or a field holding it, sorted.
+	Users []string
+
+	// Forwards names the function a func or method's body only calls,
+	// passing its own parameters through in order; "" otherwise. Go only.
+	Forwards string
+	// Calls counts the production call sites of a func; Escapes is set when
+	// it is also used as a value, whose calls nobody can see. Go only.
+	Calls   int
+	Escapes bool
+	// Fixed lists the parameters every production call site passes the
+	// same constant, in parameter order.
+	Fixed []FixedArg
+}
+
+// FixedArg is a parameter and the one constant its callers pass, as written
+// at the first call site.
+type FixedArg struct {
+	Param string
+	Value string
 }
 
 // Decl returns the declaration with the given ID, or nil.

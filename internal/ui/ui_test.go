@@ -53,8 +53,8 @@ func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
 	status, body := e.app.Get("/")
 	require.Equal(t, http.StatusOK, status)
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
-	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"example.com/calc/calc"\]`, body, "the calc package tile")
-	assert.Regexp(t, `\["f",[^\]]*"calc.go","",0,"calc/calc.go"\]`, body, "its file tile")
+	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"example.com/calc/calc",0\]`, body, "the calc package tile")
+	assert.Regexp(t, `\["f",[^\]]*"calc.go","",0,"calc/calc.go",0\]`, body, "its file tile")
 	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$_atlas, \{focus: \$_selected\}\)"`, body)
 	assert.Contains(t, body, "Smells · 1")
 	assert.Contains(t, body, "Complex function")
@@ -212,7 +212,7 @@ func TestMap_givesTheHottestDeclarationTheHottestColour(t *testing.T) {
 
 	_, body := e.app.Get("/?lens=hotspot")
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
-	assert.Regexp(t, `\["d",[^\]]*"B","",5,"example.com/hot/p.B"\]`, body, "the hottest declaration sets the scale")
+	assert.Regexp(t, `\["d",[^\]]*"B","",5,"example.com/hot/p.B",1\]`, body, "the hottest declaration sets the scale")
 }
 
 func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
@@ -230,8 +230,8 @@ func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Contains(t, body, `data-ignore-morph`)
 	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$_atlas, \{reviewed: \$_reviewed, focus: \$_focus\}\)"`, body)
-	assert.Regexp(t, `\["p",[^\]]*"calc","",0,""\]`, body, "a package tile")
-	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+",0,""\]`, body, "Scale is lit with its card id")
+	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"",0\]`, body, "a package tile")
+	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+",0,"",1\]`, body, "Scale is lit with its card id")
 	assert.Regexp(t, `data-signals:_reviewed="\["u[0-9a-f]+"\]"`, body, "the reviewed card")
 	assert.Contains(t, body, `src="/_codemesh/d3.min.js?v=`)
 }
@@ -314,6 +314,23 @@ func TestMap_keepsADeclarationWithOnlyInfoSmellsLukewarm(t *testing.T) {
 
 	_, body := app.Get("/")
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
-	assert.Regexp(t, `\["d",[^\]]*"Unused","",2,"example.com/calc/internal/x.Unused"\]`, body,
+	assert.Regexp(t, `\["d",[^\]]*"Unused","",2,"example.com/calc/internal/x.Unused",1\]`, body,
 		"one info smell on one line is dense, yet only info")
+}
+
+func TestDiagnose_marksAPlaceAndOpensItsPrognosis(t *testing.T) {
+	t.Parallel()
+	e := serve(t)
+
+	status, body := e.app.Get("/diagnose")
+	require.Equal(t, http.StatusOK, status)
+	body = html.UnescapeString(body)
+	assert.Contains(t, body, `"key":"complex:example.com/calc/calc.tangle"`, "tangle is past the complexity limit")
+	assert.Contains(t, body, "Hard to follow")
+
+	status, body = e.app.Get("/prognosis/" + url.PathEscape("complex:example.com/calc/calc.tangle"))
+	require.Equal(t, http.StatusOK, status)
+	for _, want := range []string{"Why it matters", "What to do", "How to check"} {
+		assert.Contains(t, body, want)
+	}
 }

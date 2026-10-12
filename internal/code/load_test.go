@@ -114,13 +114,13 @@ func TestLoad_countsCodeLinesPerFile(t *testing.T) {
 	assert.Equal(t, 12, store.Lines())
 }
 
-func TestDecl_shapeIgnoresCommentsAndLayoutButNotCode(t *testing.T) {
+func TestFileShape_ignoresCommentsAndLayoutButNotCode(t *testing.T) {
 	t.Parallel()
-	a, err := code.ShapeOf("package p\n// doc\nfunc F(x int) int {\n\treturn x + 1 // inc\n}\n")
+	a, err := code.FileShape("package p\n// doc\nfunc F(x int) int {\n\treturn x + 1 // inc\n}\n")
 	require.NoError(t, err)
-	b, err := code.ShapeOf("package p\nfunc F(x int) int { return x +\n1 }\n")
+	b, err := code.FileShape("package p\nfunc F(x int) int { return x +\n1 }\n")
 	require.NoError(t, err)
-	c, err := code.ShapeOf("package p\nfunc F(x int) int { return x + 2 }\n")
+	c, err := code.FileShape("package p\nfunc F(x int) int { return x + 2 }\n")
 	require.NoError(t, err)
 
 	assert.Equal(t, a, b)

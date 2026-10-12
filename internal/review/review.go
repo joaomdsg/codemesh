@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"slices"
@@ -109,7 +108,7 @@ func Build(in Input) *Review {
 	for _, d := range in.Diffs {
 		p := cmp.Or(d.NewPath, d.OldPath)
 		hf, bf := file(in.Head, d.NewPath), file(in.Base, d.OldPath)
-		if path.Ext(p) != ".go" || hf == nil && bf == nil || hf != nil && hf.Generated {
+		if ext := path.Ext(p); ext != ".go" && ext != ".jl" || hf == nil && bf == nil || hf != nil && hf.Generated {
 			rev.Units = append(rev.Units, b.fileUnit(d, hf))
 			continue
 		}
@@ -127,7 +126,7 @@ func Build(in Input) *Review {
 	slices.SortStableFunc(rev.Units, func(a, b *Unit) int {
 		return cmp.Or(cmp.Compare(a.Lane, b.Lane), cmp.Compare(b.Risk, a.Risk), cmp.Compare(a.File, b.File), cmp.Compare(a.Name, b.Name))
 	})
-	rev.Introduced, rev.Fixed = delta(in.BaseFindings, in.HeadFindings)
+	rev.Introduced, rev.Fixed = smell.Delta(in.BaseFindings, in.HeadFindings)
 	attach(rev)
 	return rev
 }
@@ -145,13 +144,18 @@ func (b *builder) lines(s *code.Snapshot, rel string) []string {
 	if l, ok := b.src[p]; ok {
 		return l
 	}
-	data, err := os.ReadFile(p)
-	var l []string
-	if err == nil {
-		l = strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
-	}
+	l := readLines(p)
 	b.src[p] = l
 	return l
+}
+
+// readLines reads a file's lines as git stores it.
+func readLines(p string) []string {
+	data, err := gitx.Content(p)
+	if err != nil || data == nil {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 }
 
 func (b *builder) text(s *code.Snapshot, d *code.Decl) []string {
@@ -201,16 +205,8 @@ func (b *builder) declUnit(old, new *code.Decl) *Unit {
 // fileUnit covers a non-Go or generated file as one unit.
 func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	p := cmp.Or(d.NewPath, d.OldPath)
-	u := &Unit{ID: p, Name: p, File: p, Change: Modified, Lane: Other}
-	switch d.Status {
-	case gitx.Added:
-		u.Change = Added
-	case gitx.Deleted:
-		u.Change = Removed
-	case gitx.Renamed:
-		u.Change = Moved
-		u.Reasons = append(u.Reasons, "renamed from "+d.OldPath)
-	}
+	u := &Unit{ID: p, Name: p, File: p}
+	u.Change, u.Reasons = fileChange(d)
 	oldText, newText := b.lines(b.in.Base, d.OldPath), b.lines(b.in.Head, d.NewPath)
 	switch {
 	case d.Binary:
@@ -220,65 +216,68 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	default:
 		u.setLines(diffLines(oldText, newText, 1, 1))
 	}
-	switch {
-	case hf != nil && hf.Generated:
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "generated")
-	case path.Base(p) == "go.sum":
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "checksums")
-	case p == "go.mod":
-		u.Lane = Contract
-		u.Reasons = append(u.Reasons, "dependencies")
-	case isFixture(p):
-		u.Lane = Tests
-		u.Reasons = append(u.Reasons, "test fixture")
-	case path.Base(p) == "go.mod":
-		u.Reasons = append(u.Reasons, "dependencies", "in another module")
-	case path.Ext(p) == ".go" && sameShape(oldText, newText):
-		u.Lane = Noise
-		u.Reasons = append(u.Reasons, "comments or layout only")
-	case path.Ext(p) == ".go":
-		// Go code of a nested module: no type info here, so one unit per file.
-		u.Lane = Logic
-		if strings.HasSuffix(p, "_test.go") {
-			u.Lane = Tests
-		}
-		u.Reasons = append(u.Reasons, "in another module")
-	}
+	lane, why := fileLane(p, hf, oldText, newText)
+	u.Lane, u.Reasons = lane, append(u.Reasons, why...)
 	u.Risk = min(u.Added+u.Deleted, 40) / 4
 	u.Key = key(u.ID, strings.Join(newText, "\n")+"\x00"+strings.Join(oldText, "\n"))
 	return u
 }
 
+func fileChange(d gitx.FileDiff) (Change, []string) {
+	switch d.Status {
+	case gitx.Added:
+		return Added, nil
+	case gitx.Deleted:
+		return Removed, nil
+	case gitx.Renamed:
+		return Moved, []string{"renamed from " + d.OldPath}
+	}
+	return Modified, nil
+}
+
+// fileLane sorts a whole file into a lane, with the reasons for it: the
+// first rule that matches, else Other.
+func fileLane(p string, hf *code.File, oldText, newText []string) (Lane, []string) {
+	f := laneFile{p, path.Base(p), hf != nil && hf.Generated, oldText, newText}
+	for _, r := range laneRules {
+		if r.match(f) {
+			return r.lane, r.why
+		}
+	}
+	return Other, nil
+}
+
+type laneFile struct {
+	path, base       string
+	generated        bool
+	oldText, newText []string
+}
+
+func (f laneFile) goCode() bool { return path.Ext(f.path) == ".go" }
+
+// laneRules are tried in order. Go code of a nested module has no type info
+// here, so it is one unit per file.
+var laneRules = []struct {
+	match func(laneFile) bool
+	lane  Lane
+	why   []string
+}{
+	{func(f laneFile) bool { return f.generated }, Noise, []string{"generated"}},
+	{func(f laneFile) bool { return f.base == "go.sum" }, Noise, []string{"checksums"}},
+	{func(f laneFile) bool { return f.path == "go.mod" || f.path == "Project.toml" }, Contract, []string{"dependencies"}},
+	{func(f laneFile) bool { return f.base == "Manifest.toml" }, Noise, []string{"resolved versions"}},
+	{func(f laneFile) bool { return isFixture(f.path) }, Tests, []string{"test fixture"}},
+	{func(f laneFile) bool { return f.base == "go.mod" }, Other, []string{"dependencies", "in another module"}},
+	{func(f laneFile) bool { return f.goCode() && sameShape(f.oldText, f.newText) }, Noise, []string{"comments or layout only"}},
+	{func(f laneFile) bool { return f.goCode() && strings.HasSuffix(f.path, "_test.go") }, Tests, []string{"in another module"}},
+	{laneFile.goCode, Logic, []string{"in another module"}},
+}
+
 // looseUnit gathers changed lines outside any declaration: imports and
 // free-floating comments. Blank lines alone do not make a unit.
 func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpans []span) *Unit {
-	var lines []Line
-	collect := func(f *code.File, s *code.Snapshot, rel string, spans []span, op byte) {
-		if f == nil {
-			return
-		}
-		text := b.lines(s, rel)
-		for _, sp := range spans {
-			for n := sp.start; n < sp.start+sp.n && n <= len(text); n++ {
-				t := strings.TrimSpace(text[n-1])
-				// A package clause only changes with the file itself.
-				if t == "" || strings.HasPrefix(t, "package ") || inDecl(f, n) {
-					continue
-				}
-				l := Line{Op: op, Text: text[n-1]}
-				if op == '-' {
-					l.Old = n
-				} else {
-					l.New = n
-				}
-				lines = append(lines, l)
-			}
-		}
-	}
-	collect(bf, b.in.Base, d.OldPath, oldSpans, '-')
-	collect(hf, b.in.Head, d.NewPath, newSpans, '+')
+	lines := append(b.looseLines(bf, b.in.Base, d.OldPath, oldSpans, '-'),
+		b.looseLines(hf, b.in.Head, d.NewPath, newSpans, '+')...)
 	if len(lines) == 0 {
 		return nil
 	}
@@ -298,6 +297,31 @@ func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpa
 	return u
 }
 
+func (b *builder) looseLines(f *code.File, s *code.Snapshot, rel string, spans []span, op byte) []Line {
+	if f == nil {
+		return nil
+	}
+	var out []Line
+	text := b.lines(s, rel)
+	for _, sp := range spans {
+		for n := sp.start; n < sp.start+sp.n && n <= len(text); n++ {
+			t := strings.TrimSpace(text[n-1])
+			// A package clause only changes with the file itself.
+			if t == "" || strings.HasPrefix(t, "package ") || inDecl(f, n) {
+				continue
+			}
+			l := Line{Op: op, Text: text[n-1]}
+			if op == '-' {
+				l.Old = n
+			} else {
+				l.New = n
+			}
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
 func (u *Unit) setLines(lines []Line) {
 	u.Lines = lines
 	for _, l := range lines {
@@ -315,27 +339,14 @@ func (u *Unit) setLines(lines []Line) {
 // package. Unchanged, it is noise; edited, it is one modified unit with its
 // diff, not a removal plus an addition.
 func pairMoves(b *builder, units []*Unit) []*Unit {
-	type nk struct {
-		name string
-		kind code.Kind
-	}
-	removed, added := map[nk][]*Unit{}, map[nk][]*Unit{}
-	for _, u := range units {
-		switch {
-		case u.Kind == "":
-		case u.Change == Removed:
-			removed[nk{u.Name, u.Kind}] = append(removed[nk{u.Name, u.Kind}], u)
-		case u.Change == Added:
-			added[nk{u.Name, u.Kind}] = append(added[nk{u.Name, u.Kind}], u)
-		}
-	}
+	adds, rems := groupByName(units)
 	gone := map[*Unit]bool{}
-	for k, adds := range added {
-		rems := removed[k]
-		if len(adds) != 1 || len(rems) != 1 {
+	for k, as := range adds {
+		rs := rems[k]
+		if len(as) != 1 || len(rs) != 1 {
 			continue
 		}
-		u, r := adds[0], rems[0]
+		u, r := as[0], rs[0]
 		if len(u.Lines) == 0 || len(r.Lines) == 0 {
 			continue
 		}
@@ -347,13 +358,28 @@ func pairMoves(b *builder, units []*Unit) []*Unit {
 		}
 		b.remerge(u, r)
 	}
-	out := units[:0]
+	return slices.DeleteFunc(units, func(u *Unit) bool { return gone[u] })
+}
+
+type nameKind struct {
+	name string
+	kind code.Kind
+}
+
+// groupByName groups added and removed declaration units by name and kind.
+func groupByName(units []*Unit) (adds, rems map[nameKind][]*Unit) {
+	adds, rems = map[nameKind][]*Unit{}, map[nameKind][]*Unit{}
 	for _, u := range units {
-		if !gone[u] {
-			out = append(out, u)
+		k := nameKind{u.Name, u.Kind}
+		switch {
+		case u.Kind == "":
+		case u.Change == Removed:
+			rems[k] = append(rems[k], u)
+		case u.Change == Added:
+			adds[k] = append(adds[k], u)
 		}
 	}
-	return out
+	return adds, rems
 }
 
 // remerge turns an added unit into the modified version of a removed one.

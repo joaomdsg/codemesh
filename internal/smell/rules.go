@@ -3,7 +3,8 @@ package smell
 import (
 	"fmt"
 	"math"
-	"slices"
+	pathpkg "path"
+	"strings"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 )
@@ -12,7 +13,7 @@ func fileFindings(p *code.Package, f *code.File) []Finding {
 	if f.Test || f.Generated {
 		return nil
 	}
-	sev, limit, ok := tier(f.Lines, LargeFileLimit, LargeFileHighLimit)
+	sev, limit, ok := tier(f.Lines, LargeFileLimit, largeFileHighLimit)
 	if !ok {
 		return nil
 	}
@@ -28,48 +29,107 @@ func declFindings(s *code.Snapshot, p *code.Package, f *code.File, d *code.Decl)
 	if d.Test || f.Generated {
 		return nil
 	}
-	at := func(rule Rule, sev Severity, measure, limit int, detail string) Finding {
-		return Finding{
-			Rule: rule, Severity: sev, Package: p.Path, File: f.Path, Line: d.Start,
-			Decl: d.ID, Subject: d.Name, Measure: measure, Limit: limit, Detail: detail,
-		}
-	}
-	var out []Finding
-	isFunc := d.Kind == code.Func || d.Kind == code.Method
-	if isFunc {
-		if sev, limit, ok := tier(d.Lines, LongFuncLimit, LongFuncHighLimit); ok {
-			out = append(out, at(LongFunc, sev, d.Lines, limit, fmt.Sprintf("%d lines, %s %d", d.Lines, limitWord(sev), limit)))
-		}
-		if sev, limit, ok := tier(d.Complexity, ComplexFuncLimit, ComplexFuncHighLimit); ok {
-			out = append(out, at(ComplexFunc, sev, d.Complexity, limit, fmt.Sprintf("complexity %d, %s %d", d.Complexity, limitWord(sev), limit)))
-		}
-		if d.Nesting > DeepNestingLimit {
-			out = append(out, at(DeepNesting, Warn, d.Nesting, DeepNestingLimit, fmt.Sprintf("nesting %d, limit %d", d.Nesting, DeepNestingLimit)))
-		}
-		if d.Params > ManyParamsLimit {
-			out = append(out, at(ManyParams, Warn, d.Params, ManyParamsLimit, fmt.Sprintf("%d params, limit %d", d.Params, ManyParamsLimit)))
-		}
-	}
-	main := p.Name == "main"
-	// A main package exists to wire others together; leaning on them is its job.
-	if isFunc && !main {
-		if other, n, own := envy(d); other != "" {
-			f := at(EnviousFunc, Info, n, own, fmt.Sprintf("%d refs to %s, %d to own package", n, relOf(s, other), own))
+	at := site{s, p, f, d}
+	out := at.reach()
+	if d.Kind == code.Func || d.Kind == code.Method {
+		out = append(out, at.size()...)
+		// A main package exists to wire others together; leaning on them is its job.
+		if other, n, own := envy(d); other != "" && p.Name != "main" {
+			f := at.finding(EnviousFunc, Info, n, own, fmt.Sprintf("%d refs to %s, %d to own package", n, relOf(s, other), own))
 			f.Target = other
 			out = append(out, f)
 		}
+		out = append(out, at.layers()...)
 	}
+	return out
+}
+
+// layers flags a func that adds a layer and no behaviour: it only forwards
+// its parameters, or its callers all pass one value it could default.
+func (at site) layers() []Finding {
+	var out []Finding
+	if f, ok := at.passThrough(); ok {
+		out = append(out, f)
+	}
+	if f, ok := at.fixedArg(); ok {
+		out = append(out, f)
+	}
+	return out
+}
+
+func (at site) passThrough() (Finding, bool) {
+	d := at.d
+	if d.Forwards == "" || at.p.Name == "main" && d.Name == "main" || d.Name == "init" {
+		return Finding{}, false
+	}
+	return at.finding(PassThrough, Info, 0, 0, "only calls "+d.Forwards+" with its own arguments"), true
+}
+
+func (at site) fixedArg() (Finding, bool) {
+	d := at.d
+	// An importable package's exports have callers this module cannot see.
+	open := d.Exported && at.s.Importable(at.p.Path)
+	if len(d.Fixed) == 0 || d.Calls < fixedArgMinCalls || d.Escapes || open {
+		return Finding{}, false
+	}
+	var fixed []string
+	for _, a := range d.Fixed {
+		fixed = append(fixed, a.Param+" is "+a.Value)
+	}
+	return at.finding(FixedArg, Info, d.Calls, fixedArgMinCalls,
+		fmt.Sprintf("%s at all %d production call sites", strings.Join(fixed, ", "), d.Calls)), true
+}
+
+// site is the declaration a finding is about, and where it sits.
+type site struct {
+	s *code.Snapshot
+	p *code.Package
+	f *code.File
+	d *code.Decl
+}
+
+func (at site) finding(rule Rule, sev Severity, measure, limit int, detail string) Finding {
+	return Finding{
+		Rule: rule, Severity: sev, Package: at.p.Path, File: at.f.Path, Line: at.d.Start,
+		Decl: at.d.ID, Subject: at.d.Name, Measure: measure, Limit: limit, Detail: detail,
+	}
+}
+
+// reach flags a declaration nothing outside its package, or nothing at
+// all, references.
+func (at site) reach() []Finding {
+	d, main := at.d, at.p.Name == "main"
+	var out []Finding
 	// An importable package's exports are API for other modules, which this
 	// module cannot see; only a closed package's unused export is dead weight.
-	if d.Exported && !s.Importable(p.Path) && !main && d.Kind != code.Method && !usedOutside(s, d) {
-		out = append(out, at(UnusedExport, Info, 0, 0, "no use outside its package"))
+	if d.Exported && !at.s.Importable(at.p.Path) && !main && d.Kind != code.Method && !at.s.UsedOutside(d) {
+		out = append(out, at.finding(UnusedExport, Info, 0, 0, "no use outside its package"))
 	}
 	if len(d.Callers) == 0 && deadCandidate(d, main) {
 		sev := Info
 		if d.Kind == code.Func {
 			sev = Warn
 		}
-		out = append(out, at(DeadCode, sev, 0, 0, "no references"))
+		out = append(out, at.finding(DeadCode, sev, 0, 0, "no references"))
+	}
+	return out
+}
+
+// size measures a func or method against the limits in smell.go.
+func (at site) size() []Finding {
+	d := at.d
+	var out []Finding
+	if sev, limit, ok := tier(d.Lines, LongFuncLimit, longFuncHighLimit); ok {
+		out = append(out, at.finding(LongFunc, sev, d.Lines, limit, fmt.Sprintf("%d lines, %s %d", d.Lines, limitWord(sev), limit)))
+	}
+	if sev, limit, ok := tier(d.Complexity, ComplexFuncLimit, ComplexFuncHighLimit); ok {
+		out = append(out, at.finding(ComplexFunc, sev, d.Complexity, limit, fmt.Sprintf("complexity %d, %s %d", d.Complexity, limitWord(sev), limit)))
+	}
+	if d.Nesting > deepNestingLimit {
+		out = append(out, at.finding(DeepNesting, Warn, d.Nesting, deepNestingLimit, fmt.Sprintf("nesting %d, limit %d", d.Nesting, deepNestingLimit)))
+	}
+	if d.Params > ManyParamsLimit {
+		out = append(out, at.finding(ManyParams, Warn, d.Params, ManyParamsLimit, fmt.Sprintf("%d params, limit %d", d.Params, ManyParamsLimit)))
 	}
 	return out
 }
@@ -94,13 +154,6 @@ func limitWord(sev Severity) string {
 	return "limit"
 }
 
-func usedOutside(s *code.Snapshot, d *code.Decl) bool {
-	return slices.ContainsFunc(d.Callers, func(id string) bool {
-		c := s.Decl(id)
-		return c != nil && c.Package != d.Package
-	})
-}
-
 // deadCandidate reports whether an uncalled d is dead code rather than an
 // entry point, a method (it may satisfy an interface) or an export that
 // unused-export already covers.
@@ -117,12 +170,12 @@ func deadCandidate(d *code.Decl, main bool) bool {
 }
 
 // envy returns the module package d references most, when its references
-// there number at least EnviousFuncMinRefs and exceed those to d's own
+// there number at least enviousFuncMinRefs and exceed those to d's own
 // package, with the own count.
 func envy(d *code.Decl) (other string, n, own int) {
 	own = d.Refs[d.Package]
 	for pkg, c := range d.Refs {
-		if pkg == d.Package || c <= own || c < EnviousFuncMinRefs {
+		if pkg == d.Package || c <= own || c < enviousFuncMinRefs {
 			continue
 		}
 		if c > n || c == n && pkg < other {
@@ -133,10 +186,14 @@ func envy(d *code.Decl) (other string, n, own int) {
 }
 
 func relOf(s *code.Snapshot, path string) string {
-	if p := s.Package(path); p != nil {
-		return p.Rel
+	p := s.Package(path)
+	switch {
+	case p == nil:
+		return path
+	case p.Rel == ".":
+		return pathpkg.Base(s.Module)
 	}
-	return path
+	return p.Rel
 }
 
 func unstableDeps(s *code.Snapshot) []Finding {

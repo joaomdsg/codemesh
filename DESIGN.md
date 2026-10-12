@@ -1,14 +1,17 @@
 # codemesh design (v0.1)
 
-codemesh is a local web tool for Go modules. It does two jobs:
+codemesh is a local web tool for Go modules and Julia packages. It does
+three jobs:
 
 1. **Map**: show where the smells are, packages first.
 2. **Review**: make reading a change fast enough that review stops being the
    bottleneck.
+3. **Diagnose**: mark the places that need attention and say what to do
+   about each.
 
 Run it in a module: `codemesh [-addr localhost:7777] [-base REF] [-poll 1s]
-[dir]`. It analyses the working tree, so it reviews uncommitted work as well
-as branches.
+[dir]`. It analyses the working tree, so it reviews uncommitted work as
+well as branches.
 
 ## What we kept from the Intent Canvas, and what we dropped
 
@@ -36,9 +39,22 @@ We dropped:
 
 ## Truth over approximation
 
-All code facts come from `go/packages` with full type information: callers,
-uses, imports. No text matching. A smell the tool reports must be a fact you
-can click through to.
+All Go code facts come from `go/packages` with full type information:
+callers, uses, imports. No text matching. A smell the tool reports must be a
+fact you can click through to.
+
+Julia is the exception, because it picks a method when the code runs. Its
+facts come from Julia's own parser (`Base.JuliaSyntax`), run by
+`internal/code/julia.jl`, so spans, names, complexity and modules are exact;
+but a call is matched to declarations by name, so callers and references are
+inferred, and the Diagnose legend says so. Each module that owns files is a
+package, a submodule declared inside another module's file stays in that
+file's package with its names qualified, and each method is a declaration
+of its own, its ID carrying its argument types: `area(Square)`. A name links
+to the same package's declarations, to exported ones of packages it uses,
+and `M.f` to M's, through `const M = ...` aliases and
+`Base.get_extension`. A method of another module's function, such as
+`Base.show`, is a method: called by dispatch, never dead.
 
 ## Map
 
@@ -85,11 +101,13 @@ Each smell is a rule with a documented threshold:
 | deep nesting | nesting depth > 4 | control flow hides the main path |
 | many parameters | > 5 parameters | the function does several jobs |
 | large file | > 600 code lines (high > 1200) | the file has several concerns |
-| unused export | exported from a package other modules cannot import (`internal/`), no use outside its package | API surface that nobody uses |
+| unused export | exported from a package other modules cannot import (`internal/`), no use outside its package; a type counts as used through its constants, fields or methods, and a constant through its type | API surface that nobody uses |
 | dead code | no use anywhere; unexported names, or any name in a main package; not `main`, `init` or methods | weight with no value |
-| envious function | most of its references go to one other package | it may live in the wrong package |
-| unstable dependency | depends on a package more unstable than itself | breaks the Stable Dependencies Principle |
+| leans on another package | most of its references go to one other package | it may live in the wrong package |
+| imports a less stable package | depends on a package more unstable than itself | breaks the Stable Dependencies Principle: its changes ripple back |
 | untested package | no test files, and no test in another package refers to its declarations; not a main package | changes land unguarded |
+| pass-through | the body is one call whose arguments are the function's own parameters, in order; not `main`, `init` or a `Deprecated:` wrapper | a layer that adds an interface and no behaviour |
+| same argument everywhere | a func (not a method, which interfaces may call unseen) with ≥ 3 production call sites, none of them as a value, all passing one constant for a parameter; not an export of an importable package | the parameter should be a default |
 
 A finding past the high limit is high severity and names that limit
 ("121 lines, high limit 120").
@@ -105,8 +123,12 @@ no longer shows how many paths a test must cover.
 Code lines are lines holding a Go token. A long string literal (see Other
 below) counts as one line, so an inlined script does not make a large file.
 
+Pass-through and same argument everywhere are Go only. Tests' call sites
+do not count against same argument everywhere: a parameter only tests
+vary is a test seam in the production interface.
+
 Test code and generated files are exempt from every rule. Functions in a
-main package are exempt from envious-function, since wiring other packages
+main package are exempt from leans-on-another-package, since wiring other packages
 together is a main package's job.
 
 ## Review
@@ -163,6 +185,38 @@ units**, one per declaration added, removed or modified.
 8. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
    next unreviewed unit, `n` skips to it, `o` shows or hides a diff.
 
+## Diagnose
+
+The diagnosis is for people who do not yet know what healthy code looks
+like, as well as for those who do. It shows the map with a marker on each
+place that needs attention, and says in plain words what is wrong, why it
+matters, what to do and how to check it.
+
+1. **Prognoses** come from rule templates over the snapshot, the smells and
+   churn (`internal/prognosis`), so every number in a text is a fact the
+   reader can click through to. There are four lenses:
+   - Health: complex functions, more urgent when their file keeps changing.
+   - Reach: declarations 50 or more places use.
+   - Structure: a package holding over half the code, imports of less
+     stable packages, and a package other packages import that exports
+     over 60% of its declarations (from 8 up; a package nothing imports is a
+     command or the module's public face, where exports serve outsiders).
+   - Tests & smells: complex code no test calls, untested packages, long
+     parameter lists (grouped when three or more share a package) and large
+     files.
+2. **Urgency** has three levels: fix first, fix soon, when convenient. Each
+   level differs in size and fill as well as colour.
+3. **The map** colours tiles by the lens, with a ramp under it naming what
+   its coldest and hottest colours mean. Each package and file carries a
+   tab with the hottest heat inside it, so a small hot function shows from
+   the module view. Hovering a marker shows the one-sentence prognosis.
+   Clicking a tile rings its callers up to three hops. Every map marks an
+   exported declaration with a strip along its top edge and a bold label:
+   it is a promise other packages may rely on.
+4. **The prognosis** opens across the view. The map shrinks beside it,
+   framed on the place, with the related places listed below it and why
+   each matters.
+
 ## Live
 
 codemesh watches the working tree. On change it re-analyses and pushes the
@@ -181,9 +235,13 @@ the map and the review queue follow your edits.
   never posted back with an action. via v0.9.0 has no server-side setter for
   a `SignalCS`, so the values ride on a hidden element's `data-signals`
   attributes, which Datastar applies on every morph. A Datastar effect hands
-  them to `atlas.js`, which only draws, zooms and links.
+  them to `atlas.js`, which only draws, zooms and links. The Diagnose
+  island, `diagnose.js`, follows the same pattern.
 - Dependencies:
-  - `golang.org/x/tools/go/packages` loads the code.
+  - `golang.org/x/tools/go/packages` loads Go code; Julia's own parser,
+    through the `julia` on the PATH, loads Julia code. A pure-Go
+    tree-sitter grammar was tried first and mis-parsed 4 of HyperSignal.jl's
+    10 files.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
     binary files and mode changes correctly, where the alternatives do not.
   - Complexity is hand-rolled, about 40 lines, to avoid an
@@ -195,8 +253,9 @@ the map and the review queue follow your edits.
 cmd/codemesh        flags, wiring, serve
 internal/code       load a module: packages, files, decls, metrics, refs
 internal/smell      detectors over a code.Snapshot
-internal/gitx       git: merge-base, diff, show, churn, worktree
+internal/gitx       git: merge-base, diff, churn, worktree
 internal/review     diff + base/head snapshots → ranked change units
+internal/prognosis  snapshot + smells → plain-language prognoses
 internal/live       re-analyse on change, keep the base worktree, publish
 internal/treemap    squarified layout, pure
 internal/ui         via pages

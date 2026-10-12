@@ -1,7 +1,8 @@
-// Command codemesh serves a map of a Go module's smells and a review queue
-// for its working-tree changes.
+// Command codemesh serves a map of a Go module's smells, a review queue for
+// its working-tree changes and a diagnosis of its health.
 //
-//	codemesh [-addr localhost:7777] [-base REF] [dir]
+//	codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [dir]
+//	codemesh prognoses [dir]
 package main
 
 import (
@@ -17,62 +18,84 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/live"
+	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/ui"
 )
 
 func main() {
+	run := run
+	if len(os.Args) > 1 && os.Args[1] == "prognoses" {
+		run = listPrognoses
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "codemesh:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	addr := flag.String("addr", "localhost:7777", "address to serve on")
-	base := flag.String("base", "", "ref to review against (default: origin/HEAD, main or master)")
-	poll := flag.Duration("poll", time.Second, "how often to check the tree for changes")
+type options struct {
+	addr, base, dir string
+	poll            time.Duration
+}
+
+func parseFlags() options {
+	var o options
+	flag.StringVar(&o.addr, "addr", "localhost:7777", "address to serve on")
+	flag.StringVar(&o.base, "base", "", "ref to review against (default: origin/HEAD, main or master)")
+	flag.DurationVar(&o.poll, "poll", time.Second, "how often to check the tree for changes")
 	flag.Usage = func() {
 		fmt.Fprintln(flag.CommandLine.Output(), "usage: codemesh [flags] [dir]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
-	dir := "."
+	o.dir = "."
 	if flag.NArg() > 0 {
-		dir = flag.Arg(0)
+		o.dir = flag.Arg(0)
 	}
+	return o
+}
+
+func run() error {
+	o := parseFlags()
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
-	state, err := review.OpenState(live.StatePath(dir))
+	state, err := review.OpenState(live.StatePath(o.dir))
 	if err != nil {
 		return fmt.Errorf("review state: %w", err)
 	}
-	src := live.New(dir, *base, log)
+	sweep(o.dir, log)
+	src := live.New(o.dir, o.base, log)
 	defer src.Close()
 
-	ln, err := net.Listen("tcp", *addr)
+	ln, err := net.Listen("tcp", o.addr)
 	if err != nil {
 		return err
 	}
-	origin, err := originOf(*addr)
+	origin, err := originOf(o.addr)
 	if err != nil {
 		return err
 	}
-	srv := &http.Server{Handler: ui.New(src, state, origin), ReadHeaderTimeout: 10 * time.Second}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
+	srv := &http.Server{Handler: ui.New(src, state, origin), ReadHeaderTimeout: 10 * time.Second}
+	log.Info("serving", "url", origin)
+	return serve(ctx, srv, ln, func(ctx context.Context) {
+		if a := src.Refresh(); a.Err != nil {
+			log.Error("first analysis failed", "err", a.Err)
+		}
+		go src.Watch(ctx, o.poll)
+	})
+}
 
+// serve serves on ln, then calls watch. The end of ctx or a server error
+// shuts the server down.
+func serve(ctx context.Context, srv *http.Server, ln net.Listener, watch func(context.Context)) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
-	log.Info("serving", "url", origin)
-
-	if a := src.Refresh(); a.Err != nil {
-		log.Error("first analysis failed", "err", a.Err)
-	}
-	go src.Watch(ctx, *poll)
-
+	watch(ctx)
 	select {
 	case err := <-errc:
 		if !errors.Is(err, http.ErrServerClosed) {
@@ -97,4 +120,32 @@ func originOf(addr string) (string, error) {
 		host = "localhost"
 	}
 	return "http://" + net.JoinHostPort(host, port), nil
+}
+
+// listPrognoses prints a tree's prognoses, one per line, most urgent first.
+func listPrognoses() error {
+	dir := "."
+	if len(os.Args) > 2 {
+		dir = os.Args[2]
+	}
+	snap, fs, err := live.Load(dir)
+	if err != nil {
+		return err
+	}
+	for _, g := range prognosis.Find(snap, fs) {
+		fmt.Println(g)
+	}
+	return nil
+}
+
+// sweep removes worktrees left by codemesh servers that died without
+// cleaning up.
+func sweep(dir string, log *slog.Logger) {
+	repo, err := gitx.Open(dir)
+	if err != nil {
+		return
+	}
+	if err := repo.Sweep(); err != nil {
+		log.Warn("removing worktrees of dead servers", "err", err)
+	}
 }

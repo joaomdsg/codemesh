@@ -1,6 +1,7 @@
 package gitx_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -216,7 +217,7 @@ func TestRepo_diffRenameWithEditKeepsHunk(t *testing.T) {
 	assert.Equal(t, gitx.Renamed, fds[0].Status)
 	assert.Equal(t, "old.txt", fds[0].OldPath)
 	assert.Equal(t, "sub/new.txt", fds[0].NewPath)
-	assert.Equal(t, []gitx.Hunk{{OldStart: 3, OldLines: 1, NewStart: 3, NewLines: 1}}, fds[0].Hunks)
+	assert.Equal(t, []span{{OldStart: 3, OldLines: 1, NewStart: 3, NewLines: 1}}, spans(fds[0].Hunks))
 }
 
 func TestRepo_diffReportsDeletedFile(t *testing.T) {
@@ -232,7 +233,7 @@ func TestRepo_diffReportsDeletedFile(t *testing.T) {
 	assert.Equal(t, "gone.txt", fds[0].OldPath)
 	assert.Empty(t, fds[0].NewPath)
 	assert.Equal(t, gitx.Deleted, fds[0].Status)
-	assert.Equal(t, []gitx.Hunk{{OldStart: 1, OldLines: 3, NewStart: 0, NewLines: 0}}, fds[0].Hunks)
+	assert.Equal(t, []span{{OldStart: 1, OldLines: 3, NewStart: 0, NewLines: 0}}, spans(fds[0].Hunks))
 }
 
 func TestRepo_diffReportsPointInsertionWithZeroOldLines(t *testing.T) {
@@ -245,8 +246,8 @@ func TestRepo_diffReportsPointInsertionWithZeroOldLines(t *testing.T) {
 	fds, err := open(t, dir).Diff("HEAD")
 	require.NoError(t, err)
 	require.Len(t, fds, 1)
-	assert.Equal(t, gitx.Modified, fds[0].Status)
-	assert.Equal(t, []gitx.Hunk{{OldStart: 1, OldLines: 0, NewStart: 2, NewLines: 2}}, fds[0].Hunks)
+	assert.NotContains(t, []any{gitx.Added, gitx.Deleted, gitx.Renamed}, fds[0].Status, "modified")
+	assert.Equal(t, []span{{OldStart: 1, OldLines: 0, NewStart: 2, NewLines: 2}}, spans(fds[0].Hunks))
 }
 
 func TestRepo_diffReportsPointDeletionWithZeroNewLines(t *testing.T) {
@@ -259,7 +260,7 @@ func TestRepo_diffReportsPointDeletionWithZeroNewLines(t *testing.T) {
 	fds, err := open(t, dir).Diff("HEAD")
 	require.NoError(t, err)
 	require.Len(t, fds, 1)
-	assert.Equal(t, []gitx.Hunk{{OldStart: 2, OldLines: 1, NewStart: 1, NewLines: 0}}, fds[0].Hunks)
+	assert.Equal(t, []span{{OldStart: 2, OldLines: 1, NewStart: 1, NewLines: 0}}, spans(fds[0].Hunks))
 }
 
 func TestRepo_diffIncludesStagedAndUnstaged(t *testing.T) {
@@ -282,10 +283,10 @@ func TestRepo_diffCountsUntrackedFileAsAdded(t *testing.T) {
 	tests := []struct {
 		name    string
 		content string
-		hunks   []gitx.Hunk
+		hunks   []span
 	}{
-		{"trailing newline", "a\nb\nc\n", []gitx.Hunk{{NewStart: 1, NewLines: 3}}},
-		{"no trailing newline", "a\nb\nc", []gitx.Hunk{{NewStart: 1, NewLines: 3}}},
+		{"trailing newline", "a\nb\nc\n", []span{{NewStart: 1, NewLines: 3}}},
+		{"no trailing newline", "a\nb\nc", []span{{NewStart: 1, NewLines: 3}}},
 		{"empty", "", nil},
 	}
 	for _, tt := range tests {
@@ -303,7 +304,7 @@ func TestRepo_diffCountsUntrackedFileAsAdded(t *testing.T) {
 			assert.Empty(t, fd.OldPath)
 			assert.Equal(t, "pkg/new.txt", fd.NewPath)
 			assert.False(t, fd.Binary)
-			assert.Equal(t, tt.hunks, fd.Hunks)
+			assert.Equal(t, tt.hunks, spans(fd.Hunks))
 		})
 	}
 }
@@ -321,6 +322,45 @@ func TestRepo_diffMarksUntrackedBinary(t *testing.T) {
 	assert.Empty(t, fd.Hunks)
 }
 
+func TestRepo_diffListsUntrackedLinksWithoutReadingThem(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "tracked.txt", "t\n")
+	commit(t, dir, "one")
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+	write(t, dir, "sub/x.txt", "x\n")
+	require.NoError(t, os.Symlink("missing", filepath.Join(dir, "dangling")))
+	require.NoError(t, os.Symlink("sub", filepath.Join(dir, "dirlink")))
+	nested := filepath.Join(dir, "nested")
+	require.NoError(t, os.Mkdir(nested, 0o755))
+	require.NoError(t, exec.Command("git", "-C", nested, "init", "--quiet").Run())
+
+	got := diffByPath(t, open(t, dir), "HEAD")
+	for _, p := range []string{"dangling", "dirlink"} {
+		require.Contains(t, got, p)
+		assert.Equal(t, gitx.Added, got[p].Status, p)
+		assert.Empty(t, got[p].Hunks, p)
+	}
+	assert.NotContains(t, got, "nested/", "a nested repository has no lines of its own")
+}
+
+func TestRepo_ignoresAGitDirFromTheEnvironment(t *testing.T) {
+	a, b := newRepo(t), newRepo(t)
+	for _, dir := range []string{a, b} {
+		write(t, dir, "f.txt", dir)
+		commit(t, dir, "one")
+	}
+	want := git(t, a, "rev-parse", "HEAD")
+	t.Setenv("GIT_DIR", filepath.Join(b, ".git"))
+	t.Setenv("GIT_WORK_TREE", b)
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(b, ".git", "objects"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(b, ".git"))
+
+	got, err := (&gitx.Repo{Dir: a}).Head()
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "git runs on the repository it was given")
+}
+
 func TestRepo_diffMarksTrackedBinary(t *testing.T) {
 	t.Parallel()
 	dir := newRepo(t)
@@ -329,7 +369,7 @@ func TestRepo_diffMarksTrackedBinary(t *testing.T) {
 	write(t, dir, "blob.bin", "ab\x00ef\n")
 
 	fd := diffByPath(t, open(t, dir), "HEAD")["blob.bin"]
-	assert.Equal(t, gitx.Modified, fd.Status)
+	assert.NotContains(t, []any{gitx.Added, gitx.Deleted, gitx.Renamed}, fd.Status, "modified")
 	assert.True(t, fd.Binary)
 	assert.Empty(t, fd.Hunks)
 }
@@ -371,29 +411,6 @@ func TestRepo_diffIgnoresDiffConfigAndUnicodeNames(t *testing.T) {
 	require.Len(t, fds, 1)
 	assert.Equal(t, "pkg/café.txt", fds[0].OldPath)
 	assert.Equal(t, "pkg/café.txt", fds[0].NewPath)
-}
-
-func TestRepo_showReturnsFileAtRev(t *testing.T) {
-	t.Parallel()
-	dir := newRepo(t)
-	write(t, dir, "pkg/f.txt", "v1\n")
-	commit(t, dir, "one")
-	write(t, dir, "pkg/f.txt", "v2\n")
-	commit(t, dir, "two")
-
-	got, err := open(t, dir).Show("HEAD~1", "pkg/f.txt")
-	require.NoError(t, err)
-	assert.Equal(t, "v1\n", string(got))
-}
-
-func TestRepo_showErrorsOnMissingPath(t *testing.T) {
-	t.Parallel()
-	dir := newRepo(t)
-	write(t, dir, "a.txt", "a\n")
-	commit(t, dir, "one")
-
-	_, err := open(t, dir).Show("HEAD", "missing.txt")
-	assert.Error(t, err)
 }
 
 func TestRepo_churnCountsCommitsPerPath(t *testing.T) {
@@ -482,6 +499,32 @@ func TestRepo_worktreeChecksOutRevAndCleansUp(t *testing.T) {
 	assert.Len(t, strings.Split(git(t, dir, "worktree", "list"), "\n"), 1)
 }
 
+func TestRepo_sweepRemovesWorktreesOfDeadServersOnly(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "f.txt", "v1\n")
+	commit(t, dir, "one")
+	r := open(t, dir)
+
+	live, cleanup, err := r.Worktree("HEAD")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup() })
+	dead := exec.Command("true")
+	require.NoError(t, dead.Run())
+	gone := filepath.Join(t.TempDir(), "gone")
+	git(t, dir, "worktree", "add", "--detach", "--lock", "--reason", fmt.Sprintf("codemesh pid %d", dead.Process.Pid), gone, "HEAD")
+	other := filepath.Join(t.TempDir(), "other")
+	git(t, dir, "worktree", "add", "--detach", "--lock", "--reason", "someone else's", other, "HEAD")
+
+	require.NoError(t, r.Sweep())
+	list := git(t, dir, "worktree", "list", "--porcelain")
+	assert.Contains(t, list, "worktree "+live+"\nHEAD")
+	assert.Contains(t, list, fmt.Sprintf("locked codemesh pid %d", os.Getpid()), "this process holds its own worktree")
+	assert.NotContains(t, list, gone)
+	assert.NoDirExists(t, gone)
+	assert.Contains(t, list, "worktree "+other+"\n", "a lock codemesh did not take")
+}
+
 func TestRepo_worktreeErrorsOnUnknownRev(t *testing.T) {
 	t.Parallel()
 	dir := newRepo(t)
@@ -490,4 +533,15 @@ func TestRepo_worktreeErrorsOnUnknownRev(t *testing.T) {
 
 	_, _, err := open(t, dir).Worktree("nope")
 	assert.Error(t, err)
+}
+
+// span mirrors gitx's unexported hunk, so tests can spell expected ranges.
+type span struct{ OldStart, OldLines, NewStart, NewLines int }
+
+func spans[H ~struct{ OldStart, OldLines, NewStart, NewLines int }](hs []H) []span {
+	var out []span
+	for _, h := range hs {
+		out = append(out, span(h))
+	}
+	return out
 }

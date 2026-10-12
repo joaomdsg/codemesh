@@ -18,7 +18,7 @@
   --heat2: #f3d9a4;
   --heat3: #eeb877;
   --heat4: #e38b5a;
-  --heat5: #cf5545;
+  --heat5: #cc4a39;
   --sp1: 4px;
   --sp2: 8px;
   --sp3: 12px;
@@ -402,9 +402,11 @@ kbd {
 .callers-line .changed { display: inline-flex; gap: var(--sp1); align-items: center; }
 
 @media (max-width: 600px) {
+  .stamp { display: none; }
   .main { padding: var(--sp2); }
   .top { padding-inline: var(--sp2); }
-  .stamp { margin-left: 0; width: 100%; }
+  .tabs { gap: 0; }
+  .tab { padding-inline: var(--sp2); }
 }
 
 .chip-smell { color: var(--bad); border-color: var(--bad); }
@@ -417,3 +419,133 @@ kbd {
 .more { align-self: flex-start; }
 .ol-more { color: var(--muted); font-size: 12px; padding-left: calc(16px + var(--sp2)); }
 .banner.warn { color: var(--warn); background: var(--surface); overflow-wrap: anywhere; }
+
+/* Diagnose */
+.dx { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: var(--sp4); align-items: start; }
+.dx-open { grid-template-columns: minmax(300px, 420px) minmax(0, 1fr); }
+@media (max-width: 900px) { .dx, .dx-open { grid-template-columns: minmax(0, 1fr); } }
+.dx-pane, .dx-side, .dx-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--sp3);
+  min-width: 0;
+}
+.dx-side { position: sticky; top: var(--sp4); max-height: calc(100vh - 90px); overflow: auto; }
+/* Scroll shadows: the local layers cover the shadows at either end, so a shadow shows only where more of the panel is hidden. */
+.side, .dx-side {
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 24px no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 24px no-repeat local,
+    linear-gradient(color-mix(in srgb, var(--ink) 16%, transparent), transparent) top / 100% 8px no-repeat scroll,
+    linear-gradient(transparent, color-mix(in srgb, var(--ink) 16%, transparent)) bottom / 100% 8px no-repeat scroll,
+    var(--surface);
+}
+/* Stacked under the map, the panel is part of the page: no second scroll. */
+@media (max-width: 900px) { .side, .dx-side { position: static; max-height: none; overflow: visible; } }
+.dx-map { position: relative; }
+.dx-mini { border: 1px solid var(--line-soft); margin-bottom: var(--sp3); }
+.dx-census { display: flex; gap: var(--sp3); flex-wrap: wrap; margin: 0; }
+.dx-count { display: inline-flex; align-items: center; gap: var(--sp1); white-space: nowrap; }
+.dx-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp1); }
+
+/* Urgency is size and fill as well as colour: hollow, filled, filled with a ring. */
+.lvl { display: inline-block; flex: none; border-radius: 50%; vertical-align: middle; }
+.lvl-1 { width: 8px; height: 8px; border: 1.5px solid var(--muted); }
+.lvl-2 { width: 10px; height: 10px; background: var(--warn); }
+.lvl-3 { width: 12px; height: 12px; margin: 0 3px; background: var(--bad); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--bad); }
+
+.dx-list { list-style: none; margin: 0; padding: 0; }
+.dx-row { display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: var(--sp2); align-items: center; padding: var(--sp2) 0; border-top: 1px solid var(--line-soft); color: var(--ink); }
+.dx-list li:first-child .dx-row { border-top: 0; }
+.dx-row:hover { text-decoration: none; }
+.dx-row:hover .dx-row-title { color: var(--accent); }
+.dx-row-title { font-weight: 600; }
+.dx-row-name { grid-column: 2; font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+/* Map marks */
+.atlas .mk { cursor: pointer; outline: none; }
+.atlas .mk circle { stroke: var(--surface); }
+.atlas .mk.mk-1 circle { fill: var(--surface); stroke: var(--muted); }
+.atlas .mk.mk-2 circle { fill: var(--warn); }
+.atlas .mk.mk-3 circle { fill: var(--bad); }
+.atlas .mk:hover circle, .atlas .mk:focus-visible circle, .atlas .mk.cur circle { stroke: var(--ink); }
+.atlas .dx-tab { stroke: var(--surface); pointer-events: none; }
+.atlas .dx-tab.h3 { fill: var(--heat3); }
+.atlas .dx-tab.h4 { fill: var(--heat4); }
+.atlas .dx-tab.h5 { fill: var(--heat5); }
+.atlas .tile.dim { opacity: .2; }
+.atlas .tile.sel { stroke: var(--ink); stroke-width: 2.5; }
+.atlas .tile.r1 { stroke: var(--accent); stroke-width: 2.5; }
+.atlas .tile.r2 { stroke: var(--accent); stroke-width: 1.5; }
+.atlas .tile.r3 { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 2; }
+.atlas .tile.focus { stroke: var(--ink); stroke-width: 2.5; }
+.atlas .tile.rel { stroke: var(--accent); stroke-width: 1.5; }
+.atlas .tile.hl { stroke: var(--accent); stroke-width: 3; }
+.atlas .dx-lines rect.tile { fill: none; pointer-events: none; }
+.atlas .exp-bar { fill: var(--ink); opacity: 0.55; pointer-events: none; }
+.atlas .l-d.exp { font-weight: 700; }
+
+.dx-tip {
+  position: absolute;
+  z-index: 2;
+  max-width: 300px;
+  padding: var(--sp2) var(--sp3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgb(0 0 0 / .12);
+  font-size: 13px;
+  pointer-events: none;
+}
+.dx-tip-level { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.dx-tip-level.tl-1 { color: var(--muted); }
+.dx-tip-level.tl-2 { color: var(--warn); }
+.dx-tip-level.tl-3 { color: var(--bad); }
+.dx-tip-title { font-weight: 600; margin-top: 2px; }
+.dx-tip-name { font: 12px var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.dx-tip-sum { margin-top: var(--sp1); }
+.dx-tip-hint { margin-top: var(--sp1); color: var(--muted); font-size: 12px; }
+
+/* Prognosis panel */
+/* Prose keeps a readable measure; the panel itself takes the width. */
+.dx-panel p, .dx-steps { max-width: 80ch; }
+/* Prose keeps a readable measure; the width left over takes the numbers
+   and the code beside it rather than staying empty. */
+.dx-cols { display: grid; grid-template-columns: minmax(0, 1fr); column-gap: var(--sp5); }
+@media (min-width: 1600px) { .dx-cols { grid-template-columns: minmax(0, 80ch) minmax(0, 1fr); } .dx-more > h3:first-child { margin-top: var(--sp5); } }
+.dx-panel h3 { margin: var(--sp4) 0 var(--sp1); }
+.dx-panel p { margin: 0; }
+.dx-back { font-size: 13px; }
+.dx-level { display: inline-flex; align-items: center; gap: var(--sp1); font-size: 13px; color: var(--muted); }
+.dx-title { font-size: 22px; line-height: 1.25; margin: var(--sp3) 0 var(--sp1); }
+.dx-panel .loc { margin-bottom: var(--sp3); }
+.dx-summary { font-size: 16px; }
+.dx-steps { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--sp1); }
+.dx-fold { margin-top: var(--sp3); }
+.dx-fold summary { cursor: pointer; color: var(--accent); }
+.dx-facts { border-collapse: collapse; margin-top: var(--sp2); font-size: 13px; }
+.dx-facts th, .dx-facts td { padding: 2px var(--sp3) 2px 0; text-align: left; }
+.dx-facts th { color: var(--muted); font-weight: 400; }
+.dx-facts .over { color: var(--bad); font-weight: 600; }
+.dx-refs { list-style: none; margin: var(--sp1) 0 0; padding: 0; }
+.dx-ref { padding: var(--sp1) 0; border-top: 1px solid var(--line-soft); cursor: pointer; }
+.dx-ref:first-child { border-top: 0; }
+.dx-ref-name { display: inline-flex; align-items: center; gap: var(--sp1); font: 12px var(--mono); overflow-wrap: anywhere; }
+.dx-ref-why { display: block; color: var(--muted); font-size: 12px; }
+
+/* Colour ramps: what a map's colours mean. */
+.ramp { display: flex; align-items: center; gap: var(--sp2); flex-wrap: wrap; margin: var(--sp2) 0 0; font-size: 12px; color: var(--muted); }
+.ramp-sw { display: inline-flex; }
+.sw { display: inline-block; width: 16px; height: 10px; border: 1px solid var(--line-soft); }
+.ramp-sw .sw + .sw { border-left: 0; }
+.sw.h0 { background: var(--heat0); }
+.sw.h1 { background: var(--heat1); }
+.sw.h2 { background: var(--heat2); }
+.sw.h3 { background: var(--heat3); }
+.sw.h4 { background: var(--heat4); }
+.sw.h5 { background: var(--heat5); }
+.ramp-end { display: inline-flex; align-items: center; gap: var(--sp1); min-width: 0; }
+.dx-lvl { white-space: nowrap; }
+.sw-exp { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid color-mix(in srgb, var(--ink) 55%, var(--surface)); }
+.dx-side > .ramp { margin-bottom: var(--sp4); }

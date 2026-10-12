@@ -1,10 +1,11 @@
 # codemesh
 
-A local web tool for Go modules. It does two jobs:
+A local web tool for Go modules and Julia packages. It does three jobs:
 
 - **Map**: find code smells, packages first.
 - **Review**: read a change as declarations, riskiest first, so review stops
   being the bottleneck.
+- **Diagnose**: mark the places that need attention and say what to do.
 
 It analyses the working tree and re-analyses within a second of every save,
 so you can keep it open while you code.
@@ -15,16 +16,19 @@ so you can keep it open while you code.
 go install github.com/joaomdsg/codemesh/cmd/codemesh@latest
 ```
 
-It needs Go 1.27 or newer and `git` on the PATH.
+It needs Go 1.27 or newer and `git` on the PATH, and `julia` 1.10 or newer
+to analyse a Julia package.
 
 ## Run
 
 ```
 codemesh [-addr localhost:7777] [-base REF] [-poll 1s] [dir]
+codemesh prognoses [dir]
 ```
 
-Open http://localhost:7777. `dir` defaults to the current directory and must
-hold a `go.mod`.
+Open http://localhost:7777. `codemesh prognoses` prints the Diagnose
+findings, one per line, most urgent first. `dir` defaults to the current directory and must
+hold a `go.mod`, or a Julia package's `Project.toml`.
 
 The review is the working tree, staged, unstaged and untracked, against its
 merge-base with `-base`. Without `-base` it is `origin/HEAD`, else `main`,
@@ -56,6 +60,14 @@ A nested module, a directory with its own `go.mod`, is left out of the map
 and the matrix, and a banner names it. Run codemesh in it to map it.
 
 The smell rules and their thresholds are in [DESIGN.md](DESIGN.md).
+
+## Diagnose
+
+The Diagnose tab marks the places that need attention and explains each in
+plain words: what is wrong, why it matters, what to do and how to check.
+Hover a marker for the short version, click it for the full one.
+`codemesh prognoses [dir]` prints the same list, most urgent first. See
+[DESIGN.md](DESIGN.md#diagnose).
 
 ## Review
 

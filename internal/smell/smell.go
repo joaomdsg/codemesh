@@ -41,22 +41,27 @@ const (
 	EnviousFunc     Rule = "envious-func"
 	UnstableDep     Rule = "unstable-dep"
 	UntestedPackage Rule = "untested-package"
+	PassThrough     Rule = "pass-through"
+	FixedArg        Rule = "fixed-arg"
 )
 
 // Thresholds: a measure above the limit is a finding. The High limits raise
 // the severity.
 const (
 	LongFuncLimit        = 60
-	LongFuncHighLimit    = 120
+	longFuncHighLimit    = 120
 	ComplexFuncLimit     = 10
 	ComplexFuncHighLimit = 20
-	DeepNestingLimit     = 4
+	deepNestingLimit     = 4
 	ManyParamsLimit      = 5
 	LargeFileLimit       = 600
-	LargeFileHighLimit   = 1200
-	// EnviousFuncMinRefs is the fewest references to the other package that
+	largeFileHighLimit   = 1200
+	// enviousFuncMinRefs is the fewest references to the other package that
 	// count as envy.
-	EnviousFuncMinRefs = 4
+	enviousFuncMinRefs = 4
+	// fixedArgMinCalls is the fewest production call sites that make one
+	// constant a pattern rather than a coincidence.
+	fixedArgMinCalls = 3
 )
 
 var why = map[Rule]string{
@@ -68,8 +73,10 @@ var why = map[Rule]string{
 	UnusedExport:    "Exported but unused outside its package: API surface nobody uses.",
 	DeadCode:        "Declared and never referenced: weight with no value.",
 	EnviousFunc:     "Most of its references go to one other package; it may belong there.",
-	UnstableDep:     "Depends on a package less stable than itself, against the Stable Dependencies Principle.",
+	UnstableDep:     "Imports a package that changes more freely than itself, so that package's changes ripple into this one.",
 	UntestedPackage: "No test refers to it: changes land unguarded.",
+	PassThrough:     "It only hands its arguments to another function: a layer that adds an interface and no behaviour.",
+	FixedArg:        "Every caller passes the same value: make it the default and drop the parameter.",
 }
 
 // Why is the one-line reason a rule matters.

@@ -23,8 +23,8 @@ import (
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
-// ChurnWindow is how far back from the last commit churn counts commits.
-const ChurnWindow = 90 * 24 * time.Hour
+// churnWindow is how far back from the last commit churn counts commits.
+const churnWindow = 90 * 24 * time.Hour
 
 // Analysis is one full pass over the tree.
 type Analysis struct {
@@ -107,7 +107,7 @@ func (s *Source) analyse() *Analysis {
 		a.Findings = smell.Find(snap)
 		return a
 	}
-	if churn, err := s.repo.Churn(ChurnWindow); err == nil {
+	if churn, err := s.repo.Churn(churnWindow); err == nil {
 		applyChurn(snap, s.repo.Dir, churn)
 	}
 	a.Findings = smell.Find(snap)
@@ -214,12 +214,12 @@ func (s *Source) fingerprint() string {
 			return nil
 		}
 		if d.IsDir() {
-			if p != s.Dir && (strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "testdata" || d.Name() == "node_modules") {
+			if p != s.Dir && unwatchedDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !strings.HasSuffix(p, ".go") && d.Name() != "go.mod" && d.Name() != "go.sum" {
+		if !watched(d.Name()) {
 			return nil
 		}
 		if info, err := d.Info(); err == nil {
@@ -232,6 +232,21 @@ func (s *Source) fingerprint() string {
 		fmt.Fprintln(h, head)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// Load loads the module in dir and sets each file's churn from its repo,
+// when dir is in one: the analysis a Source runs, for a tree it does not watch.
+func Load(dir string) (*code.Snapshot, []smell.Finding, error) {
+	snap, err := code.Load(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if repo, err := gitx.Open(dir); err == nil {
+		if churn, err := repo.Churn(churnWindow); err == nil {
+			applyChurn(snap, repo.Dir, churn)
+		}
+	}
+	return snap, smell.Find(snap), nil
 }
 
 // applyChurn copies per-path commit counts onto the snapshot's files. Churn
@@ -260,4 +275,20 @@ func StatePath(dir string) string {
 		gitDir = filepath.Join(dir, ".codemesh")
 	}
 	return filepath.Join(gitDir, "codemesh", "reviewed.json")
+}
+
+// unwatchedDir reports whether analysis skips a directory: hidden ones,
+// vendored code and test data.
+func unwatchedDir(name string) bool {
+	return strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "node_modules"
+}
+
+// watched reports whether a file's edits change the analysis: Go and Julia
+// sources and the files that name their dependencies.
+func watched(name string) bool {
+	switch name {
+	case "go.mod", "go.sum", "Project.toml", "Manifest.toml":
+		return true
+	}
+	return strings.HasSuffix(name, ".go") || strings.HasSuffix(name, ".jl")
 }
