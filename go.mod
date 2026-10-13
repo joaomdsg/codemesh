@@ -5,6 +5,7 @@ go 1.27.0
 require (
 	github.com/bluekeyes/go-gitdiff v0.9.0
 	github.com/go-via/via v0.9.0
+	github.com/odvcencio/gotreesitter v0.55.1
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/tools v0.51.0
 )

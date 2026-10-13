@@ -1,13 +1,12 @@
 package review
 
 import (
-	"encoding/json"
 	"errors"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync"
+
+	"github.com/joaomdsg/codemesh/internal/store"
 )
 
 // State is the set of unit keys a reviewer marked reviewed, kept in a JSON
@@ -20,17 +19,18 @@ type State struct {
 }
 
 // OpenState reads the state file at path; a missing file is an empty state.
-func OpenState(path string) (*State, error) {
+func OpenState(path string) (*State, error) { return OpenStateFrom(path, "") }
+
+// OpenStateFrom is OpenState that, while path does not exist, starts from the
+// keys in the legacy file instead. The legacy file is left as it is.
+func OpenStateFrom(path, legacy string) (*State, error) {
 	s := &State{path: path, done: map[string]bool{}}
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return s, nil
-	}
-	if err != nil {
-		return nil, err
-	}
 	var keys []string
-	if err := json.Unmarshal(data, &keys); err != nil {
+	err := store.ReadJSON(path, &keys)
+	if errors.Is(err, fs.ErrNotExist) && legacy != "" {
+		err = store.ReadJSON(legacy, &keys)
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
 	for _, k := range keys {
@@ -60,17 +60,5 @@ func (s *State) Set(key string, done bool) error {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
-	data, err := json.Marshal(keys)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	// Write then rename, so a crash never leaves a torn file.
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return store.WriteJSON(s.path, keys)
 }

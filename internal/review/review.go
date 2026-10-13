@@ -15,6 +15,9 @@ import (
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/gitx"
+	"github.com/joaomdsg/codemesh/internal/graphdiff"
+	"github.com/joaomdsg/codemesh/internal/lang"
+	"github.com/joaomdsg/codemesh/internal/lang/golang"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
@@ -87,6 +90,8 @@ type Input struct {
 	Base, Head                 *code.Snapshot
 	Diffs                      []gitx.FileDiff
 	BaseFindings, HeadFindings []smell.Finding
+	// Graph is the structural diff of Base and Head; Build computes it when nil.
+	Graph *graphdiff.Diff
 }
 
 // Lane returns the units of one lane, in risk order.
@@ -102,13 +107,16 @@ func (r *Review) Lane(l Lane) []*Unit {
 
 // Build triages the diff into units.
 func Build(in Input) *Review {
-	b := &builder{in: in, src: map[string][]string{}}
+	if in.Graph == nil {
+		in.Graph = graphdiff.Between(in.Base, in.Head, in.BaseFindings, in.HeadFindings)
+	}
+	b := &builder{in: in, src: map[string][]string{}, gained: gained(in)}
 	var touched orderedSet
 	rev := &Review{}
 	for _, d := range in.Diffs {
 		p := cmp.Or(d.NewPath, d.OldPath)
 		hf, bf := file(in.Head, d.NewPath), file(in.Base, d.OldPath)
-		if ext := path.Ext(p); ext != ".go" && ext != ".jl" || hf == nil && bf == nil || hf != nil && hf.Generated {
+		if ext := path.Ext(p); !slices.Contains(lang.Exts(), ext) || hf == nil && bf == nil || hf != nil && hf.Generated {
 			rev.Units = append(rev.Units, b.fileUnit(d, hf))
 			continue
 		}
@@ -126,14 +134,25 @@ func Build(in Input) *Review {
 	slices.SortStableFunc(rev.Units, func(a, b *Unit) int {
 		return cmp.Or(cmp.Compare(a.Lane, b.Lane), cmp.Compare(b.Risk, a.Risk), cmp.Compare(a.File, b.File), cmp.Compare(a.Name, b.Name))
 	})
-	rev.Introduced, rev.Fixed = smell.Delta(in.BaseFindings, in.HeadFindings)
+	rev.Introduced, rev.Fixed = in.Graph.Introduced, in.Graph.Fixed
 	attach(rev)
 	return rev
 }
 
 type builder struct {
-	in  Input
-	src map[string][]string // absolute path → lines
+	in     Input
+	src    map[string][]string // absolute path → lines
+	gained map[string]int      // head decl ID → production edges into it that base lacks
+}
+
+func gained(in Input) map[string]int {
+	out := map[string]int{}
+	for _, e := range in.Graph.EdgesAdded {
+		if c := in.Head.Decl(e.From); c == nil || !c.Test {
+			out[e.To]++
+		}
+	}
+	return out
 }
 
 func (b *builder) lines(s *code.Snapshot, rel string) []string {
@@ -334,29 +353,44 @@ func (u *Unit) setLines(lines []Line) {
 	}
 }
 
-// pairMoves joins an added and a removed declaration of the same name and
-// kind when the name is unique among both: a declaration moved to another
-// package. Unchanged, it is noise; edited, it is one modified unit with its
-// diff, not a removal plus an addition.
+// pairMoves joins an added and a removed declaration that moved to another
+// package: the pairs the graph diff found by name, kind and shape, then those
+// of the same name and kind where the name is unique among both. Unchanged,
+// a move is noise; edited, it is one modified unit with its diff, not a
+// removal plus an addition.
 func pairMoves(b *builder, units []*Unit) []*Unit {
-	adds, rems := groupByName(units)
-	gone := map[*Unit]bool{}
-	for k, as := range adds {
-		rs := rems[k]
-		if len(as) != 1 || len(rs) != 1 {
-			continue
+	byID := map[string]*Unit{}
+	for _, u := range units {
+		if u.Kind != "" {
+			byID[u.ID] = u
 		}
-		u, r := as[0], rs[0]
+	}
+	gone := map[*Unit]bool{}
+	pair := func(r, u *Unit) {
 		if len(u.Lines) == 0 || len(r.Lines) == 0 {
-			continue
+			return
 		}
 		gone[r] = true
 		if sameText(r, u) {
 			u.Change, u.Lane, u.Risk = Moved, Noise, 0
 			u.Reasons = []string{"moved from " + r.File}
-			continue
+			return
 		}
 		b.remerge(u, r)
+	}
+	paired := map[*Unit]bool{}
+	for _, m := range b.in.Graph.Moved {
+		r, u := byID[m.From], byID[m.To]
+		if r != nil && u != nil && r.Change == Removed && u.Change == Added {
+			paired[r], paired[u] = true, true
+			pair(r, u)
+		}
+	}
+	adds, rems := groupByName(slices.DeleteFunc(slices.Clone(units), func(u *Unit) bool { return paired[u] }))
+	for k, as := range adds {
+		if rs := rems[k]; len(as) == 1 && len(rs) == 1 {
+			pair(rs[0], as[0])
+		}
 	}
 	return slices.DeleteFunc(units, func(u *Unit) bool { return gone[u] })
 }
@@ -414,11 +448,11 @@ func sameShape(old, new []string) bool {
 	if len(old) == 0 || len(new) == 0 {
 		return false
 	}
-	a, err := code.FileShape(strings.Join(old, "\n"))
+	a, err := golang.FileShape(strings.Join(old, "\n"))
 	if err != nil {
 		return false
 	}
-	b, err := code.FileShape(strings.Join(new, "\n"))
+	b, err := golang.FileShape(strings.Join(new, "\n"))
 	return err == nil && a == b
 }
 

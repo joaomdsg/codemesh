@@ -1,6 +1,6 @@
-// Package code loads a Go module or a Julia package into a Snapshot: its
+// Package code is the model of one analysed module: a Snapshot of its
 // packages, files and declarations, with metrics and references between
-// them, type-checked for Go and matched by name for Julia.
+// them. Frontends in internal/lang build it through a Builder.
 package code
 
 import (

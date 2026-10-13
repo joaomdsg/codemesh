@@ -110,9 +110,27 @@ func (r *Repo) Head() (string, error) {
 
 // Diff compares the working tree (staged, unstaged and untracked files) with base.
 func (r *Repo) Diff(base string) ([]FileDiff, error) {
+	fds, err := r.diff(base)
+	if err != nil {
+		return nil, err
+	}
+	added, err := r.untrackedDiffs()
+	if err != nil {
+		return nil, err
+	}
+	return append(fds, added...), nil
+}
+
+// DiffRefs compares two commits.
+func (r *Repo) DiffRefs(base, head string) ([]FileDiff, error) {
+	return r.diff(base, head)
+}
+
+func (r *Repo) diff(revs ...string) ([]FileDiff, error) {
 	// Explicit prefixes keep diff.noprefix and diff.mnemonicPrefix from changing the header format.
-	out, err := run(r.Dir, "-c", "core.quotepath=off", "diff", "--no-color", "--no-ext-diff",
-		"--src-prefix=a/", "--dst-prefix=b/", "-U0", "-M", base)
+	args := append([]string{"-c", "core.quotepath=off", "diff", "--no-color", "--no-ext-diff",
+		"--src-prefix=a/", "--dst-prefix=b/", "-U0", "-M"}, revs...)
+	out, err := run(r.Dir, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -124,11 +142,7 @@ func (r *Repo) Diff(base string) ([]FileDiff, error) {
 	for _, f := range files {
 		fds = append(fds, fileDiff(f))
 	}
-	added, err := r.untrackedDiffs()
-	if err != nil {
-		return nil, err
-	}
-	return append(fds, added...), nil
+	return fds, nil
 }
 
 func fileDiff(f *gitdiff.File) FileDiff {
@@ -212,9 +226,18 @@ func (r *Repo) Churn(since time.Duration) (map[string]int, error) {
 	if head, err := r.Head(); err != nil || head == "" {
 		return map[string]int{}, err
 	}
+	return r.ChurnAt("HEAD", since)
+}
+
+// ChurnAt is Churn for the history that ends at rev.
+func (r *Repo) ChurnAt(rev string, since time.Duration) (map[string]int, error) {
+	sha, err := r.ResolveRef(rev)
+	if err != nil {
+		return nil, err
+	}
 	// The window ends at the last commit, not now, so a repo nobody touched
 	// for months still shows where its work went.
-	last, err := run(r.Dir, "log", "-1", "--format=%cI")
+	last, err := run(r.Dir, "log", "-1", "--format=%cI", sha, "--")
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +246,7 @@ func (r *Repo) Churn(since time.Duration) (map[string]int, error) {
 		return nil, err
 	}
 	cutoff := end.Add(-since).Format(time.RFC3339)
-	out, err := run(r.Dir, "-c", "core.quotepath=off", "log", "--since="+cutoff, "--name-only", "-z", "--format=")
+	out, err := run(r.Dir, "-c", "core.quotepath=off", "log", "--since="+cutoff, "--name-only", "-z", "--format=", sha, "--")
 	if err != nil {
 		return nil, err
 	}

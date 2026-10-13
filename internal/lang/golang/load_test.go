@@ -1,15 +1,21 @@
-package code_test
+package golang_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 
 	"github.com/joaomdsg/codemesh/internal/code"
+	"github.com/joaomdsg/codemesh/internal/lang/golang"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-var shop = sync.OnceValues(func() (*code.Snapshot, error) { return code.Load("testdata/shop") })
+func load(dir string) (*code.Snapshot, error) {
+	return golang.Frontend{}.Load(context.Background(), dir)
+}
+
+var shop = sync.OnceValues(func() (*code.Snapshot, error) { return load("testdata/shop") })
 
 func loadShop(t *testing.T) *code.Snapshot {
 	t.Helper()
@@ -116,11 +122,11 @@ func TestLoad_countsCodeLinesPerFile(t *testing.T) {
 
 func TestFileShape_ignoresCommentsAndLayoutButNotCode(t *testing.T) {
 	t.Parallel()
-	a, err := code.FileShape("package p\n// doc\nfunc F(x int) int {\n\treturn x + 1 // inc\n}\n")
+	a, err := golang.FileShape("package p\n// doc\nfunc F(x int) int {\n\treturn x + 1 // inc\n}\n")
 	require.NoError(t, err)
-	b, err := code.FileShape("package p\nfunc F(x int) int { return x +\n1 }\n")
+	b, err := golang.FileShape("package p\nfunc F(x int) int { return x +\n1 }\n")
 	require.NoError(t, err)
-	c, err := code.FileShape("package p\nfunc F(x int) int { return x + 2 }\n")
+	c, err := golang.FileShape("package p\nfunc F(x int) int { return x + 2 }\n")
 	require.NoError(t, err)
 
 	assert.Equal(t, a, b)
@@ -129,7 +135,7 @@ func TestFileShape_ignoresCommentsAndLayoutButNotCode(t *testing.T) {
 
 func TestLoad_ignoresBlankIdentifiersWhenResolvingReferences(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/blank")
+	s, err := load("testdata/blank")
 	require.NoError(t, err)
 
 	f := s.Decl("example.com/blank/b.F")
@@ -142,7 +148,7 @@ func TestLoad_ignoresBlankIdentifiersWhenResolvingReferences(t *testing.T) {
 
 func TestLoad_countsAStringLiteralDeclarationAsDataOnItsFirstLine(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/data")
+	s, err := load("testdata/data")
 	require.NoError(t, err)
 
 	for _, name := range []string{"script", "Schema", "greeting"} {
@@ -161,7 +167,7 @@ func TestLoad_countsAStringLiteralDeclarationAsDataOnItsFirstLine(t *testing.T) 
 
 func TestLoad_namesTheNestedModulesItLeavesOut(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/nested")
+	s, err := load("testdata/nested")
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"sub"}, s.Nested, "not the module inside it, not a testdata fixture")
@@ -170,7 +176,7 @@ func TestLoad_namesTheNestedModulesItLeavesOut(t *testing.T) {
 
 func TestLoad_countsASwitchAsOneDecisionHoweverManyCases(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/switchy")
+	s, err := load("testdata/switchy")
 	require.NoError(t, err)
 
 	for _, name := range []string{"Dispatch", "Kind", "Wait"} {

@@ -1,0 +1,23 @@
+#!/bin/sh
+# Stands in for gh on PATH. FAKE_GH_EXIT makes it fail with that code.
+if [ -n "$FAKE_GH_EXIT" ]; then
+	echo "fake gh failure" >&2
+	exit "$FAKE_GH_EXIT"
+fi
+[ "$1 $2 $3 $4" = "pr list --state open" ] || { echo "unexpected args: $*" >&2; exit 2; }
+cat <<'JSON'
+[
+ {"number":7,"title":"Add cache","author":{"login":"ana","name":"Ana","is_bot":false},
+  "headRefName":"feat/cache","baseRefName":"main",
+  "headRefOid":"1111111111111111111111111111111111111111",
+  "baseRefOid":"2222222222222222222222222222222222222222",
+  "url":"https://github.com/o/r/pull/7","isDraft":true,"updatedAt":"2026-05-01T10:30:00Z",
+  "changedFiles":3,"additions":40,"deletions":5,"reviewDecision":"REVIEW_REQUIRED"},
+ {"number":9,"title":"Fix typo","author":{"login":"bo"},
+  "headRefName":"typo","baseRefName":"main",
+  "headRefOid":"3333333333333333333333333333333333333333",
+  "baseRefOid":"4444444444444444444444444444444444444444",
+  "url":"https://github.com/o/r/pull/9","isDraft":false,"updatedAt":"2026-05-02T08:00:00Z",
+  "changedFiles":1,"additions":1,"deletions":1,"reviewDecision":""}
+]
+JSON

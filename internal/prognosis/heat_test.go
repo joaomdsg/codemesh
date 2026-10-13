@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/joaomdsg/codemesh/internal/code"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -11,7 +12,7 @@ import (
 
 func TestHeats_bucketsEachLensZeroToFive(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/sick")
+	s, err := lang.Load("testdata/sick")
 	require.NoError(t, err)
 	decl := func(name string) *code.Decl {
 		d := s.Decl(mod + "." + name)

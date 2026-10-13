@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/go-via/via/topic"
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/gitx"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
@@ -96,7 +98,7 @@ func (s *Source) Refresh() *Analysis {
 
 func (s *Source) analyse() *Analysis {
 	a := &Analysis{}
-	snap, err := code.Load(s.Dir)
+	snap, err := lang.Load(s.Dir)
 	if err != nil {
 		a.Err = err
 		return a
@@ -151,7 +153,7 @@ func (s *Source) loadBase(sha string) error {
 	if err != nil {
 		rel = "."
 	}
-	snap, err := code.Load(filepath.Join(dir, rel))
+	snap, err := lang.Load(filepath.Join(dir, rel))
 	if err != nil {
 		_ = cleanup()
 		return err
@@ -189,7 +191,7 @@ func (s *Source) absDir() string {
 // interval, until ctx ends. Polling keeps it dependency-free and catches
 // branch switches and commits as well as edits.
 func (s *Source) Watch(ctx context.Context, interval time.Duration) {
-	last := s.fingerprint()
+	last := fingerprint(s.Dir, s.repo)
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -197,7 +199,7 @@ func (s *Source) Watch(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if fp := s.fingerprint(); fp != last {
+			if fp := fingerprint(s.Dir, s.repo); fp != last {
 				last = fp
 				s.Refresh()
 			}
@@ -207,14 +209,14 @@ func (s *Source) Watch(ctx context.Context, interval time.Duration) {
 
 // fingerprint hashes the names, sizes and mtimes of the files analysis reads,
 // plus HEAD, so commits and checkouts count as changes.
-func (s *Source) fingerprint() string {
+func fingerprint(dir string, repo *gitx.Repo) string {
 	h := sha256.New()
-	_ = filepath.WalkDir(s.Dir, func(p string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
 		if d.IsDir() {
-			if p != s.Dir && unwatchedDir(d.Name()) {
+			if p != dir && unwatchedDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -227,8 +229,8 @@ func (s *Source) fingerprint() string {
 		}
 		return nil
 	})
-	if s.repo != nil {
-		head, _ := s.repo.Head()
+	if repo != nil {
+		head, _ := repo.Head()
 		fmt.Fprintln(h, head)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -237,7 +239,7 @@ func (s *Source) fingerprint() string {
 // Load loads the module in dir and sets each file's churn from its repo,
 // when dir is in one: the analysis a Source runs, for a tree it does not watch.
 func Load(dir string) (*code.Snapshot, []smell.Finding, error) {
-	snap, err := code.Load(dir)
+	snap, err := lang.Load(dir)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -283,12 +285,13 @@ func unwatchedDir(name string) bool {
 	return strings.HasPrefix(name, ".") || name == "vendor" || name == "testdata" || name == "node_modules"
 }
 
-// watched reports whether a file's edits change the analysis: Go and Julia
-// sources and the files that name their dependencies.
+// watched reports whether a file's edits change the analysis: sources of any
+// registered language and the files that name their dependencies.
 func watched(name string) bool {
 	switch name {
-	case "go.mod", "go.sum", "Project.toml", "Manifest.toml":
+	case "go.mod", "go.sum", "Project.toml", "Manifest.toml",
+		"package.json", "tsconfig.json", "pyproject.toml", "setup.py", "Cargo.toml", "Cargo.lock":
 		return true
 	}
-	return strings.HasSuffix(name, ".go") || strings.HasSuffix(name, ".jl")
+	return slices.ContainsFunc(lang.Exts(), func(ext string) bool { return strings.HasSuffix(name, ext) })
 }

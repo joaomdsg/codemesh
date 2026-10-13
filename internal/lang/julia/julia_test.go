@@ -1,19 +1,22 @@
-package code
+package julia_test
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 
+	"github.com/joaomdsg/codemesh/internal/code"
+	"github.com/joaomdsg/codemesh/internal/lang/julia"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func loadShapes(t *testing.T) *Snapshot {
+func loadShapes(t *testing.T) *code.Snapshot {
 	t.Helper()
 	if _, err := exec.LookPath("julia"); err != nil {
 		t.Skip("julia is not installed")
 	}
-	s, err := Load("testdata/jl")
+	s, err := julia.Frontend{}.Load(context.Background(), "testdata/jl")
 	require.NoError(t, err)
 	return s
 }
@@ -22,7 +25,7 @@ func TestLoadJulia_mapsModulesFilesAndEachMethod(t *testing.T) {
 	t.Parallel()
 	s := loadShapes(t)
 
-	assert.Equal(t, Julia, s.Lang)
+	assert.Equal(t, code.Julia, s.Lang)
 	assert.Equal(t, "Shapes", s.Module)
 	require.Len(t, s.Packages, 1, "Units lives inside Shapes.jl, so it stays in Shapes' package")
 	var files []string
@@ -44,7 +47,7 @@ func TestLoadJulia_mapsModulesFilesAndEachMethod(t *testing.T) {
 	assert.Equal(t, 3, checked.Complexity, "one if and one &&")
 	assert.Equal(t, []string{"Shapes.area(Circle)", "Shapes.area(Square)"}, checked.Callers)
 
-	assert.Equal(t, Method, s.Decl("Shapes.Base.show(IO, Circle)").Kind, "a method of Base's function, called by dispatch")
+	assert.Equal(t, code.Method, s.Decl("Shapes.Base.show(IO, Circle)").Kind, "a method of Base's function, called by dispatch")
 	assert.NotNil(t, s.Decl("Shapes.Units.metres(Any)"), "a submodule's names are qualified")
 }
 

@@ -1,7 +1,8 @@
-package code
+package golang
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/joaomdsg/codemesh/internal/code"
 	"golang.org/x/tools/go/packages"
 )
 
@@ -20,79 +22,86 @@ const loadMode = packages.NeedName | packages.NeedFiles | packages.NeedImports |
 	packages.NeedModule | packages.NeedTypes | packages.NeedSyntax |
 	packages.NeedTypesInfo | packages.NeedForTest
 
-// Load analyses the Go module or the Julia package rooted at dir: a
-// Project.toml without a go.mod beside it makes it Julia.
-func Load(dir string) (*Snapshot, error) {
+// Frontend loads a Go module with go/packages and resolves references
+// through the type checker.
+type Frontend struct{}
+
+func (Frontend) Lang() code.Lang { return code.Go }
+
+func (Frontend) Detect(dir string) bool { return exists(filepath.Join(dir, "go.mod")) }
+
+func (Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
-	if exists(filepath.Join(abs, "Project.toml")) && !exists(filepath.Join(abs, "go.mod")) {
-		return loadJulia(abs)
-	}
-	return loadGo(abs)
-}
-
-func loadGo(abs string) (*Snapshot, error) {
-	cfg := &packages.Config{Dir: abs, Mode: loadMode, Tests: true, Fset: token.NewFileSet()}
+	cfg := &packages.Config{Context: ctx, Dir: abs, Mode: loadMode, Tests: true, Fset: token.NewFileSet()}
 	loaded, err := packages.Load(cfg, "./...")
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", abs, err)
 	}
 	l := &loader{
-		s:     &Snapshot{Lang: Go, decls: map[string]*Decl{}, pkgs: map[string]*Package{}},
+		pkgs:  map[string]*code.Package{},
 		fset:  cfg.Fset,
-		objs:  map[string]*Decl{},
+		objs:  map[string]*code.Decl{},
 		seen:  map[string]bool{},
-		calls: map[*Decl]*callSites{},
+		calls: map[*code.Decl]*callSites{},
 	}
 	for _, p := range loaded {
 		if p.Module != nil && p.Module.Main {
-			l.s.Module, l.s.Dir = p.Module.Path, p.Module.Dir
+			l.module, l.dir = p.Module.Path, p.Module.Dir
 			break
 		}
 	}
-	if l.s.Module == "" {
+	if l.module == "" {
 		return nil, errors.New("no main module found in " + abs)
 	}
-	l.s.Nested = nestedModules(l.s.Dir)
+	l.b = code.NewBuilder(code.Go, l.module, l.dir)
 	for _, p := range loaded {
 		l.addPackage(p)
 	}
 	for _, u := range l.units {
 		l.resolve(u)
 	}
-	l.finish()
-	return l.s, nil
+	l.finishCalls()
+	for _, p := range l.pkgs {
+		// A nested module shares the path prefix but is another module.
+		p.Imports = slices.DeleteFunc(p.Imports, func(path string) bool { return l.pkgs[path] == nil })
+	}
+	s := l.b.Finish()
+	s.Nested = nestedModules(l.dir)
+	return s, nil
 }
 
 // unit is a decl with the syntax and type info it was checked with.
 type unit struct {
-	d    *Decl
+	d    *code.Decl
 	node ast.Node
 	info *types.Info
 }
 
 type loader struct {
-	s     *Snapshot
-	fset  *token.FileSet
-	objs  map[string]*Decl // objKey → decl
-	seen  map[string]bool  // absolute file names already taken
-	units []unit
-	calls map[*Decl]*callSites
+	b      *code.Builder
+	module string
+	dir    string // absolute module root
+	pkgs   map[string]*code.Package
+	fset   *token.FileSet
+	objs   map[string]*code.Decl // objKey → decl
+	seen   map[string]bool       // absolute file names already taken
+	units  []unit
+	calls  map[*code.Decl]*callSites
 }
 
 func (l *loader) addPackage(p *packages.Package) {
 	// The generated test main (path "p.test") is not code anyone wrote.
-	if strings.HasSuffix(p.PkgPath, ".test") || p.Module == nil || p.Module.Path != l.s.Module {
+	if strings.HasSuffix(p.PkgPath, ".test") || p.Module == nil || p.Module.Path != l.module {
 		return
 	}
 	owner := cmp.Or(p.ForTest, p.PkgPath)
-	pkg := l.s.pkgs[owner]
+	pkg := l.pkgs[owner]
 	if pkg == nil {
-		pkg = &Package{Path: owner, Rel: l.rel(owner)}
-		l.s.pkgs[owner] = pkg
-		l.s.Packages = append(l.s.Packages, pkg)
+		pkg = l.b.Package(code.Package{Path: owner, Rel: l.rel(owner)})
+		l.pkgs[owner] = pkg
 	}
 	if p.ForTest == "" {
 		pkg.Name = p.Name
@@ -109,11 +118,11 @@ func (l *loader) addPackage(p *packages.Package) {
 			continue
 		}
 		l.seen[name] = true
-		pkg.Files = append(pkg.Files, l.addFile(p, owner, name, f))
+		l.addFile(p, pkg, name, f)
 	}
 }
 
-func (l *loader) addImports(pkg *Package, p *packages.Package) {
+func (l *loader) addImports(pkg *code.Package, p *packages.Package) {
 	for path := range p.Imports {
 		if l.internal(path) {
 			pkg.Imports = append(pkg.Imports, path)
@@ -122,36 +131,33 @@ func (l *loader) addImports(pkg *Package, p *packages.Package) {
 	slices.Sort(pkg.Imports)
 }
 
-func (l *loader) addFile(p *packages.Package, owner, name string, f *ast.File) *File {
-	rel, err := filepath.Rel(l.s.Dir, name)
+func (l *loader) addFile(p *packages.Package, pkg *code.Package, name string, f *ast.File) {
+	rel, err := filepath.Rel(l.dir, name)
 	if err != nil {
 		rel = name
-	}
-	file := &File{
-		Path:      filepath.ToSlash(rel),
-		Package:   owner,
-		Test:      strings.HasSuffix(name, "_test.go"),
-		Generated: ast.IsGenerated(f),
 	}
 	src, err := os.ReadFile(name)
 	if err != nil {
 		src = nil
 	}
-	code := codeLines(l.fset.File(f.Pos()), src)
+	lines := codeLines(l.fset.File(f.Pos()), src)
+	file := l.b.File(pkg, code.File{
+		Path:      filepath.ToSlash(rel),
+		Test:      strings.HasSuffix(name, "_test.go"),
+		Generated: ast.IsGenerated(f),
+	})
 	for _, gd := range f.Decls {
 		for _, u := range l.declsOf(p, gd) {
-			u.d.Package, u.d.File, u.d.Test = owner, file.Path, file.Test
+			u.d.Test = file.Test
 			if u.d.Data {
-				keepFirst(code, u.d.Start, u.d.End)
+				keepFirst(lines, u.d.Start, u.d.End)
 			}
-			u.d.Lines = countIn(code, u.d.Start, u.d.End)
-			file.Decls = append(file.Decls, u.d)
+			u.d.Lines = countIn(lines, u.d.Start, u.d.End)
+			l.b.Attach(file, u.d)
 			l.units = append(l.units, u)
-			l.s.decls[u.d.ID] = u.d
 		}
 	}
-	file.Lines = len(code)
-	return file
+	file.Lines = len(lines)
 }
 
 func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
@@ -174,9 +180,9 @@ func (l *loader) declsOf(p *packages.Package, gd ast.Decl) []unit {
 }
 
 func (l *loader) funcUnit(p *packages.Package, gd *ast.FuncDecl) unit {
-	d := &Decl{Kind: Func, Name: gd.Name.Name, Exported: gd.Name.IsExported()}
+	d := &code.Decl{Kind: code.Func, Name: gd.Name.Name, Exported: gd.Name.IsExported()}
 	if recv := recvName(gd); recv != "" {
-		d.Kind, d.Name = Method, recv+"."+gd.Name.Name
+		d.Kind, d.Name = code.Method, recv+"."+gd.Name.Name
 		d.Exported = d.Exported && ast.IsExported(recv)
 	}
 	d.ID = p.PkgPath + "." + d.Name
@@ -200,7 +206,7 @@ func (l *loader) funcUnit(p *packages.Package, gd *ast.FuncDecl) unit {
 
 func (l *loader) specUnit(p *packages.Package, gd *ast.GenDecl, spec ast.Spec) (unit, bool) {
 	qual := types.RelativeTo(p.Types)
-	d := &Decl{Kind: kindOf(gd.Tok)}
+	d := &code.Decl{Kind: kindOf(gd.Tok)}
 	doc, start, end := specDoc(spec), spec.Pos(), spec.End()
 	// A spec outside parentheses shares the GenDecl's keyword and doc.
 	if !gd.Lparen.IsValid() {
@@ -237,7 +243,7 @@ func (l *loader) specUnit(p *packages.Package, gd *ast.GenDecl, spec ast.Spec) (
 // index makes obj resolvable to d. Objects outside the package scope, such
 // as a blank identifier, have no key; storing them under "" would resolve
 // every local variable to d.
-func (l *loader) index(obj types.Object, d *Decl) {
+func (l *loader) index(obj types.Object, d *code.Decl) {
 	if k := objKey(obj); k != "" {
 		l.objs[k] = d
 	}
@@ -274,19 +280,13 @@ func (l *loader) ref(u unit, id *ast.Ident, call *ast.CallExpr) {
 	if to == nil {
 		return
 	}
-	if fn, ok := origin(obj).(*types.Func); ok && to.Kind == Func {
+	if fn, ok := origin(obj).(*types.Func); ok && to.Kind == code.Func {
 		l.site(u, to, fn, call)
 	}
 	if to == u.d {
 		return
 	}
-	if u.d.Refs == nil {
-		u.d.Refs = map[string]int{}
-	}
-	u.d.Refs[to.Package]++
-	if !slices.Contains(to.Callers, u.d.ID) {
-		to.Callers = append(to.Callers, u.d.ID)
-	}
+	l.b.Link(u.d, to, code.Caller)
 }
 
 // use records that u reaches the module type t through a constant, a
@@ -301,24 +301,10 @@ func (l *loader) use(u unit, t types.Type) {
 		return
 	}
 	to := l.objs[objKey(n.Origin().Obj())]
-	if to == nil || to == u.d || slices.Contains(to.Users, u.d.ID) {
+	if to == nil || to == u.d {
 		return
 	}
-	to.Users = append(to.Users, u.d.ID)
-}
-
-func (l *loader) finish() {
-	l.finishCalls()
-	slices.SortFunc(l.s.Packages, func(a, b *Package) int { return cmp.Compare(a.Path, b.Path) })
-	for _, p := range l.s.Packages {
-		slices.SortFunc(p.Files, func(a, b *File) int { return cmp.Compare(a.Path, b.Path) })
-		// A nested module shares the path prefix but is another module.
-		p.Imports = slices.DeleteFunc(p.Imports, func(path string) bool { return l.s.pkgs[path] == nil })
-	}
-	for _, d := range l.s.decls {
-		slices.Sort(d.Callers)
-		slices.Sort(d.Users)
-	}
+	l.b.Link(u.d, to, code.User)
 }
 
 // nestedModules lists the directories below root holding a go.mod, the
@@ -352,14 +338,14 @@ func (l *loader) span(doc *ast.CommentGroup, start, end token.Pos) (int, int) {
 }
 
 func (l *loader) rel(path string) string {
-	if path == l.s.Module {
+	if path == l.module {
 		return "."
 	}
-	return strings.TrimPrefix(path, l.s.Module+"/")
+	return strings.TrimPrefix(path, l.module+"/")
 }
 
 func (l *loader) internal(path string) bool {
-	return path == l.s.Module || strings.HasPrefix(path, l.s.Module+"/")
+	return path == l.module || strings.HasPrefix(path, l.module+"/")
 }
 
 // surface is the part of a type other packages can see: a struct's exported
@@ -462,14 +448,14 @@ func recvName(fn *ast.FuncDecl) string {
 	}
 }
 
-func kindOf(tok token.Token) Kind {
+func kindOf(tok token.Token) code.Kind {
 	switch tok {
 	case token.TYPE:
-		return Type
+		return code.Type
 	case token.CONST:
-		return Const
+		return code.Const
 	}
-	return Var
+	return code.Var
 }
 
 func specDoc(s ast.Spec) *ast.CommentGroup {

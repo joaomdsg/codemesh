@@ -1,4 +1,4 @@
-package code
+package golang
 
 import (
 	"encoding/hex"

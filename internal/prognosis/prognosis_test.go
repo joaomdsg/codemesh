@@ -3,7 +3,7 @@ package prognosis_test
 import (
 	"testing"
 
-	"github.com/joaomdsg/codemesh/internal/code"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 	"github.com/joaomdsg/codemesh/internal/smell"
 	"github.com/stretchr/testify/assert"
@@ -15,7 +15,7 @@ const mod = "example.com/sick"
 // sick loads the fixture with busy.go marked as the file that keeps changing.
 func sick(t *testing.T) map[string]prognosis.Prognosis {
 	t.Helper()
-	s, err := code.Load("testdata/sick")
+	s, err := lang.Load("testdata/sick")
 	require.NoError(t, err)
 	for _, f := range s.Package(mod).Files {
 		if f.Path == "busy.go" {
@@ -59,7 +59,7 @@ func TestFind_groupsAPackagesLongParameterListsIntoOneProblem(t *testing.T) {
 }
 
 func TestFind_flagsAnImportedPackageThatExportsMostOfWhatItHolds(t *testing.T) {
-	s, err := code.Load("testdata/wide")
+	s, err := lang.Load("testdata/wide")
 	require.NoError(t, err)
 	gs := map[string]prognosis.Prognosis{}
 	for _, g := range prognosis.Find(s, smell.Find(s)) {

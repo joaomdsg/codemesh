@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/joaomdsg/codemesh/internal/code"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/smell"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,7 +16,7 @@ import (
 const prefix = "example.com/smelly/"
 
 var (
-	smellySnap = sync.OnceValues(func() (*code.Snapshot, error) { return code.Load("testdata/smelly") })
+	smellySnap = sync.OnceValues(func() (*code.Snapshot, error) { return lang.Load("testdata/smelly") })
 	smellyFind = sync.OnceValues(func() ([]smell.Finding, error) {
 		s, err := smellySnap()
 		if err != nil {
@@ -197,7 +198,7 @@ func TestFind_flagsFilesAboveSixHundredLines(t *testing.T) {
 
 func TestFind_flagsUnusedExportsOfClosedPackagesOnly(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/quiet")
+	s, err := lang.Load("testdata/quiet")
 	require.NoError(t, err)
 	fs := smell.Find(s)
 
@@ -336,7 +337,7 @@ func TestFind_leavesMainPackagesOutOfUnstableDeps(t *testing.T) {
 	t.Parallel()
 	// user imports cmd/tool, which is more unstable than user. Go refuses
 	// that import, but the loader still records the edge.
-	s, err := code.Load("testdata/mainimp")
+	s, err := lang.Load("testdata/mainimp")
 	require.NoError(t, err)
 	require.Contains(t, s.Package("example.com/mainimp/user").Imports, "example.com/mainimp/cmd/tool")
 
@@ -385,7 +386,7 @@ func TestFind_sortsBySeverityThenLocation(t *testing.T) {
 func TestFind_reportsEveryRuleWithAReason(t *testing.T) {
 	t.Parallel()
 	_, fs := loadSmelly(t)
-	quiet, err := code.Load("testdata/quiet")
+	quiet, err := lang.Load("testdata/quiet")
 	require.NoError(t, err)
 
 	seen := map[smell.Rule]bool{}
@@ -408,7 +409,7 @@ func TestSeverity_stringNamesLevels(t *testing.T) {
 
 func TestFind_leavesGeneratedCodeAndMainWiringAlone(t *testing.T) {
 	t.Parallel()
-	s, err := code.Load("testdata/quiet")
+	s, err := lang.Load("testdata/quiet")
 	require.NoError(t, err)
 
 	for _, f := range smell.Find(s) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/gitx"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/smell"
 	"github.com/joaomdsg/codemesh/internal/testrepo"
@@ -45,11 +46,11 @@ func build(baseFiles, headFiles map[string]string) (fixture, error) {
 		return fixture{}, err
 	}
 	defer cleanup()
-	base, err := code.Load(wt)
+	base, err := lang.Load(wt)
 	if err != nil {
 		return fixture{}, err
 	}
-	head, err := code.Load(dir)
+	head, err := lang.Load(dir)
 	if err != nil {
 		return fixture{}, err
 	}

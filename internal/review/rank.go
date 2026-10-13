@@ -27,6 +27,9 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	if new != nil {
 		u.Callers = new.Callers
 		b.addCallerRisk(new, add)
+		if n := b.gained[new.ID]; old != nil && n > 0 {
+			add(plural(n, "new reference"), 2*min(n, 5))
+		}
 	}
 	cur := cmp.Or(new, old)
 	if cur.Data {

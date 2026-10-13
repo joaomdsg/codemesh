@@ -1,0 +1,35 @@
+# Codemesh handoff
+
+Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.
+
+- Repos: Shop
+- Branch: fix-price
+- PR: #7 Fix price rounding
+- Base: 1a2b3c4
+- Head: 9f8e7d6
+
+## Shop
+
+### Introduced by this change
+
+#### New dead code: store.legacyPrice
+
+Where: `store/store.go:60`
+Scope: pr:7@9f8e7d6
+
+Nothing calls it.
+
+Check: The finding is gone from the PR compare.
+
+### Review notes
+
+#### Rounding drops a cent
+
+Where: `store/store.go:17`
+Scope: pr:7@9f8e7d6
+
+Use integer cents here, not float64.
+
+```
++	price := float64(n) * 0.1
+```

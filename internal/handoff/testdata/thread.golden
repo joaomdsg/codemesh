@@ -1,0 +1,18 @@
+# Codemesh handoff
+
+Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.
+
+- Repos: Shop
+
+## Shop
+
+### Threads
+
+#### Blast radius of store.Price
+
+Where: `store/store.go:17`
+Scope: pr:7@9f8e7d6
+
+store.Price
+<- cart.Cart.Total (caller)
+<- cmd/shop.main (caller)

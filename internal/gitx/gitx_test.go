@@ -1,10 +1,12 @@
 package gitx_test
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -533,6 +535,261 @@ func TestRepo_worktreeErrorsOnUnknownRev(t *testing.T) {
 
 	_, _, err := open(t, dir).Worktree("nope")
 	assert.Error(t, err)
+}
+
+func TestClone_clonesLocalBareRepoPartially(t *testing.T) {
+	t.Parallel()
+	src := newRepo(t)
+	write(t, src, "f.txt", "v1\n")
+	commit(t, src, "one")
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	git(t, src, "clone", "-q", "--bare", src, bare)
+	git(t, bare, "config", "uploadpack.allowFilter", "true")
+	dest := filepath.Join(t.TempDir(), "clones", "host", "owner", "name")
+
+	r, err := gitx.Clone("file://"+bare, dest)
+	require.NoError(t, err)
+
+	got, err := os.ReadFile(filepath.Join(dest, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "v1\n", string(got))
+	assert.Equal(t, "blob:none", git(t, dest, "config", "remote.origin.partialclonefilter"))
+	head, err := r.Head()
+	require.NoError(t, err)
+	assert.Equal(t, git(t, src, "rev-parse", "HEAD"), head)
+	assert.False(t, strings.Contains(git(t, dest, "rev-parse", "--is-shallow-repository"), "true"))
+}
+
+func TestClone_errorsOnMissingRemote(t *testing.T) {
+	t.Parallel()
+	_, err := gitx.Clone("file://"+filepath.Join(t.TempDir(), "nope.git"), filepath.Join(t.TempDir(), "dest"))
+	assert.Error(t, err)
+}
+
+func TestRepo_fetchBringsNewCommits(t *testing.T) {
+	t.Parallel()
+	src := newRepo(t)
+	write(t, src, "f.txt", "v1\n")
+	commit(t, src, "one")
+	r, err := gitx.Clone("file://"+src, filepath.Join(t.TempDir(), "clone"))
+	require.NoError(t, err)
+	write(t, src, "f.txt", "v2\n")
+	commit(t, src, "two")
+
+	require.NoError(t, r.Fetch())
+
+	got, err := r.ResolveRef("origin/main")
+	require.NoError(t, err)
+	assert.Equal(t, git(t, src, "rev-parse", "HEAD"), got)
+}
+
+func TestRepo_fetchPRFetchesHeadAndFollowsForcePushes(t *testing.T) {
+	t.Parallel()
+	src := newRepo(t)
+	write(t, src, "f.txt", "v1\n")
+	commit(t, src, "one")
+	git(t, src, "checkout", "-q", "-b", "pr")
+	write(t, src, "f.txt", "pr1\n")
+	commit(t, src, "pr first")
+	first := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "update-ref", "refs/pull/7/head", first)
+	git(t, src, "checkout", "-q", "main")
+	r, err := gitx.Clone("file://"+src, filepath.Join(t.TempDir(), "clone"))
+	require.NoError(t, err)
+
+	got, err := r.FetchPR(7)
+	require.NoError(t, err)
+	assert.Equal(t, first, got)
+	assert.Equal(t, first, git(t, r.Dir, "rev-parse", "refs/codemesh/pr/7"))
+
+	git(t, src, "checkout", "-q", "-B", "pr", "main")
+	write(t, src, "f.txt", "rewritten\n")
+	commit(t, src, "pr rewritten")
+	second := git(t, src, "rev-parse", "HEAD")
+	git(t, src, "update-ref", "refs/pull/7/head", second)
+
+	got, err = r.FetchPR(7)
+	require.NoError(t, err)
+	assert.Equal(t, second, got)
+}
+
+func TestRepo_fetchPRErrorsOnUnknownPR(t *testing.T) {
+	t.Parallel()
+	src := newRepo(t)
+	write(t, src, "f.txt", "v1\n")
+	commit(t, src, "one")
+	r, err := gitx.Clone("file://"+src, filepath.Join(t.TempDir(), "clone"))
+	require.NoError(t, err)
+
+	_, err = r.FetchPR(99)
+	assert.Error(t, err)
+}
+
+func TestRepo_resolveRef(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "a.txt", "a\n")
+	commit(t, dir, "one")
+	r := open(t, dir)
+
+	got, err := r.ResolveRef("main")
+	require.NoError(t, err)
+	assert.Equal(t, git(t, dir, "rev-parse", "HEAD"), got)
+
+	_, err = r.ResolveRef("nope")
+	assert.Error(t, err)
+}
+
+func TestRepo_diffRefsComparesTwoCommitsOnly(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "a.txt", "1\n2\n3\n")
+	write(t, dir, "gone.txt", "x\n")
+	commit(t, dir, "one")
+	base := git(t, dir, "rev-parse", "HEAD")
+	write(t, dir, "a.txt", "1\nTWO\n3\n")
+	write(t, dir, "new.txt", "n\n")
+	git(t, dir, "rm", "-q", "gone.txt")
+	commit(t, dir, "two")
+	head := git(t, dir, "rev-parse", "HEAD")
+	write(t, dir, "a.txt", "dirty\n")
+	write(t, dir, "untracked.txt", "u\n")
+
+	fds, err := open(t, dir).DiffRefs(base, head)
+	require.NoError(t, err)
+
+	got := map[string]gitx.FileDiff{}
+	for _, fd := range fds {
+		got[cmp.Or(fd.NewPath, fd.OldPath)] = fd
+	}
+	require.Len(t, got, 3)
+	assert.Equal(t, []span{{2, 1, 2, 1}}, spans(got["a.txt"].Hunks))
+	assert.Equal(t, gitx.Added, got["new.txt"].Status)
+	assert.Equal(t, gitx.Deleted, got["gone.txt"].Status)
+}
+
+func TestRepo_churnAtCountsCommitsUpToRev(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	for i, v := range []string{"1", "2", "3"} {
+		write(t, dir, "f.txt", v+"\n")
+		commit(t, dir, "c"+strconv.Itoa(i))
+	}
+	r := open(t, dir)
+	second := git(t, dir, "rev-parse", "HEAD~1")
+
+	got, err := r.ChurnAt(second, 24*time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"f.txt": 2}, got)
+
+	head, err := r.Churn(24 * time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int{"f.txt": 3}, head)
+}
+
+func TestRepo_churnAtErrorsOnUnknownRev(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "f.txt", "1\n")
+	commit(t, dir, "one")
+
+	_, err := open(t, dir).ChurnAt("nope", time.Hour)
+	assert.Error(t, err)
+}
+
+func TestRepo_worktreeAtIsNamedBySHAAndIdempotent(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "f.txt", "v1\n")
+	commit(t, dir, "one")
+	sha := git(t, dir, "rev-parse", "HEAD")
+	write(t, dir, "f.txt", "v2\n")
+	commit(t, dir, "two")
+	r := open(t, dir)
+	root := filepath.Join(t.TempDir(), "worktrees", "repo-abc123")
+
+	wt, err := r.WorktreeAt(root, "HEAD~1")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(root, sha), wt)
+	got, err := os.ReadFile(filepath.Join(wt, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "v1\n", string(got))
+
+	again, err := r.WorktreeAt(root, sha)
+	require.NoError(t, err)
+	assert.Equal(t, wt, again)
+	assert.Len(t, strings.Split(git(t, dir, "worktree", "list"), "\n"), 2, "main plus one, not two")
+}
+
+func TestRepo_worktreeAtRecreatesAWorktreeWhoseDirectoryVanished(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "f.txt", "v1\n")
+	commit(t, dir, "one")
+	r := open(t, dir)
+	root := t.TempDir()
+	wt, err := r.WorktreeAt(root, "HEAD")
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(wt))
+
+	again, err := r.WorktreeAt(root, "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, wt, again)
+	assert.FileExists(t, filepath.Join(wt, "f.txt"))
+}
+
+func TestRepo_worktreeAtErrorsOnUnknownRev(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "f.txt", "v1\n")
+	commit(t, dir, "one")
+	root := t.TempDir()
+
+	_, err := open(t, dir).WorktreeAt(root, "nope")
+	assert.Error(t, err)
+	entries, _ := os.ReadDir(root)
+	assert.Empty(t, entries)
+}
+
+func TestRepo_removeWorktree(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "f.txt", "v1\n")
+	commit(t, dir, "one")
+	r := open(t, dir)
+	wt, err := r.WorktreeAt(t.TempDir(), "HEAD")
+	require.NoError(t, err)
+
+	require.NoError(t, r.RemoveWorktree(wt))
+	assert.NoDirExists(t, wt)
+	assert.Len(t, strings.Split(git(t, dir, "worktree", "list"), "\n"), 1)
+}
+
+func TestRepo_gcWorktreesKeepsNewestAndThoseInUse(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	var shas []string
+	for _, v := range []string{"1", "2", "3", "4"} {
+		write(t, dir, "f.txt", v+"\n")
+		commit(t, dir, "c"+v)
+		shas = append(shas, git(t, dir, "rev-parse", "HEAD"))
+	}
+	r := open(t, dir)
+	root := t.TempDir()
+	now := time.Now()
+	for i, sha := range shas {
+		wt, err := r.WorktreeAt(root, sha)
+		require.NoError(t, err)
+		require.NoError(t, os.Chtimes(wt, now, now.Add(time.Duration(i)*time.Minute)))
+	}
+
+	require.NoError(t, r.GCWorktrees(root, 1, map[string]bool{shas[0]: true}))
+
+	assert.DirExists(t, filepath.Join(root, shas[3]), "newest")
+	assert.DirExists(t, filepath.Join(root, shas[0]), "in use, though oldest")
+	assert.NoDirExists(t, filepath.Join(root, shas[1]))
+	assert.NoDirExists(t, filepath.Join(root, shas[2]))
+	assert.Len(t, strings.Split(git(t, dir, "worktree", "list"), "\n"), 3)
 }
 
 // span mirrors gitx's unexported hunk, so tests can spell expected ranges.

@@ -1,0 +1,22 @@
+# Codemesh handoff
+
+Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.
+
+- Repos: Shop
+
+## Shop
+
+### Prognoses
+
+#### Split Cart.Total by discount type
+
+Where: `cart/cart.go:42`
+Scope: working tree
+
+Three discount branches share one loop.
+
+Steps:
+1. Extract each discount into its own function.
+2. Keep Total as the dispatcher.
+
+Check: go test ./cart passes and Total's complexity is under 10.

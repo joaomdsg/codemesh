@@ -1,0 +1,24 @@
+# Codemesh handoff
+
+Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.
+
+- Repos: Shop
+- Branch: main
+
+## Shop
+
+### Findings
+
+#### Cart.Total has cyclomatic complexity 31
+
+Where: `cart/cart.go:42`
+Scope: working tree
+
+The method branches on every discount type.
+
+```
+func (c *Cart) Total() int {
+	if c.vip {
+		...
+}
+```

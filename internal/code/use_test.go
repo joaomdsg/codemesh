@@ -8,7 +8,7 @@ import (
 
 func TestSnapshot_usedOutsideMeansAnotherPackageRefersToIt(t *testing.T) {
 	t.Parallel()
-	s := loadShop(t)
+	s := shop()
 
 	assert.True(t, s.UsedOutside(s.Decl("example.com/shop/store.Price")), "cart's Total calls it")
 	assert.True(t, s.UsedOutside(s.Decl("example.com/shop/cart.Cart")), "main declares one")

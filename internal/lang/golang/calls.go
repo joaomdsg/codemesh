@@ -1,10 +1,12 @@
-package code
+package golang
 
 import (
 	"fmt"
 	"go/ast"
 	"go/types"
 	"strings"
+
+	"github.com/joaomdsg/codemesh/internal/code"
 )
 
 // forwards returns the function fn's body only calls, with fn's own
@@ -176,7 +178,7 @@ type siteArg struct {
 
 // site records one reference to fn. A reference that is not a call makes
 // fn escape; a test's call is not counted.
-func (l *loader) site(u unit, to *Decl, fn *types.Func, call *ast.CallExpr) {
+func (l *loader) site(u unit, to *code.Decl, fn *types.Func, call *ast.CallExpr) {
 	cs := l.calls[to]
 	if cs == nil {
 		cs = newCallSites(fn.Signature())
@@ -248,7 +250,7 @@ func (l *loader) finishCalls() {
 		}
 		for i, a := range cs.args {
 			if !a.varied {
-				d.Fixed = append(d.Fixed, FixedArg{Param: cs.params[i], Value: a.text})
+				d.Fixed = append(d.Fixed, code.FixedArg{Param: cs.params[i], Value: a.text})
 			}
 		}
 	}

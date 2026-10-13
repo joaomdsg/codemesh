@@ -1,0 +1,20 @@
+# Codemesh handoff
+
+Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.
+
+- Repos: Shop
+
+## Shop
+
+### Review notes
+
+#### Rounding drops a cent
+
+Where: `store/store.go:17`
+Scope: pr:7@9f8e7d6
+
+Use integer cents here, not float64.
+
+```
++	price := float64(n) * 0.1
+```
