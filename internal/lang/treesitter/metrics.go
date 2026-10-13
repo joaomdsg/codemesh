@@ -17,6 +17,13 @@ type table struct {
 	plain, member, typ map[string]bool   // identifier kinds, by the position they name
 	typeCtx            map[string]bool   // kinds whose descendants are type positions
 	memberOf           map[string]string // kind → the field holding a name reached through a path or attribute
+
+	// binds returns the patterns x introduces names in: a parameter, a let, a
+	// loop variable. pattern lists the kinds a pattern nests names in, each with
+	// the field of it that does not bind; names are the kinds that bind.
+	binds   func(x node) []node
+	pattern map[string]string
+	names   map[string]bool
 }
 
 func set(kinds ...string) map[string]bool {
@@ -25,6 +32,17 @@ func set(kinds ...string) map[string]bool {
 		m[k] = true
 	}
 	return m
+}
+
+// fields returns the named children of x that exist.
+func fields(x node, names ...string) []node {
+	var out []node
+	for _, name := range names {
+		if c := x.field(name); c.ok() {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func isComment(n node) bool { return strings.Contains(n.kind(), "comment") }
@@ -104,12 +122,50 @@ type ref struct {
 	kind refKind
 }
 
+// locals returns the names bound inside n, leaving out the subtrees rooted at
+// nodes in skip. A bare name that one of them binds refers to it, not to a
+// decl of the same name elsewhere.
+func (t *table) locals(n node, skip map[[2]int]bool) map[string]bool {
+	out := map[string]bool{}
+	var pattern func(p node)
+	pattern = func(p node) {
+		switch k := p.kind(); {
+		case t.names[k]:
+			out[p.text()] = true
+		default:
+			if f, ok := t.pattern[k]; ok {
+				for _, c := range p.children() {
+					if !same(p.field(f), c) {
+						pattern(c)
+					}
+				}
+			}
+		}
+	}
+	each(n, func(x node) bool {
+		if isComment(x) || !same(x, n) && skip[[2]int{x.start(), x.end()}] {
+			return false
+		}
+		if t.binds != nil && !same(x, n) {
+			for _, p := range t.binds(x) {
+				pattern(p)
+			}
+		}
+		return true
+	})
+	return out
+}
+
 // refs lists the identifiers under n, in order, leaving out the subtrees
 // rooted at nodes in skip: other decls that sit inside n. The token that names
 // n is not a reference, or a method would call the others of its name.
 func (t *table) refs(n node, skip map[[2]int]bool) []ref {
 	var out []ref
 	own := n.field("name")
+	if !own.ok() {
+		own = n.field("left") // a Python assignment
+	}
+	locals := t.locals(n, skip)
 	var walk func(x, parent node, inType bool)
 	walk = func(x, parent node, inType bool) {
 		if isComment(x) || same(own, x) || (parent.ok() && skip[[2]int{x.start(), x.end()}]) {
@@ -128,6 +184,7 @@ func (t *table) refs(n node, skip map[[2]int]bool) []ref {
 				out = append(out, ref{x.text(), refType})
 			case f != "" && same(parent.field(f), x):
 				out = append(out, ref{x.text(), refMember})
+			case locals[x.text()]:
 			default:
 				out = append(out, ref{x.text(), refPlain})
 			}

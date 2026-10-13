@@ -133,6 +133,15 @@ func (r *Repo) Head() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// Files lists the paths in rev's tree, without checking it out.
+func (r *Repo) Files(rev string) ([]string, error) {
+	out, err := run(r.Dir, "ls-tree", "-r", "-z", "--name-only", rev)
+	if err != nil {
+		return nil, err
+	}
+	return strings.FieldsFunc(string(out), func(c rune) bool { return c == 0 }), nil
+}
+
 // Diff compares the working tree (staged, unstaged and untracked files) with base.
 func (r *Repo) Diff(base string) ([]FileDiff, error) {
 	fds, err := r.diff(base)

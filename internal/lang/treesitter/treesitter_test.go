@@ -326,3 +326,174 @@ func TestLoadTypeScript_aMemberCallThatTwoDeclsAnswerToLinksNeitherOfThem(t *tes
 	assert.Empty(t, decl(t, s, "app/src.B.get").Callers)
 	assert.Equal(t, []string{"app/src.use"}, decl(t, s, "app/src.C.only").Callers, "one candidate: linked")
 }
+
+func project(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, text := range files {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(text), 0o644))
+	}
+	return dir
+}
+
+// declIn finds the decl called name in file, whatever suffix its ID got.
+func declIn(t *testing.T, s *code.Snapshot, name, file string) *code.Decl {
+	t.Helper()
+	for _, d := range s.Decls() {
+		if d.Name == name && d.File == file {
+			return d
+		}
+	}
+	t.Fatalf("no %s in %s", name, file)
+	return nil
+}
+
+func TestLoadRust_aRestrictedPubItemIsSeenInsideTheCrateButNotExported(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.Rust, project(t, map[string]string{
+		"Cargo.toml":  "[package]\nname = \"app\"\n",
+		"src/lib.rs":  "mod util;\nuse crate::util;\n\npub fn run() {\n    util::shared();\n    util::up();\n    util::hidden();\n}\n",
+		"src/util.rs": "pub(crate) fn shared() {}\n\npub(super) fn up() {}\n\npub(self) fn hidden() {}\n\npub fn api() {}\n",
+	}))
+
+	shared := decl(t, s, "crate::util.shared")
+	assert.False(t, shared.Exported)
+	assert.Equal(t, []string{"crate.run"}, shared.Callers, "pub(crate)")
+	assert.Equal(t, []string{"crate.run"}, decl(t, s, "crate::util.up").Callers, "pub(super)")
+	assert.Empty(t, decl(t, s, "crate::util.hidden").Callers, "pub(self) is private")
+	assert.True(t, decl(t, s, "crate::util.api").Exported)
+}
+
+func TestLoadTypeScript_followsATsconfigPathAlias(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.TypeScript, project(t, map[string]string{
+		"package.json": `{"name":"app"}`,
+		"tsconfig.json": `{
+  // aliases
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "~/*": ["src/*"], },
+  },
+}`,
+		"src/lib/foo.ts":  "export function foo() { return 1; }\n",
+		"src/app/main.ts": "import { foo } from '~/lib/foo';\nexport function run() { return foo(); }\n",
+	}))
+
+	assert.Equal(t, []string{"app/src/app.run"}, decl(t, s, "app/src/lib.foo").Callers)
+	assert.Equal(t, []string{"app/src/lib"}, s.Package("app/src/app").Imports)
+}
+
+func TestLoadTypeScript_resolvesWorkspacePackageNamesAndSubpaths(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.TypeScript, project(t, map[string]string{
+		"package.json": `{"name":"mono"}`,
+		"packages/server/package.json": `{"name":"@x/server","exports":{
+  ".":{"import":{"default":"./dist/index.mjs"}},
+  "./adapters/fetch":"./dist/adapters/fetch/index.mjs"}}`,
+		"packages/server/src/index.ts":                "export function init() { return 1; }\n",
+		"packages/server/src/adapters/fetch/index.ts": "export function handle() { return 2; }\n",
+		"packages/server/src/internal/other.ts":       "export function other() { return 3; }\n",
+		"packages/client/package.json":                `{"name":"@x/client"}`,
+		"packages/client/src/c.ts": "import { init } from '@x/server';\nimport { handle } from '@x/server/adapters/fetch';\n" +
+			"import { other } from '@x/server/internal/other';\nexport function run() { init(); handle(); return other(); }\n",
+	}))
+
+	assert.Equal(t, []string{"mono/packages/client/src.run"}, decl(t, s, "mono/packages/server/src.init").Callers, "the . export")
+	assert.Equal(t, []string{"mono/packages/client/src.run"}, decl(t, s, "mono/packages/server/src/adapters/fetch.handle").Callers, "a subpath export")
+	assert.Equal(t, []string{"mono/packages/client/src.run"}, decl(t, s, "mono/packages/server/src/internal.other").Callers, "a subpath by file lookup")
+}
+
+func TestLoadTypeScript_followsReExportsInBarrelFilesAndSurvivesCycles(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.TypeScript, project(t, map[string]string{
+		"package.json":      `{"name":"app"}`,
+		"lib/index.ts":      "export * from './impl';\n",
+		"lib/impl/index.ts": "export { a } from './a';\nexport * from '../index';\n",
+		"lib/impl/a.ts":     "export function a() { return 1; }\n",
+		"app/main.ts":       "import { a } from '../lib';\nexport function run() { return a(); }\n",
+	}))
+
+	assert.Equal(t, []string{"app/app.run"}, decl(t, s, "app/lib/impl.a").Callers)
+	assert.Contains(t, s.Package("app/app").Imports, "app/lib/impl")
+}
+
+func TestLoadTypeScript_aNameInTheCallersOwnFileWinsOverOneElsewhere(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.TypeScript, project(t, map[string]string{
+		"package.json": `{"name":"app"}`,
+		"src/a.ts":     "export function helper() { return 1; }\nexport function useA() { return helper(); }\n",
+		"src/b.ts":     "export function helper() { return 2; }\n",
+	}))
+
+	assert.Equal(t, []string{"app/src.useA"}, declIn(t, s, "helper", "src/a.ts").Callers)
+	assert.Empty(t, declIn(t, s, "helper", "src/b.ts").Callers)
+}
+
+func TestLoadTypeScript_anImportedNameWinsOverAnUnimportedOneInTheSamePackage(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.TypeScript, project(t, map[string]string{
+		"package.json": `{"name":"app"}`,
+		"src/c.ts":     "import { f } from './sub/x';\nexport function g() { return f(); }\n",
+		"src/d.ts":     "export function f() { return 2; }\n",
+		"src/sub/x.ts": "export function f() { return 1; }\n",
+	}))
+
+	assert.Equal(t, []string{"app/src.g"}, declIn(t, s, "f", "src/sub/x.ts").Callers)
+	assert.Empty(t, declIn(t, s, "f", "src/d.ts").Callers)
+}
+
+func TestLoadTypeScript_aLocallyBoundNameIsNotACallOfADeclWithThatName(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.TypeScript, project(t, map[string]string{
+		"package.json": `{"name":"app"}`,
+		"src/a.ts":     "export function p(t: number, { u }: any) {\n  const helper = 1;\n  const run = (v: number) => v + t + u;\n  return helper + run(2);\n}\n",
+		"src/b.ts":     "export const t = 1;\nexport const u = 2;\nexport function helper() { return 2; }\nexport function run() { return 3; }\nexport const v = 4;\n",
+	}))
+
+	for _, name := range []string{"t", "u", "helper", "run", "v"} {
+		assert.Empty(t, declIn(t, s, name, "src/b.ts").Callers, name)
+	}
+}
+
+func TestLoadPython_aLocallyBoundNameIsNotACallOfADeclWithThatName(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.Python, project(t, map[string]string{
+		"pyproject.toml":  "[project]\nname = \"app\"\n",
+		"app/__init__.py": "",
+		"app/a.py":        "def run(price, *rest):\n    total = price + 1\n    for item in rest:\n        total += item\n    return [n for n in rest] + [total]\n\n\ndef real():\n    return other()\n",
+		"app/b.py":        "def price():\n    return 1\n\n\ndef total():\n    return 2\n\n\ndef item():\n    return 3\n\n\ndef n():\n    return 4\n\n\ndef rest():\n    return 5\n\n\ndef other():\n    return 6\n",
+	}))
+
+	for _, name := range []string{"price", "total", "item", "n", "rest"} {
+		assert.Empty(t, declIn(t, s, name, "app/b.py").Callers, name)
+	}
+	assert.Equal(t, []string{"app.real"}, declIn(t, s, "other", "app/b.py").Callers, "a name bound nowhere locally still links")
+}
+
+func TestLoadPython_aConstantIsNotACallerOfAnotherConstantWithItsName(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.Python, project(t, map[string]string{
+		"pyproject.toml":  "[project]\nname = \"app\"\n",
+		"app/__init__.py": "",
+		"app/a.py":        "LIMIT = 1\n",
+		"app/b.py":        "LIMIT = 2\n",
+	}))
+
+	assert.Empty(t, declIn(t, s, "LIMIT", "app/a.py").Callers)
+	assert.Empty(t, declIn(t, s, "LIMIT", "app/b.py").Callers)
+}
+
+func TestLoadRust_aLocallyBoundNameIsNotACallOfADeclWithThatName(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.Rust, project(t, map[string]string{
+		"Cargo.toml":  "[package]\nname = \"app\"\n",
+		"src/lib.rs":  "mod util;\nuse crate::util::*;\n\npub fn run(price: i32, (a, b): (i32, i32)) -> i32 {\n    let total = price + a + b;\n    let f = |c: i32| c + total;\n    f(1)\n}\n\npub fn real() -> i32 {\n    other()\n}\n",
+		"src/util.rs": "pub fn price() -> i32 { 1 }\npub fn total() -> i32 { 2 }\npub fn a() -> i32 { 3 }\npub fn b() -> i32 { 4 }\npub fn c() -> i32 { 5 }\npub fn f() -> i32 { 6 }\npub fn other() -> i32 { 7 }\n",
+	}))
+
+	for _, name := range []string{"price", "total", "a", "b", "c", "f"} {
+		assert.Empty(t, declIn(t, s, name, "src/util.rs").Callers, name)
+	}
+	assert.Equal(t, []string{"crate.real"}, declIn(t, s, "other", "src/util.rs").Callers)
+}

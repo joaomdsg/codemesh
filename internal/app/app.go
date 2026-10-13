@@ -516,16 +516,25 @@ func (a *App) Roots(id string) []lang.Root {
 	return rs.roots
 }
 
-// root is want if the repo has that root, else its first.
+// ErrNoRoot is the error of a request for a root the repo, or the pull
+// request, does not have.
+var ErrNoRoot = errors.New("no such project in this repo")
+
+// root is want if the repo has that root, or its first when want is empty.
 func (a *App) root(id, want string) (string, error) {
-	roots := a.Roots(id)
-	if len(roots) == 0 {
+	return pickRoot(a.Roots(id), want)
+}
+
+func pickRoot(roots []lang.Root, want string) (string, error) {
+	switch {
+	case len(roots) == 0:
 		return "", errors.New("no analysable project in this repo")
+	case want == "":
+		return roots[0].Dir, nil
+	case slices.ContainsFunc(roots, func(r lang.Root) bool { return r.Dir == want }):
+		return want, nil
 	}
-	if i := slices.IndexFunc(roots, func(r lang.Root) bool { return r.Dir == want }); i >= 0 {
-		return roots[i].Dir, nil
-	}
-	return roots[0].Dir, nil
+	return "", fmt.Errorf("%w: %q", ErrNoRoot, want)
 }
 
 // Precision says how far a language's links can be trusted: Go resolves

@@ -23,7 +23,7 @@ var python = language{
 	test:    pyTest,
 	pkg:     pyPkg,
 	extract: extractPy,
-	resolve: resolvePy,
+	resolve: single(resolvePy),
 	params:  pyParams,
 	tbl: table{
 		branch: set("if_statement", "elif_clause", "for_statement", "while_statement", "except_clause",
@@ -36,7 +36,33 @@ var python = language{
 		typ:      set(),
 		typeCtx:  set("type"),
 		memberOf: map[string]string{"attribute": "attribute"},
+		binds:    pyBinds,
+		pattern: map[string]string{"pattern_list": "", "tuple_pattern": "", "list_pattern": "", "typed_parameter": "",
+			"list_splat_pattern": "", "dictionary_splat_pattern": "", "as_pattern_target": ""},
+		names: set("identifier"),
 	},
+}
+
+func pyBinds(x node) []node {
+	switch x.kind() {
+	case "assignment", "augmented_assignment", "for_statement", "for_in_clause":
+		return fields(x, "left")
+	case "named_expression":
+		return fields(x, "name")
+	case "as_pattern":
+		return fields(x, "alias")
+	case "parameters", "lambda_parameters":
+		var out []node
+		for _, c := range x.children() {
+			if k := c.kind(); k == "default_parameter" || k == "typed_default_parameter" {
+				out = append(out, fields(c, "name")...)
+			} else {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 func pyTest(rel string) bool {

@@ -36,7 +36,29 @@ var typescript = language{
 		typ:      set("type_identifier"),
 		typeCtx:  set(),
 		memberOf: map[string]string{},
+		binds:    tsBinds,
+		pattern: map[string]string{"object_pattern": "", "array_pattern": "", "rest_pattern": "", "pair_pattern": "key",
+			"assignment_pattern": "right", "object_assignment_pattern": "right"},
+		names: set("identifier", "shorthand_property_identifier_pattern"),
 	},
+}
+
+func tsBinds(x node) []node {
+	switch x.kind() {
+	case "required_parameter", "optional_parameter":
+		return fields(x, "pattern")
+	case "variable_declarator":
+		return fields(x, "name")
+	case "arrow_function":
+		return fields(x, "parameter")
+	case "for_in_statement":
+		return fields(x, "left")
+	case "catch_clause":
+		return fields(x, "parameter")
+	case "formal_parameters": // plain JavaScript has no required_parameter
+		return x.children()
+	}
+	return nil
 }
 
 func tsModule(dir string) string {
@@ -96,6 +118,7 @@ func extractTS(f *source) []rawDecl {
 			}
 			if it.field("source").ok() {
 				f.imports = append(f.imports, tsSpecifier(it))
+				f.reexports = append(f.reexports, tsSpecifier(it))
 			}
 			each(it, func(x node) bool {
 				if x.kind() == "export_specifier" {
@@ -212,34 +235,4 @@ func tsParams(fn node, _ bool) (int, string) {
 		sig += r.text()
 	}
 	return n, norm(sig)
-}
-
-// resolveTS maps a relative import to the package of the file it names, the
-// way a bundler would: with an extension appended, as a directory's index, or
-// with a .js that stands for the .ts beside it. Bare specifiers name
-// dependencies and resolve to nothing.
-func resolveTS(_ string, srcs []*source) func(*source, string) string {
-	files := map[string]string{}
-	for _, s := range srcs {
-		files[s.rel] = s.pkg
-	}
-	return func(f *source, imp string) string {
-		if !strings.HasPrefix(imp, ".") {
-			return ""
-		}
-		target := path.Join(path.Dir(f.rel), imp)
-		stem := strings.TrimSuffix(target, path.Ext(target))
-		cands := []string{target}
-		for _, base := range []string{target, target + "/index", stem} {
-			for _, e := range tsExts {
-				cands = append(cands, base+e)
-			}
-		}
-		for _, c := range cands {
-			if p, ok := files[c]; ok {
-				return p
-			}
-		}
-		return ""
-	}
 }

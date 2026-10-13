@@ -818,3 +818,19 @@ func spans[H ~struct{ OldStart, OldLines, NewStart, NewLines int }](hs []H) []sp
 	}
 	return out
 }
+
+func TestRepo_filesListsTheTreeOfARevWithoutCheckingItOut(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "a.txt", "a\n")
+	write(t, dir, "sub/b c.txt", "b\n")
+	commit(t, dir, "one")
+	sha := git(t, dir, "rev-parse", "HEAD")
+	write(t, dir, "later.txt", "x\n")
+	commit(t, dir, "two")
+
+	got, err := open(t, dir).Files(sha)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a.txt", "sub/b c.txt"}, got, "the files of that commit, not the working tree's")
+}

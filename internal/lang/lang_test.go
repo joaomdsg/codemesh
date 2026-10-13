@@ -25,6 +25,32 @@ func TestRoots_findsEveryLanguageRootAndSkipsVendoredDirs(t *testing.T) {
 	}, got, "the Go module, the Julia package and the nested module; not testdata, vendor, node_modules or hidden dirs")
 }
 
+func TestRootsIn_readsRootsFromAFileListAsRootsReadsADir(t *testing.T) {
+	t.Parallel()
+	files := []string{
+		"go.mod", "main.go",
+		"tools/go.mod", "tools/t.go",
+		"jl/Project.toml",
+		"web/package.json",
+		"py/pyproject.toml",
+		"rs/Cargo.toml",
+		"vendor/v/go.mod", "node_modules/x/package.json", "testdata/fx/go.mod", ".hidden/go.mod", "_skip/go.mod",
+		"docs/readme.md",
+	}
+
+	got, err := lang.RootsIn(files)
+
+	require.NoError(t, err)
+	assert.Equal(t, []lang.Root{
+		{Dir: ".", Lang: code.Go},
+		{Dir: "jl", Lang: code.Julia},
+		{Dir: "py", Lang: code.Lang("python")},
+		{Dir: "rs", Lang: code.Lang("rust")},
+		{Dir: "tools", Lang: code.Go},
+		{Dir: "web", Lang: code.Lang("typescript")},
+	}, got)
+}
+
 func TestRoots_anUnreadableDirDoesNotHideTheRootsAfterIt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

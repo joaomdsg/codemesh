@@ -3,6 +3,8 @@ package lang
 import (
 	"cmp"
 	"io/fs"
+	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -48,4 +50,31 @@ func Roots(repoDir string) ([]Root, error) {
 	})
 	slices.SortStableFunc(out, func(a, b Root) int { return cmp.Compare(a.Dir, b.Dir) })
 	return out, err
+}
+
+// projectFiles are the names the frontends look for to detect a root.
+var projectFiles = []string{"go.mod", "Project.toml", "package.json", "tsconfig.json", "pyproject.toml", "setup.py", "Cargo.toml"}
+
+// RootsIn is Roots for a revision that is not checked out: files are its
+// slash-separated paths, as git ls-tree lists them. Detection runs on a scratch
+// tree holding only the project files, so it agrees with Roots.
+func RootsIn(files []string) ([]Root, error) {
+	dir, err := os.MkdirTemp("", "codemesh-roots-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	for _, f := range files {
+		if !slices.Contains(projectFiles, path.Base(f)) {
+			continue
+		}
+		p := filepath.Join(dir, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			return nil, err
+		}
+	}
+	return Roots(dir)
 }

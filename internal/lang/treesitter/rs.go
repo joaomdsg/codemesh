@@ -25,7 +25,7 @@ var rust = language{
 	extract: func(f *source) []rawDecl {
 		return rsItems(f, f.root.children(), false)
 	},
-	resolve: resolveRS,
+	resolve: single(resolveRS),
 	params:  rsParams,
 	tbl: table{
 		branch:   set("if_expression", "for_expression", "while_expression", "loop_expression", "match_expression"),
@@ -37,7 +37,21 @@ var rust = language{
 		typ:      set("type_identifier"),
 		typeCtx:  set(),
 		memberOf: map[string]string{"scoped_identifier": "name"},
+		binds:    rsBinds,
+		pattern: map[string]string{"tuple_pattern": "", "tuple_struct_pattern": "type", "struct_pattern": "type", "field_pattern": "",
+			"mut_pattern": "", "ref_pattern": "", "reference_pattern": "", "slice_pattern": "", "or_pattern": "", "captured_pattern": ""},
+		names: set("identifier", "shorthand_field_identifier"),
 	},
+}
+
+func rsBinds(x node) []node {
+	switch x.kind() {
+	case "let_declaration", "parameter", "for_expression", "let_condition":
+		return fields(x, "pattern")
+	case "closure_parameters":
+		return x.children()
+	}
+	return nil
 }
 
 // rsPkg gives each file the module path Rust gives it, crate::a::b for
@@ -60,13 +74,17 @@ func rsPkg(_, rel string) (string, string, string) {
 
 func isRustLead(n node) bool { return n.kind() == "attribute_item" || isComment(n) }
 
-func rsPub(n node) bool {
+// rsVis reports whether n is bare pub, and whether other modules of the crate
+// can see it: pub(crate), pub(super) and pub(in path) reach them, pub(self)
+// does not.
+func rsVis(n node) (exported, crate bool) {
 	for _, c := range n.children() {
 		if c.kind() == "visibility_modifier" {
-			return c.text() == "pub"
+			t := c.text()
+			return t == "pub", t != "pub(self)"
 		}
 	}
-	return false
+	return false, false
 }
 
 // rsItems lists the decls of items, those of an inline module included.
@@ -75,8 +93,9 @@ func rsItems(f *source, items []node, test bool) []rawDecl {
 	for i, it := range items {
 		lead, leadText := leading(items, i, isRustLead)
 		test := test || strings.Contains(leadText, "cfg(test)") || strings.Contains(leadText, "#[test]")
-		decl := func(name string, kind code.Kind, exported bool, fn node) rawDecl {
-			return rawDecl{name: name, kind: kind, exported: exported, test: test, outer: it, node: it, fn: fn, lead: lead, leadText: leadText}
+		pub, crate := rsVis(it)
+		decl := func(name string, kind code.Kind, fn node) rawDecl {
+			return rawDecl{name: name, kind: kind, exported: pub, crate: crate, test: test, outer: it, node: it, fn: fn, lead: lead, leadText: leadText}
 		}
 		name := fieldText(it, "name")
 		switch it.kind() {
@@ -87,28 +106,30 @@ func rsItems(f *source, items []node, test bool) []rawDecl {
 				out = append(out, rsItems(f, body.children(), test)...)
 			}
 		case "function_item":
-			out = append(out, decl(name, code.Func, rsPub(it), it))
+			out = append(out, decl(name, code.Func, it))
 		case "struct_item", "enum_item", "union_item", "type_item":
-			out = append(out, decl(name, code.Type, rsPub(it), node{}))
+			out = append(out, decl(name, code.Type, node{}))
 		case "const_item", "static_item":
-			out = append(out, decl(name, code.Const, rsPub(it), node{}))
+			out = append(out, decl(name, code.Const, node{}))
 		case "trait_item":
-			out = append(out, decl(name, code.Type, rsPub(it), node{}))
-			out = append(out, rsMethods(it, name, rsPub(it), test)...)
+			out = append(out, decl(name, code.Type, node{}))
+			out = append(out, rsMethods(it, name, pub, crate, test)...)
 		case "impl_item":
 			ty := it.field("type")
 			if g := ty.field("type"); g.ok() {
 				ty = g
 			}
-			out = append(out, rsMethods(it, strings.TrimSpace(ty.text()), it.field("trait").ok(), test)...)
+			traitImpl := it.field("trait").ok()
+			out = append(out, rsMethods(it, strings.TrimSpace(ty.text()), traitImpl, traitImpl, test)...)
 		}
 	}
 	return out
 }
 
 // rsMethods lists the functions in the body of an impl or trait. exported
-// says whether every one is: in a trait impl or a public trait they are.
-func rsMethods(owner node, name string, exported, test bool) []rawDecl {
+// and crate say whether every one is: in a trait impl or a public trait they
+// are exported, in a trait impl or a crate-visible trait they are visible.
+func rsMethods(owner node, name string, exported, crate, test bool) []rawDecl {
 	var out []rawDecl
 	members := owner.field("body").children()
 	for j, m := range members {
@@ -116,7 +137,8 @@ func rsMethods(owner node, name string, exported, test bool) []rawDecl {
 			continue
 		}
 		lead, leadText := leading(members, j, isRustLead)
-		out = append(out, rawDecl{name: name + "." + fieldText(m, "name"), kind: code.Method, exported: exported || rsPub(m),
+		pub, vis := rsVis(m)
+		out = append(out, rawDecl{name: name + "." + fieldText(m, "name"), kind: code.Method, exported: exported || pub, crate: crate || vis,
 			test: test || strings.Contains(leadText, "#[test]"), outer: m, node: m, fn: m, lead: lead, leadText: leadText})
 	}
 	return out

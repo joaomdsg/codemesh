@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net"
@@ -298,6 +299,9 @@ func basketLink(a *app.App) h.H {
 
 // unavailable is the page body while there is no snapshot to show.
 func (s *shell) unavailable(active tab, a *app.Analysis) h.H {
+	if errors.Is(a.Err, app.ErrNoRoot) {
+		return s.frame(active, a, h.P(h.Class("empty"), h.Str("No such project in this repo: "+s.root+".")))
+	}
 	if a.Err != nil {
 		return s.frame(active, a, h.P(h.Class("empty"), h.Str("Nothing to show until the code loads.")))
 	}

@@ -96,3 +96,15 @@ func TestRoots_everyHandoffItemNamesItsFileFromTheRepoTop(t *testing.T) {
 	}
 	assert.True(t, kinds[handoff.Prognosis] && kinds[handoff.Finding], "the health list and the map each added one: %v", kinds)
 }
+
+func TestRoots_anUnknownRootSaysSoInsteadOfShowingTheFirst(t *testing.T) {
+	e := serve(t)
+
+	for _, p := range []string{"/in/nope/", "/in/nope/review", "/in/nope/deps", "/in/nope/health"} {
+		_, body := e.app.Get(e.base() + p)
+		assert.Contains(t, body, "No such project", p)
+		assert.NotContains(t, body, "example.com/calc", p+" must not fall back to the first root")
+	}
+	_, body := e.app.Get(e.base() + "/in/%3Ci%3Ezz/")
+	assert.NotContains(t, body, "<i>zz", "the name is escaped")
+}

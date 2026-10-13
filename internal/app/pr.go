@@ -1,16 +1,19 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	"github.com/joaomdsg/codemesh/internal/analysis"
 	"github.com/joaomdsg/codemesh/internal/ghx"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/graphdiff"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/review"
 )
 
@@ -128,45 +131,82 @@ func (r *PRReview) Release() {
 	r.Head.Release()
 }
 
+// prRefs is a fetched pull request: the commits its review compares and the
+// roots of both, which the working tree may not have.
+type prRefs struct {
+	pr         ghx.PR
+	base, head string
+	roots      []lang.Root
+}
+
+// fetchPR fetches pull request n and finds its merge-base with the base
+// branch. Roots come from the two trees, so a project the change adds or
+// deletes is one, and a file of a nested root is told from the root's own.
+func (a *App) fetchPR(rs *repoState, n int) (prRefs, error) {
+	pr, err := a.pr(rs, n, true)
+	if err != nil {
+		return prRefs{}, err
+	}
+	head, err := rs.git.FetchPR(n)
+	if err != nil {
+		return prRefs{}, err
+	}
+	// The base branch may have moved past what the repo has fetched.
+	if _, err := rs.git.ResolveRef(pr.BaseOID); err != nil {
+		if err := rs.git.Fetch(); err != nil {
+			return prRefs{}, err
+		}
+	}
+	base, err := rs.git.MergeBaseOf(head, pr.BaseOID)
+	if err != nil {
+		return prRefs{}, err
+	}
+	var roots []lang.Root
+	for _, rev := range []string{base, head} {
+		files, err := rs.git.Files(rev)
+		if err != nil {
+			return prRefs{}, err
+		}
+		in, err := lang.RootsIn(files)
+		if err != nil {
+			return prRefs{}, err
+		}
+		roots = append(roots, in...)
+	}
+	slices.SortFunc(roots, func(x, y lang.Root) int { return cmp.Or(cmp.Compare(x.Dir, y.Dir), cmp.Compare(x.Lang, y.Lang)) })
+	return prRefs{pr: pr, base: base, head: head, roots: slices.Compact(roots)}, nil
+}
+
 // PRReview fetches pull request n, analyses its head and its merge-base with
 // the base branch, and builds the review of one root. An empty root means the
-// repo's first.
+// first root of either side. A root missing on one side reads as empty there.
 func (a *App) PRReview(id, root string, n int) (*PRReview, error) {
 	rs, err := a.repo(id)
 	if err != nil {
 		return nil, err
 	}
-	if root, err = a.root(id, root); err != nil {
-		return nil, err
-	}
-	pr, err := a.pr(rs, n, true)
+	refs, err := a.fetchPR(rs, n)
 	if err != nil {
 		return nil, err
 	}
-	head, err := rs.git.FetchPR(n)
+	return a.prReview(rs, refs, root)
+}
+
+func (a *App) prReview(rs *repoState, refs prRefs, root string) (*PRReview, error) {
+	root, err := pickRoot(refs.roots, root)
 	if err != nil {
 		return nil, err
 	}
-	// The base branch may have moved past what the repo has fetched.
-	if _, err := rs.git.ResolveRef(pr.BaseOID); err != nil {
-		if err := rs.git.Fetch(); err != nil {
-			return nil, err
-		}
-	}
-	base, err := rs.git.MergeBaseOf(head, pr.BaseOID)
-	if err != nil {
-		return nil, err
-	}
-	c, err := a.eng.Compare(a.ctx, id, root, base, head)
+	c, err := a.eng.Compare(a.ctx, rs.info.ID, root, refs.base, refs.head)
 	if err != nil {
 		return nil, err
 	}
 	return &PRReview{
-		PR: pr, Root: root, BaseSHA: base, HeadSHA: head,
+		PR: refs.pr, Root: root, BaseSHA: refs.base, HeadSHA: refs.head,
 		Base: a.fromResult(rs, root, c.Base), Head: a.fromResult(rs, root, c.Head),
 		Files: c.Files, Graph: c.Diff,
 		Review: review.Build(review.Input{
-			Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, root, a.Roots(id)),
+			Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, root, refs.roots),
 			BaseFindings: c.Base.Findings, HeadFindings: c.Head.Findings, Graph: c.Diff,
 		}),
 	}, nil

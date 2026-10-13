@@ -259,8 +259,12 @@ func (a *App) prReading(rs *repoState, pr ghx.PR) Reading {
 			a.summaries.Lock()
 			defer a.summaries.Unlock()
 			s := &summary{}
-			for _, root := range a.Roots(rs.info.ID) {
-				r, err := a.PRReview(rs.info.ID, root.Dir, pr.Number)
+			refs, err := a.fetchPR(rs, pr.Number)
+			if err != nil {
+				s.err = err
+			}
+			for _, root := range refs.roots {
+				r, err := a.prReview(rs, refs, root.Dir)
 				if err != nil {
 					s.err = err
 					break

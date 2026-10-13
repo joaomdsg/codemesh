@@ -51,8 +51,9 @@ type language struct {
 	// extract lists a file's decls and sets its imports.
 	extract func(f *source) []rawDecl
 	// resolve prepares the mapping of an import, as extract wrote it, to the
-	// path of the module-internal package it names, "" for any other.
-	resolve func(module string, srcs []*source) func(f *source, imp string) string
+	// paths of the module-internal packages it names, none for any other. It
+	// runs after every file is parsed, so it can read what extract set.
+	resolve func(dir, module string, srcs []*source) func(f *source, imp string) []string
 	// params counts a function's parameters, receiver excluded, and
 	// normalises its parameter and return text.
 	params func(fn node, method bool) (int, string)
@@ -67,6 +68,7 @@ type source struct {
 	pkgDir       string
 	pkgName      string
 	imports      []string
+	reexports    []string // the imports that also hand their names on
 	root         node
 	src          []byte
 }
@@ -76,6 +78,7 @@ type rawDecl struct {
 	name     string
 	kind     code.Kind
 	exported bool
+	crate    bool // seen from the crate's other modules, exported or not
 	test     bool
 	outer    node   // the whole statement: export keyword and decorators included
 	node     node   // what shape and references read
@@ -85,8 +88,9 @@ type rawDecl struct {
 }
 
 type parsedDecl struct {
-	d    code.Decl
-	refs []ref
+	d     code.Decl
+	refs  []ref
+	crate bool
 }
 
 type parsedFile struct {
@@ -106,25 +110,31 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 	if err != nil {
 		return nil, err
 	}
-	resolve := l.resolve(module, srcs)
 
 	ps := newParsers()
+	parsed := make([]parsedFile, len(srcs))
+	for i, s := range srcs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if parsed[i], err = l.parse(ps, abs, s); err != nil {
+			return nil, err
+		}
+	}
+	resolve := l.resolve(abs, module, srcs)
+
 	b := code.NewBuilder(l.lang, module, abs)
 	pkgs := map[string]*code.Package{}
-	imports := map[string]map[string]bool{} // package → packages it imports, tests included
+	imports := map[string]map[string]bool{}     // package → packages it imports, tests included
+	fileImports := map[string]map[string]bool{} // file → packages it imports, its own included
+	crate := map[*code.Decl]bool{}
 	type built struct {
 		d    *code.Decl
 		refs []ref
 	}
 	var all []built
-	for _, s := range srcs {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		pf, err := l.parse(ps, abs, s)
-		if err != nil {
-			return nil, err
-		}
+	for i, s := range srcs {
+		pf := parsed[i]
 		p := pkgs[s.pkg]
 		if p == nil {
 			p = b.Package(code.Package{Path: s.pkg, Rel: s.pkgDir, Name: s.pkgName})
@@ -134,19 +144,24 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 		if pf.err != "" {
 			p.Errors = append(p.Errors, pf.err)
 		}
+		fileImports[s.rel] = map[string]bool{}
 		for _, imp := range s.imports {
-			to := resolve(s, imp)
-			if to == "" || to == s.pkg {
-				continue
-			}
-			imports[s.pkg][to] = true
-			if !s.test && !slices.Contains(p.Imports, to) {
-				p.Imports = append(p.Imports, to)
+			for _, to := range resolve(s, imp) {
+				fileImports[s.rel][to] = true
+				if to == s.pkg {
+					continue
+				}
+				imports[s.pkg][to] = true
+				if !s.test && !slices.Contains(p.Imports, to) {
+					p.Imports = append(p.Imports, to)
+				}
 			}
 		}
 		file := b.File(p, pf.f)
 		for _, pd := range pf.decls {
-			all = append(all, built{b.Decl(file, pd.d), pd.refs})
+			d := b.Decl(file, pd.d)
+			crate[d] = pd.crate
+			all = append(all, built{d, pd.refs})
 		}
 	}
 
@@ -160,7 +175,7 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 		for _, r := range x.refs {
 			var cands []*code.Decl
 			for _, to := range byName[r.name] {
-				visible := to.Package == x.d.Package || to.Exported && imports[x.d.Package][to.Package]
+				visible := to.Package == x.d.Package || (to.Exported || crate[to]) && imports[x.d.Package][to.Package]
 				if visible && r.reaches(to) {
 					cands = append(cands, to)
 				}
@@ -169,6 +184,17 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 			// about which one is meant; linking all of them invents callers.
 			if r.kind == refMember && len(cands) > 1 {
 				continue
+			}
+			// A name declared in the file, or in a module the file imports,
+			// is the likelier target than a same-named decl elsewhere.
+			for _, ok := range []func(*code.Decl) bool{
+				func(to *code.Decl) bool { return to.File == x.d.File },
+				func(to *code.Decl) bool { return fileImports[x.d.File][to.Package] },
+			} {
+				if kept := slices.DeleteFunc(slices.Clone(cands), func(to *code.Decl) bool { return !ok(to) }); len(kept) > 0 {
+					cands = kept
+					break
+				}
 			}
 			for _, to := range cands {
 				if to == x.d {
@@ -185,6 +211,19 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 		}
 	}
 	return b.Finish(), nil
+}
+
+// single adapts a resolver that names at most one package, "" for none.
+func single(r func(module string, srcs []*source) func(*source, string) string) func(dir, module string, srcs []*source) func(*source, string) []string {
+	return func(_, module string, srcs []*source) func(*source, string) []string {
+		resolve := r(module, srcs)
+		return func(f *source, imp string) []string {
+			if p := resolve(f, imp); p != "" {
+				return []string{p}
+			}
+			return nil
+		}
+	}
 }
 
 // reaches reports whether a reference of this kind can mean to: a bare name
@@ -284,7 +323,7 @@ func (l *language) parse(ps *parsers, abs string, s *source) (parsedFile, error)
 			d.Complexity, d.Nesting = l.tbl.complexity(r.fn), l.tbl.nesting(r.fn, 0)
 			d.Params, d.Signature = l.params(r.fn, strings.Contains(r.name, "."))
 		}
-		pf.decls = append(pf.decls, parsedDecl{d, l.tbl.refs(r.node, inner)})
+		pf.decls = append(pf.decls, parsedDecl{d, l.tbl.refs(r.node, inner), r.crate})
 		inner[own] = true
 	}
 	return pf, nil
