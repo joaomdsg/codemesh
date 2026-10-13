@@ -1,6 +1,6 @@
-// Package ui serves codemesh's pages: the map, the dependency matrix, the
-// review queue and the health diagnosis. Pages render from the latest live.Analysis and re-render when
-// a new one is published.
+// Package ui serves codemesh's pages: the workspace, and per repo the map,
+// the dependency matrix, the review queue, the pull requests and the health
+// diagnosis. Pages render from app.Analysis and re-render on each app.Event.
 package ui
 
 import (
@@ -10,15 +10,16 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
-	"time"
 
 	"github.com/go-via/via"
 	"github.com/go-via/via/h"
+	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/code"
-	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/review"
+	"github.com/joaomdsg/codemesh/internal/workspace"
 )
 
 //go:embed style.css
@@ -64,7 +65,7 @@ var assetsRoot = func() fs.FS {
 
 // New returns the app's handler. origin is the URL the browser uses, such as
 // http://localhost:7777; actions from any other origin are refused.
-func New(src *live.Source, state *review.State, origin string) http.Handler {
+func New(a *app.App, origin string) http.Handler {
 	r := via.NewRouter(
 		via.WithHead(via.Head{
 			Lang: "en",
@@ -77,44 +78,76 @@ func New(src *live.Source, state *review.State, origin string) http.Handler {
 		}),
 		via.WithTrustedOrigin(origin),
 	)
-	shell := shell{src: src, state: state}
-	via.Mount(r, "/", mapPage{shell: shell})
-	via.Mount(r, "/deps", depsPage{shell: shell})
-	via.Mount(r, "/review", reviewPage{shell: shell})
-	via.Mount(r, "/diagnose", diagnosePage{shell: shell})
-	via.Mount(r, "/diagnose/{lens}", diagnosePage{shell: shell})
-	via.Mount(r, "/prognosis/{key}", diagnosePage{shell: shell})
+	sh := shell{app: a}
+	via.Mount(r, "/", workspacePage{app: a})
+	via.Mount(r, "/r/{repo}/", mapPage{shell: sh})
+	via.Mount(r, "/r/{repo}/deps", depsPage{shell: sh})
+	via.Mount(r, "/r/{repo}/review", reviewPage{shell: sh})
+	via.Mount(r, "/r/{repo}/review/{thread}", reviewPage{shell: sh})
+	via.Mount(r, "/r/{repo}/pr/{n}", reviewPage{shell: sh})
+	via.Mount(r, "/r/{repo}/pr/{n}/{thread}", reviewPage{shell: sh})
+	via.Mount(r, "/r/{repo}/prs", prsPage{shell: sh})
+	via.Mount(r, "/r/{repo}/health", diagnosePage{shell: sh})
+	via.Mount(r, "/r/{repo}/health/{lens}", diagnosePage{shell: sh})
+	via.Mount(r, "/r/{repo}/prognosis/{key}", diagnosePage{shell: sh})
+	via.Mount(r, "/basket", basketPage{app: a})
 	mux := http.NewServeMux()
 	// Browsers ask for a favicon on every page; answer instead of logging 404s.
 	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("GET /_codemesh/", serveAssets)
+	mux.HandleFunc("GET /basket.txt", serveBasketText(a))
 	mux.Handle("/", r)
 	return mux
 }
 
-// shell is the frame every page shares: the header, the live stamp, and the
-// subscription that re-renders the page on a new analysis.
+// shell is the frame every repo page shares: the header, the stamp, and the
+// subscription that re-renders the page on each app event.
 type shell struct {
-	src   *live.Source
+	app   *app.App
+	repo  workspace.Repo
+	root  string // ?root=, "" for the repo's first root
 	state *review.State
 	Stamp via.State[string]
 }
 
-func (s *shell) start(ctx *via.Ctx) {
-	s.Stamp.Set(stamp(s.src.Current()))
-	ctx.Listen(s.src.Updates, s.onUpdate)
+func (s *shell) start(ctx *via.Ctx) error {
+	r, ok := s.app.Repo(ctx.Request().PathValue("repo"))
+	if !ok {
+		return via.ErrNotFound
+	}
+	st, err := s.app.Reviewed(r.ID)
+	if err != nil {
+		return err
+	}
+	s.repo, s.state = r, st
+	s.root = ctx.Request().URL.Query().Get("root")
+	s.Stamp.Set(s.stamp())
+	ctx.Listen(s.app.Events, s.onEvent)
+	return nil
 }
 
-func (s *shell) onUpdate(_ *via.Ctx, _ int64) { s.Stamp.Set(stamp(s.src.Current())) }
+func (s *shell) onEvent(_ *via.Ctx, _ app.Event) { s.Stamp.Set(s.stamp()) }
 
-func stamp(a *live.Analysis) string {
-	if a == nil {
-		return "analysing…"
+func (s *shell) stamp() string {
+	return "analysed " + s.app.Updated(s.repo.ID).Format("15:04:05")
+}
+
+// analysis is the repo's current root at its default revision.
+func (s *shell) analysis() *app.Analysis { return s.app.Analyse(s.repo.ID, s.root, "") }
+
+// base is the URL prefix of the repo's pages.
+func (s *shell) base() string { return "/r/" + url.PathEscape(s.repo.ID) + "/" }
+
+// href is the repo page at path, in the root being viewed.
+func (s *shell) href(path string) string {
+	if s.root == "" {
+		return s.base() + path
 	}
-	if a.Err != nil {
-		return "load failed " + a.At.Format("15:04:05")
-	}
-	return fmt.Sprintf("analysed %s in %s", a.At.Format("15:04:05"), a.Took.Round(10*time.Millisecond))
+	return s.base() + path + "?root=" + url.QueryEscape(s.root)
+}
+
+func (s *shell) mapURL(lens, in, decl string) mapURL {
+	return mapURL{repo: s.repo.ID, root: s.root, lens: lens, in: in, decl: decl}
 }
 
 type tab int
@@ -123,29 +156,30 @@ const (
 	tabMap tab = iota
 	tabDeps
 	tabReview
-	tabDiagnose
+	tabPRs
+	tabHealth
 )
 
-func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
-	module := ""
+func (s *shell) frame(active tab, a *app.Analysis, main ...h.H) h.H {
+	module := s.repo.Name
 	if a != nil && a.Snap != nil {
 		module = a.Snap.Module
 	}
-	link := func(t tab, href, label string, extra h.H) h.H {
+	link := func(t tab, path, label string, extra h.H) h.H {
 		cls := "tab"
 		if t == active {
 			cls = "tab on"
 		}
-		return h.A(h.Class(cls), h.Href(href), h.Str(label), extra)
+		return h.A(h.Class(cls), h.Href(s.href(path)), h.Str(label), extra)
 	}
 	var pending h.H
-	if n := s.open(a); n > 0 {
+	if n := s.app.Unreviewed(s.repo.ID); n > 0 {
 		pending = h.Span(h.Class("count"), h.Title("units not yet reviewed"), h.Str(n))
 	}
 	var banner h.H
 	switch {
 	case a != nil && a.Err != nil:
-		banner = h.Div(h.Class("banner err"), h.Role("alert"), h.Str("Load failed: "+a.Err.Error()+". Showing the last good analysis; fix the error and it reloads."))
+		banner = h.Div(h.Class("banner err"), h.Role("alert"), h.Str("Load failed: "+a.Err.Error()+". Fix the error and the page reloads."))
 	case a != nil && a.Snap != nil:
 		banner = typeErrors(a)
 		// The review lists nested modules' files; the map and matrix lack them.
@@ -156,13 +190,17 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 	return h.Div(h.Class("app"),
 		h.Header(h.Class("top"),
 			h.A(h.Class("brand"), h.Href("/"), h.Str("codemesh")),
+			s.switcher(),
 			h.Span(h.Class("module"), h.Str(module)),
+			s.rootSwitcher(a),
 			h.Nav(h.Class("tabs"),
-				link(tabMap, "/", "Map", nil),
-				link(tabDeps, "/deps", "Dependencies", nil),
-				link(tabReview, "/review", "Review", pending),
-				link(tabDiagnose, "/diagnose", "Diagnose", nil),
+				link(tabMap, "", "Map", nil),
+				link(tabDeps, "deps", "Dependencies", nil),
+				link(tabReview, "review", "Review", pending),
+				link(tabPRs, "prs", "Pull requests", nil),
+				link(tabHealth, "health", "Health", nil),
 			),
+			basketLink(s.app),
 			h.Span(h.Class("stamp"), h.Aria("live", "polite"), s.Stamp.Display()),
 		),
 		banner,
@@ -170,61 +208,130 @@ func (s *shell) frame(active tab, a *live.Analysis, main ...h.H) h.H {
 	)
 }
 
-// open counts the units not yet marked reviewed.
-func (s *shell) open(a *live.Analysis) int {
-	if a == nil || a.Review == nil {
-		return 0
-	}
-	n := 0
-	for _, u := range a.Review.Units {
-		if !s.state.Reviewed(u.Key) {
-			n++
+// switcher lists the workspace's repos, so one click moves between them.
+func (s *shell) switcher() h.H {
+	repos, _ := s.app.Repos()
+	var rows []h.H
+	for _, r := range repos {
+		cls := ""
+		if r.ID == s.repo.ID {
+			cls = "on"
 		}
+		rows = append(rows, h.Li(h.A(h.Class(cls), h.Href("/r/"+url.PathEscape(r.ID)+"/"), h.Str(r.Name))))
 	}
-	return n
+	rows = append(rows, h.Li(h.Class("switch-all"), h.A(h.Href("/"), h.Str("All repos"))))
+	return h.Details(h.Class("switch"),
+		h.Summary(h.Title("Switch repo"), h.Str(s.repo.Name)),
+		h.Ul(append([]h.H{h.Class("switch-list")}, rows...)...),
+	)
+}
+
+// rootLabel names a root: its directory, or for the repo's own root the last
+// element of its module path when a, the analysis on screen, is that root. The
+// repo's name stands in for a root the page has not loaded.
+func (s *shell) rootLabel(dir string, a *app.Analysis) string {
+	switch {
+	case dir != ".":
+		return dir
+	case a != nil && a.Snap != nil && a.Root == ".":
+		return path.Base(a.Snap.Module)
+	}
+	return s.repo.Name
+}
+
+// rootSwitcher offers the repo's other projects, when it has several.
+func (s *shell) rootSwitcher(a *app.Analysis) h.H {
+	roots := s.app.Roots(s.repo.ID)
+	if len(roots) < 2 {
+		return nil
+	}
+	var kids []h.H
+	for _, r := range roots {
+		cls := "seg"
+		if a != nil && r.Dir == a.Root {
+			cls = "seg on"
+		}
+		kids = append(kids, h.A(h.Class(cls), h.Href(s.base()+"?root="+url.QueryEscape(r.Dir)), h.Title(string(r.Lang)), h.Str(s.rootLabel(r.Dir, a))))
+	}
+	return h.Nav(append([]h.H{h.Class("segs roots"), h.Aria("label", "Project")}, kids...)...)
+}
+
+// basketLink shows how many items wait in the handoff basket.
+func basketLink(a *app.App) h.H {
+	return h.A(h.Class("tab basket"), h.Href("/basket"), h.Str("Basket"), h.Span(h.Class("count"), h.Str(len(a.Basket().Items))))
+}
+
+// unavailable is the page body while there is no snapshot to show.
+func (s *shell) unavailable(active tab, a *app.Analysis) h.H {
+	if a.Err != nil {
+		return s.frame(active, a, h.P(h.Class("empty"), h.Str("Nothing to show until the code loads.")))
+	}
+	return s.frame(active, a, h.P(h.Class("empty"), h.Str("Analysing the repo…")))
 }
 
 // pkgName is a package's directory, or the module's last element for the
 // root package, whose directory "." says nothing.
-func pkgName(a *live.Analysis, p *code.Package) string {
+func pkgName(a *app.Analysis, p *code.Package) string {
 	if p.Rel == "." {
 		return path.Base(a.Snap.Module)
 	}
 	return p.Rel
 }
 
-// typeErrors warns that packages failed to type-check: references through
-// them are missing, so callers and smells undercount until the code builds.
-func typeErrors(a *live.Analysis) h.H {
-	var broken []string
-	first := ""
+// typeErrors warns of what the loader could not read: files the parser
+// rejected, which codemesh is to blame for, and packages that did not
+// type-check, which are the code's. Either way the references through them
+// are missing, so callers and smells undercount.
+func typeErrors(a *app.Analysis) h.H {
+	var broken, unparsed []string
+	first, firstParse := "", ""
 	for _, p := range a.Snap.Packages {
-		if len(p.Errors) > 0 {
-			broken = append(broken, pkgName(a, p))
+		typed := false
+		for _, e := range p.Errors {
+			if loc, ok := strings.CutSuffix(e, ": syntax errors"); ok {
+				unparsed = append(unparsed, loc)
+				if firstParse == "" {
+					firstParse = loc
+				}
+				continue
+			}
+			if !typed {
+				broken, typed = append(broken, pkgName(a, p)), true
+			}
 			if first == "" {
-				first = p.Errors[0]
+				first = e
 			}
 		}
 	}
-	if len(broken) == 0 {
-		return nil
+	var banners []h.H
+	if len(unparsed) > 0 {
+		file, line, _ := strings.Cut(firstParse, ":")
+		what := fmt.Sprintf("%s (line %s)", file, line)
+		if len(unparsed) > 1 {
+			what = fmt.Sprintf("%d files, the first %s", len(unparsed), what)
+		}
+		banners = append(banners, h.Div(h.Class("banner warn"), h.Role("status"),
+			h.Str("▲ codemesh could not parse "+what+", so its callers and smells are missing. The rest of the repo is analysed.")))
 	}
-	return h.Div(h.Class("banner warn"), h.Role("status"),
-		h.Str(fmt.Sprintf("▲ %s did not type-check, so callers and smells there may be missing until it builds. First error: %s",
-			plural(len(broken), "package"), first)))
+	if len(broken) > 0 {
+		banners = append(banners, h.Div(h.Class("banner warn"), h.Role("status"),
+			h.Str(fmt.Sprintf("▲ %s did not type-check, so callers and smells there may be missing until it builds. First error: %s",
+				plural(len(broken), "package"), first))))
+	}
+	return group(banners)
 }
 
-// nestedModules says which modules inside this one the map leaves out: Go
-// loads each as its own module.
-func nestedModules(a *live.Analysis) h.H {
+// nestedModules says where the modules inside this one went: Go loads each as
+// a module of its own, which the root switcher offers.
+func nestedModules(a *app.Analysis) h.H {
 	var text string
 	switch n := a.Snap.Nested; len(n) {
 	case 0:
 		return nil
 	case 1:
-		text = fmt.Sprintf("Nested module %s/ not mapped. Run codemesh in %s/ to map it.", n[0], n[0])
+		text = fmt.Sprintf("Nested module %s/ is a separate root: pick it in the header to map it.", n[0])
 	default:
-		text = fmt.Sprintf("%d nested modules not mapped: %s/. Run codemesh in each to map it.", len(n), strings.Join(n, "/, "))
+		text = fmt.Sprintf("%d nested modules are separate roots: %s/. Pick one in the header to map it.", len(n), strings.Join(n, "/, "))
 	}
 	return h.Div(h.Class("banner warn"), h.Role("status"), h.Str("▲ "+text))
 }

@@ -2,6 +2,8 @@ package treesitter_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/joaomdsg/codemesh/internal/code"
@@ -145,4 +147,21 @@ func TestLoadRust_mapsDeclsMetricsAndCallersAcrossFiles(t *testing.T) {
 
 	assert.Equal(t, []string{"crate::price"}, s.Package("crate").Imports)
 	assert.Empty(t, s.Package("crate::price").Imports, "std is not in the crate")
+}
+
+func TestLoadTypeScript_namesTheLineOfASyntaxError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte(`{"name":"bad"}`), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "src"), 0o755))
+	src := "export const a = 1;\n\nexport function ok() { return 1; }\nexport function broken( {\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "src", "bad.ts"), []byte(src), 0o644))
+
+	s := load(t, treesitter.TypeScript, dir)
+
+	var errs []string
+	for _, p := range s.Packages {
+		errs = append(errs, p.Errors...)
+	}
+	assert.Equal(t, []string{"src/bad.ts:4: syntax errors"}, errs)
 }

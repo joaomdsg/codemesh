@@ -9,8 +9,10 @@ import (
 	"github.com/go-via/via"
 	"github.com/go-via/via/expr"
 	"github.com/go-via/via/h"
+	"github.com/go-via/via/on"
+	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/code"
-	"github.com/joaomdsg/codemesh/internal/live"
+	"github.com/joaomdsg/codemesh/internal/handoff"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 )
 
@@ -23,6 +25,7 @@ type diagnosePage struct {
 	// render that decides which actions exist.
 	lens string
 	open string // prognosis key
+	err  string // the last basket write that failed
 
 	// The island's input, client-only: the map with every lens's heat and
 	// marks.
@@ -43,15 +46,31 @@ func (p *diagnosePage) OnInit(ctx *via.Ctx) error {
 	if !slices.ContainsFunc(diagLenses, func(l lens) bool { return l.key == p.lens }) {
 		p.lens = string(prognosis.Health)
 	}
-	p.start(ctx)
-	return nil
+	return p.start(ctx)
 }
 
-func (p *diagnosePage) PageMeta() via.Meta { return via.Meta{Title: "Diagnose · codemesh"} }
-
-func (p *diagnosePage) prognoses(a *live.Analysis) []prognosis.Prognosis {
-	return prognosis.Find(a.Snap, a.Findings)
+// Handoff puts the prognosis with this key in the handoff basket.
+func (p *diagnosePage) Handoff(_ *via.Ctx, key string) {
+	a := p.analysis()
+	defer a.Release()
+	if a.Snap == nil {
+		return
+	}
+	if g := byKey(p.prognoses(a), key); g != nil {
+		_, err := p.app.BasketAdd(prognosisItem(a, *g))
+		p.err = basketError(err)
+	}
 }
+
+// handoff is g's "Add to handoff" control.
+func (p *diagnosePage) handoff(g *prognosis.Prognosis) h.H {
+	in := inBasket(p.app.Basket(), handoff.Prognosis, p.repo.ID, g.Key)
+	return handoffControl(in, on.Click(on.Bind(p.Handoff, g.Key)))
+}
+
+func (p *diagnosePage) PageMeta() via.Meta { return via.Meta{Title: "Health · codemesh"} }
+
+func (p *diagnosePage) prognoses(a *app.Analysis) []prognosis.Prognosis { return a.Prognoses() }
 
 func byKey(gs []prognosis.Prognosis, key string) *prognosis.Prognosis {
 	for i := range gs {
@@ -62,39 +81,61 @@ func byKey(gs []prognosis.Prognosis, key string) *prognosis.Prognosis {
 	return nil
 }
 
-func lensHref(lens string) string { return "/diagnose/" + lens }
+func (p *diagnosePage) lensHref(lens string) string { return p.href("health/" + lens) }
 
-func prognosisHref(key string) string { return "/prognosis/" + url.PathEscape(key) }
+func (p *diagnosePage) prognosisHref(key string) string {
+	return p.href("prognosis/" + url.PathEscape(key))
+}
+
+// diag is the island's input for lens: the analysis laid out, with the links
+// the island builds pointing at this repo.
+func (p *diagnosePage) diag(a *app.Analysis, gs []prognosis.Prognosis, lens string) diag {
+	d := diagOf(a, gs, lens)
+	d.Base, d.Root = p.base(), p.root
+	return d
+}
 
 func (p *diagnosePage) View() h.H {
-	a := p.src.Current()
-	if a == nil || a.Snap == nil {
-		return p.frame(tabDiagnose, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
+	a := p.analysis()
+	defer a.Release()
+	if a.Snap == nil {
+		return p.unavailable(tabHealth, a)
 	}
 	gs := p.prognoses(a)
 	g := byKey(gs, p.open)
 	if g == nil {
-		return p.frame(tabDiagnose, a, p.overview(a, gs))
+		return p.frame(tabHealth, a, basketErrorLine(p.err), p.overview(a, gs))
 	}
-	return p.frame(tabDiagnose, a, p.panel(a, gs, g))
+	return p.frame(tabHealth, a, basketErrorLine(p.err), p.panel(a, gs, g))
 }
 
-func (p *diagnosePage) overview(a *live.Analysis, gs []prognosis.Prognosis) h.H {
+func (p *diagnosePage) overview(a *app.Analysis, gs []prognosis.Prognosis) h.H {
 	var here []prognosis.Prognosis
 	for _, g := range gs {
 		if string(g.Lens) == p.lens {
 			here = append(here, g)
 		}
 	}
+	shown := here[:min(len(here), 6)]
+	// One reason said six times is noise: say it once above the list.
+	shared := len(shown) > 1 && !slices.ContainsFunc(shown, func(g prognosis.Prognosis) bool { return g.Title != shown[0].Title })
 	var rows []h.H
-	for _, g := range here[:min(len(here), 6)] {
-		rows = append(rows, h.Li(h.A(h.Class("dx-row"), h.Href(prognosisHref(g.Key)),
-			levelMark(g.Level), h.Span(h.Class("dx-row-title"), h.Str(g.Title)), h.Span(h.Class("dx-row-name"), h.Str(g.Name)))))
+	for _, g := range shown {
+		row := []h.H{h.Class("dx-row"), h.Href(p.prognosisHref(g.Key)), levelMark(g.Level), h.Span(h.Class("dx-row-title"), h.Str(g.Name))}
+		if !shared {
+			row = append(row, h.Span(h.Class("dx-row-why"), h.Str(g.Title)))
+		}
+		rows = append(rows, h.Li(h.A(row...), h.Div(h.Class("dx-act"), p.handoff(&g))))
 	}
 	list := okLine("Nothing needs attention through this lens.")
 	if len(rows) > 0 {
+		var why h.H
+		if shared {
+			why = h.P(h.Class("hint dx-why"), h.Str(shown[0].Title))
+		}
 		list = group([]h.H{
 			h.H2(h.Str("Start here")),
+			why,
 			h.Ul(append([]h.H{h.Class("dx-list")}, rows...)...),
 			via.When(len(here) > len(rows), func() h.H {
 				return h.P(h.Class("hint"), h.Str(fmt.Sprintf("%d more on the map.", len(here)-len(rows))))
@@ -104,7 +145,7 @@ func (p *diagnosePage) overview(a *live.Analysis, gs []prognosis.Prognosis) h.H 
 	return h.Div(h.Class("dx"),
 		h.Section(h.Class("dx-pane"),
 			h.Div(h.Class("map-bar"), p.census(gs), p.lensBar()),
-			feed(map[expr.Expr]any{p.Diag.Ref(): diagOf(a, gs, p.lens)}),
+			feed(map[expr.Expr]any{p.Diag.Ref(): p.diag(a, gs, p.lens)}),
 			h.Div(h.Class("dx-map atlas atlas-map"), h.DataIgnoreMorph(),
 				h.DataEffect(expr.Rawf("codemesh.diag(el, %s, {mode: 'full'})", p.Diag.Ref()))),
 			legend(p.lens, a.Snap.Lang),
@@ -138,7 +179,7 @@ func (p *diagnosePage) lensBar() h.H {
 		if l.key == p.lens {
 			cls = "seg on"
 		}
-		kids = append(kids, h.A(h.Class(cls), h.Href(lensHref(l.key)), h.Title(l.help), h.Str(l.label)))
+		kids = append(kids, h.A(h.Class(cls), h.Href(p.lensHref(l.key)), h.Title(l.help), h.Str(l.label)))
 	}
 	return h.Nav(append([]h.H{h.Class("segs"), h.Aria("label", "Lens")}, kids...)...)
 }

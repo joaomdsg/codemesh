@@ -30,13 +30,18 @@ var kinds = []struct {
 	{Thread, "Threads"},
 }
 
-// Render writes the prompt for b. Items are grouped by repo, then kind, then
-// file; within a file they keep the basket's order. The same input always
-// gives the same text.
-func Render(b Basket, ctx Context) string {
-	if len(b.Items) == 0 {
-		return "The basket is empty.\n"
-	}
+// Group is the items of one repo and kind, in the order the prompt lists them.
+type Group struct {
+	Repo    string // display name
+	RepoID  string
+	Kind    Kind
+	Heading string
+	Items   []Item
+}
+
+// Groups orders b the way Render writes it: by repo name, then kind, with the
+// items of each in the order the user gave.
+func Groups(b Basket, ctx Context) []Group {
 	name := func(it Item) string {
 		if n := ctx.Repos[it.Repo]; n != "" {
 			return n
@@ -50,20 +55,38 @@ func Render(b Basket, ctx Context) string {
 			cmp.Compare(a.Repo, b.Repo),
 			cmp.Compare(kindRank(a.Kind), kindRank(b.Kind)),
 			cmp.Compare(a.Kind, b.Kind),
-			cmp.Compare(file(a), file(b)),
 		)
 	})
-
-	var repos []string
+	var out []Group
 	for _, it := range items {
-		if n := name(it); !slices.Contains(repos, n) {
-			repos = append(repos, n)
+		if n := len(out); n > 0 && out[n-1].RepoID == it.Repo && out[n-1].Kind == it.Kind {
+			out[n-1].Items = append(out[n-1].Items, it)
+			continue
+		}
+		out = append(out, Group{Repo: name(it), RepoID: it.Repo, Kind: it.Kind, Heading: heading(it.Kind), Items: []Item{it}})
+	}
+	return out
+}
+
+// Render writes the prompt for b: a brief to a coding agent. Items are grouped
+// as Groups says. The same input always gives the same text.
+func Render(b Basket, ctx Context) string {
+	if len(b.Items) == 0 {
+		return "The basket is empty.\n"
+	}
+	groups := Groups(b, ctx)
+	var repos []string
+	for _, g := range groups {
+		if !slices.Contains(repos, g.Repo) {
+			repos = append(repos, g.Repo)
 		}
 	}
 
 	var w strings.Builder
 	w.WriteString("# Codemesh handoff\n\n")
-	w.WriteString("Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.\n\n")
+	w.WriteString("Goal: " + cmp.Or(strings.TrimSpace(b.Intro), "resolve each item below.") + "\n\n")
+	w.WriteString("Codemesh, a code-health and review tool, collected " + count(len(b.Items)) + " below. ")
+	w.WriteString("Each says where the code is, what is wrong, the steps to take where there are any, and how to check the result. Work through them in order.\n\n")
 	w.WriteString("- Repos: " + strings.Join(repos, ", ") + "\n")
 	for _, f := range []struct{ label, val string }{
 		{"Branch", ctx.Branch}, {"PR", ctx.PR}, {"Base", ctx.BaseSHA}, {"Head", ctx.HeadSHA},
@@ -73,17 +96,29 @@ func Render(b Basket, ctx Context) string {
 		}
 	}
 
-	for i, it := range items {
-		newRepo := i == 0 || it.Repo != items[i-1].Repo
-		if newRepo {
-			w.WriteString("\n## " + name(it) + "\n")
+	for i, g := range groups {
+		if i == 0 || g.RepoID != groups[i-1].RepoID {
+			w.WriteString("\n## " + g.Repo + "\n")
 		}
-		if newRepo || it.Kind != items[i-1].Kind {
-			w.WriteString("\n### " + heading(it.Kind) + "\n")
+		w.WriteString("\n### " + g.Heading + "\n")
+		for _, it := range g.Items {
+			item(&w, it)
 		}
-		item(&w, it)
 	}
+
+	w.WriteString("\n## When you are done\n\n")
+	w.WriteString("1. Verify each claim in the code before you change anything. Items come from static analysis and a reviewer's notes, so one may be wrong or already fixed. If it is, skip it and say why.\n")
+	w.WriteString("2. Change only what an item calls for. Do not reformat or refactor around it.\n")
+	w.WriteString("3. Run the tests and the build in each repo you changed, and fix what you broke.\n")
+	w.WriteString("4. Reply with one line per item: changed, skipped (why), or needs a decision. End with the test result.\n")
 	return w.String()
+}
+
+func count(n int) string {
+	if n == 1 {
+		return "1 item"
+	}
+	return strconv.Itoa(n) + " items"
 }
 
 func item(w *strings.Builder, it Item) {
@@ -108,7 +143,7 @@ func item(w *strings.Builder, it Item) {
 	}
 	if len(it.Code) > 0 {
 		f := fence(it.Code)
-		w.WriteString("\n" + f + "\n" + strings.Join(it.Code, "\n") + "\n" + f + "\n")
+		w.WriteString("\nCode:\n\n" + f + "\n" + strings.Join(it.Code, "\n") + "\n" + f + "\n")
 	}
 }
 
@@ -132,13 +167,14 @@ func scope(s string) string {
 	if s == "wt" {
 		return "working tree"
 	}
+	if rest, ok := strings.CutPrefix(s, "commit:"); ok {
+		return "commit " + rest
+	}
+	if rest, ok := strings.CutPrefix(s, "pr:"); ok {
+		n, sha, _ := strings.Cut(rest, "@")
+		return "PR #" + n + " at " + sha
+	}
 	return s
-}
-
-// file is the path part of an item's file:line.
-func file(it Item) string {
-	f, _, _ := strings.Cut(it.Where, ":")
-	return f
 }
 
 // fence is a backtick run longer than any inside lines.

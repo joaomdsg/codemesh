@@ -5,6 +5,7 @@ package treesitter
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -234,7 +235,7 @@ func (l *language) parse(ps *parsers, abs string, s *source) (parsedFile, error)
 	lines := codeLines(t.root)
 	pf := parsedFile{f: code.File{Path: s.rel, Test: s.test, Generated: generated(src), Lines: len(lines)}}
 	if t.root.broken() {
-		pf.err = s.rel + ": syntax errors"
+		pf.err = fmt.Sprintf("%s:%d: syntax errors", s.rel, t.root.errorLine())
 	}
 	raws := l.extract(s)
 	inner := map[[2]int]bool{}

@@ -54,12 +54,14 @@ func (b *builder) addFuncRisk(old, new *code.Decl, add func(string, int)) {
 
 func (b *builder) addCallerRisk(d *code.Decl, add func(string, int)) {
 	prod, tests := b.callers(d)
-	if prod > 0 {
-		add(plural(prod, "caller"), 3*min(prod, 10))
+	if prod+tests == 0 {
+		return
 	}
+	reason := plural(prod+tests, "caller")
 	if tests > 0 {
-		add(plural(tests, "test caller"), 0)
+		reason += fmt.Sprintf(" (%d in tests)", tests)
 	}
+	add(reason, 3*min(prod, 10))
 }
 
 func (b *builder) laneOf(u *Unit, d *code.Decl, resigned bool) Lane {

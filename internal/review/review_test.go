@@ -133,8 +133,8 @@ func TestBuild_explainsRiskWithReasons(t *testing.T) {
 	assert.Equal(t, review.Removed, unit(t, rev, "Old").Change)
 	assert.Equal(t, review.Added, unit(t, rev, "Clamp").Change)
 	assert.NotContains(t, unit(t, rev, "Clamp").Reasons, "no direct test", "TestClamp calls it")
-	assert.Contains(t, unit(t, rev, "Clamp").Reasons, "1 test caller")
-	assert.NotContains(t, unit(t, rev, "Clamp").Reasons, "1 caller", "a test caller is no blast radius")
+	assert.Contains(t, unit(t, rev, "Clamp").Reasons, "1 caller (1 in tests)", "one count, with how many of them are tests")
+	assert.NotContains(t, unit(t, rev, "Clamp").Reasons, "1 caller", "no second count for the same callers")
 }
 
 func TestBuild_diffsWithinTheUnit(t *testing.T) {

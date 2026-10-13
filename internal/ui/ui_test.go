@@ -1,22 +1,28 @@
 package ui_test
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-via/via/vt"
-	"github.com/joaomdsg/codemesh/internal/live"
+	"github.com/joaomdsg/codemesh/internal/app"
+	"github.com/joaomdsg/codemesh/internal/handoff"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/joaomdsg/codemesh/internal/ui"
+	"github.com/joaomdsg/codemesh/internal/workspace"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,33 +30,106 @@ import (
 // actionURL matches an action binding in rendered markup, the way vt does:
 // a bound argument rides in the data-via-q attribute before the data-on
 // (group 1), the path is group 2. vt reads actions off "/" only, and the
-// review page lives elsewhere.
+// repo pages live elsewhere.
 var actionURL = regexp.MustCompile(`(?:data-via-q-[^=\s]+="([^"]*)" data-on:[^=\s]+="@post\('|@post\(')([^']*_via/a/r/[A-Za-z0-9_-]+(?:[?&][^']*)?)'`)
 
 type env struct {
 	app   *vt.App
-	src   *live.Source
-	state *review.State
+	a     *app.App
+	repo  workspace.Repo // the first repo added
+	repos []workspace.Repo
+}
+
+// base is the URL prefix of the first repo's pages.
+func (e env) base() string { return "/r/" + e.repo.ID }
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// newApp is an app in its own XDG directories, with a gh that fails.
+// t.Setenv rules out t.Parallel, so tests that use it run one at a time.
+func newApp(t *testing.T) *app.App {
+	t.Helper()
+	// XDG_CACHE_HOME moves Go's build cache too, which would start every test cold.
+	goCache, err := exec.Command("go", "env", "GOCACHE").Output()
+	require.NoError(t, err)
+	t.Setenv("GOCACHE", strings.TrimSpace(string(goCache)))
+	for _, v := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
+		t.Setenv(v, t.TempDir())
+	}
+	fake, err := filepath.Abs("../ghx/testdata/fake-gh")
+	require.NoError(t, err)
+	bin := t.TempDir()
+	require.NoError(t, os.Symlink(fake, filepath.Join(bin, "gh")))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_GH_EXIT", "1")
+	// The engine finishes a load after its caller's context ends, so the app
+	// outlives the test body: cleanups wait for its jobs, then cancel.
+	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
+	t.Cleanup(cancel)
+	a, err := app.New(ctx, app.Config{Poll: time.Hour, Log: quiet()})
+	require.NoError(t, err)
+	t.Cleanup(a.Wait)
+	return a
 }
 
 func serve(t *testing.T) env { return serveRepo(t, testrepo.CalcBase, testrepo.CalcHead) }
 
 func serveRepo(t *testing.T, base, head map[string]string) env {
 	t.Helper()
-	dir := testrepo.New(t, base, head)
-	src := live.New(dir, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	t.Cleanup(src.Close)
-	require.NoError(t, src.Refresh().Err)
-	state, err := review.OpenState(filepath.Join(t.TempDir(), "reviewed.json"))
+	return serveDirs(t, testrepo.New(t, base, head))
+}
+
+// serveDirs adds each repo directory to a fresh workspace and serves it.
+func serveDirs(t *testing.T, dirs ...string) env {
+	t.Helper()
+	a := newApp(t)
+	// Cleanups run last-in first-out: waiting here, after the repo directories
+	// exist, lets background jobs finish before those directories are removed.
+	t.Cleanup(a.Wait)
+	for _, d := range dirs {
+		require.NoError(t, a.AddRepo(d))
+	}
+	repos, err := a.Repos()
 	require.NoError(t, err)
-	return env{vt.Serve(t, ui.New(src, state, "http://localhost:7777")), src, state}
+	e := env{app: vt.Serve(t, ui.New(a, "http://localhost:7777")), a: a, repos: repos}
+	if len(repos) > 0 {
+		e.repo = repos[0]
+	}
+	return e
+}
+
+// ghExits sets the fake gh's exit code and has every repo list its PRs again:
+// serving already rendered "/" once, which cached the failing gh's answer.
+func (e env) ghExits(t *testing.T, code string) {
+	t.Helper()
+	t.Setenv("FAKE_GH_EXIT", code)
+	e.a.Wait()
+	for _, r := range e.repos {
+		e.a.RefreshPRs(r.ID)
+	}
+}
+
+// reviewUnits lists the first repo's working-tree review units.
+func (e env) reviewUnits(t *testing.T) []*review.Unit {
+	t.Helper()
+	wr := e.a.WorkingReview(e.repo.ID, "")
+	defer wr.Release()
+	require.NoError(t, wr.Err)
+	require.NotNil(t, wr.Review, wr.Note)
+	return wr.Review.Units
+}
+
+func (e env) reviewed(t *testing.T) *review.State {
+	t.Helper()
+	st, err := e.a.Reviewed(e.repo.ID)
+	require.NoError(t, err)
+	return st
 }
 
 func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
-	status, body := e.app.Get("/")
+	status, body := e.app.Get(e.base() + "/")
 	require.Equal(t, http.StatusOK, status)
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"example.com/calc/calc",0\]`, body, "the calc package tile")
@@ -61,10 +140,9 @@ func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
 }
 
 func TestMap_opensADeclarationWithItsSourceAndCallers(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
-	status, body := e.app.Get("/?in=calc/calc.go&d=" + url.QueryEscape("example.com/calc/calc.Scale"))
+	status, body := e.app.Get(e.base() + "/?in=calc/calc.go&d=" + url.QueryEscape("example.com/calc/calc.Scale"))
 	require.Equal(t, http.StatusOK, status)
 	assert.Contains(t, body, "func Scale(x, k int) int {")
 	assert.Contains(t, body, "Called by")
@@ -72,20 +150,18 @@ func TestMap_opensADeclarationWithItsSourceAndCallers(t *testing.T) {
 }
 
 func TestDeps_marksEachImportWithItsReferenceCount(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
-	status, body := e.app.Get("/deps")
+	status, body := e.app.Get(e.base() + "/deps")
 	require.Equal(t, http.StatusOK, status)
 	// The root package shows as the module's last element.
 	assert.Contains(t, body, "calc → calc: 3 references", "main calls Add, Scale and Moved")
 }
 
 func TestReview_listsUnitsByLaneWithTheirReasons(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
-	status, body := e.app.Get("/review")
+	status, body := e.app.Get(e.base() + "/review")
 	require.Equal(t, http.StatusOK, status)
 	for _, want := range []string{"Contract", "Logic", "Tests", "Noise", "Clamp", "no direct test", "0 of 10 reviewed"} {
 		assert.Contains(t, body, want)
@@ -93,46 +169,45 @@ func TestReview_listsUnitsByLaneWithTheirReasons(t *testing.T) {
 }
 
 func TestReview_markRecordsTheUnitAsReviewed(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
-	first := e.src.Current().Review.Units[0]
-	conn := e.app.ConnectAt("/review", "{}")
+	first := e.reviewUnits(t)[0]
+	conn := e.app.ConnectAt(e.base()+"/review", "{}")
 	t.Cleanup(conn.Close)
-	_, page := e.app.Get("/review")
-	actions := actionURL.FindAllStringSubmatch(page, -1)
-	require.Greater(t, len(actions), 1)
+	_, page := e.app.Get(e.base() + "/review")
+	mark := regexp.MustCompile(`<button\b[^>]*title="Mark reviewed"[^>]*>`).FindString(page)
+	action := actionURL.FindStringSubmatch(mark)
+	require.NotNil(t, action, "the first unit's mark")
 
-	// Action 0 is Rescan; the first unit's mark follows.
-	status, _ := e.app.ChildAction("r", 1).Over(conn).Raw(html.UnescapeString(actions[1][2] + actions[1][1])).Fire()
+	status, _ := e.app.ChildAction("r", 1).Over(conn).Raw(html.UnescapeString(action[2] + action[1])).Fire()
 	// A live page answers 204 and pushes the re-render over its stream.
 	require.Equal(t, http.StatusNoContent, status)
 
-	assert.True(t, e.state.Reviewed(first.Key))
-	_, body := e.app.Get("/review")
+	assert.True(t, e.reviewed(t).Reviewed(first.Key))
+	_, body := e.app.Get(e.base() + "/review")
 	assert.Contains(t, body, "1 of 10 reviewed")
 }
 
 func TestLinks_carryScopeLensAndDeclarationToTheMap(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
+	b := e.base()
 	scale := url.QueryEscape("example.com/calc/calc.Scale")
 
-	_, home := e.app.Get("/")
-	_, decl := e.app.Get("/?lens=churn&in=calc/calc.go&d=" + scale)
-	_, deps := e.app.Get("/deps")
-	_, rev := e.app.Get("/review")
+	_, home := e.app.Get(b + "/")
+	_, decl := e.app.Get(b + "/?lens=churn&in=calc/calc.go&d=" + scale)
+	_, deps := e.app.Get(b + "/deps")
+	_, rev := e.app.Get(b + "/review")
+	_, thread := e.app.Get(b + "/review/" + url.PathEscape("example.com/calc/calc.Scale"))
 
-	assert.Contains(t, home, `href="/?lens=smells"`, "crumb to the module")
-	assert.Contains(t, decl, `href="/?lens=complexity&amp;in=calc%2Fcalc.go&amp;d=`+scale+`"`, "lens keeps the scope")
-	assert.Contains(t, decl, `href="/?lens=churn&amp;in=calc%2Fcalc.go"`, "closing the panel keeps the lens")
-	assert.Contains(t, decl, `href="/?lens=churn&amp;in=main.go&amp;d=example.com%2Fcalc.main"`, "caller link")
-	assert.Contains(t, deps, `href="/?in=example.com%2Fcalc%2Fcalc"`, "matrix row")
-	assert.Contains(t, rev, `href="/?in=calc%2Fcalc.go&amp;d=example.com%2Fcalc%2Fcalc.Clamp"`, "unit location")
-	assert.Contains(t, rev, `href="/?in=main.go&amp;d=example.com%2Fcalc.main"`, "unit caller")
+	assert.Contains(t, home, `href="`+b+`/?lens=smells"`, "crumb to the module")
+	assert.Contains(t, decl, `href="`+b+`/?lens=complexity&amp;in=calc%2Fcalc.go&amp;d=`+scale+`"`, "lens keeps the scope")
+	assert.Contains(t, decl, `href="`+b+`/?lens=churn&amp;in=calc%2Fcalc.go"`, "closing the panel keeps the lens")
+	assert.Contains(t, decl, `href="`+b+`/?lens=churn&amp;in=main.go&amp;d=example.com%2Fcalc.main"`, "caller link")
+	assert.Contains(t, deps, `href="`+b+`/?in=example.com%2Fcalc%2Fcalc"`, "matrix row")
+	assert.Contains(t, rev, `href="`+b+`/?in=calc%2Fcalc.go&amp;d=example.com%2Fcalc%2Fcalc.Clamp"`, "unit location")
+	assert.Contains(t, thread, `href="`+b+`/?in=main.go&amp;d=example.com%2Fcalc.main"`, "caller hop")
 }
 
 func TestFavicon_answersWithoutContent(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
 	status, _ := e.app.Get("/favicon.ico")
@@ -140,96 +215,100 @@ func TestFavicon_answersWithoutContent(t *testing.T) {
 }
 
 func TestReview_linksCallersChangedInTheSameDiffToTheirCard(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
-	_, body := e.app.Get("/review")
-	assert.Regexp(t, `<a class="changed" href="#u[0-9a-f]+" title="Changed in this diff">calc.TestClamp`, body)
+	_, body := e.app.Get(e.base() + "/review/" + url.PathEscape("example.com/calc/calc.Clamp"))
+	assert.Regexp(t, `(?s)class="hop-pr" href="#u[0-9a-f]+">in this change</a>.{0,300}?calc\.TestClamp`, body)
 }
 
 func TestReview_foldsLanesThatRarelyNeedReading(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
-	_, body := e.app.Get("/review")
+	_, body := e.app.Get(e.base() + "/review")
 	assert.Contains(t, body, "Show diff · ", "Tests, Other and Noise cards wait to be opened")
 	assert.Contains(t, body, ">\treturn helper(x, 1) * k<", "a Logic diff renders unasked")
 }
 
 func TestReview_capsLongLanesAtTheRiskiestUnits(t *testing.T) {
-	t.Parallel()
 	var many strings.Builder
 	many.WriteString("package calc\n")
 	for i := range 70 {
 		fmt.Fprintf(&many, "\nfunc f%d() int { return %d }\n", i, i)
 	}
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()}).app
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()})
 
-	_, body := app.Get("/review")
+	_, body := e.app.Get(e.base() + "/review")
 	assert.Contains(t, body, "Show 10 more units (10 left)")
 	assert.Equal(t, 60, strings.Count(body, `<article class="unit"`))
 }
 
 func TestReview_offersALongLaneOnePageAtATime(t *testing.T) {
-	t.Parallel()
 	var many strings.Builder
 	many.WriteString("package calc\n")
 	for i := range 130 {
 		fmt.Fprintf(&many, "\nfunc f%d() int { return %d }\n", i, i)
 	}
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()}).app
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": many.String()})
 
 	// vt drops SSE lines over 64 KB, so the next page's render is checked
 	// in a browser, not here.
-	_, body := app.Get("/review")
+	_, body := e.app.Get(e.base() + "/review")
 	assert.Contains(t, body, "Show 60 more units (70 left)", "70 more wait, a page at a time")
 }
 
 func TestFrame_warnsWhenAPackageDoesNotTypeCheck(t *testing.T) {
-	t.Parallel()
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/broken.go": "package calc\n\nfunc Broken() int { return undefined }\n"}).app
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/broken.go": "package calc\n\nfunc Broken() int { return undefined }\n"})
 
-	_, body := app.Get("/")
+	_, body := e.app.Get(e.base() + "/")
 	assert.Contains(t, body, "1 package did not type-check")
 	assert.Contains(t, body, "undefined: undefined")
 }
 
-func TestMap_givesTheHottestDeclarationTheHottestColour(t *testing.T) {
-	t.Parallel()
+func TestFrame_blamesTheParserNotTheCodeForASyntaxError(t *testing.T) {
 	e := serveRepo(t, map[string]string{
+		"package.json": `{"name":"bad"}`,
+		"src/bad.ts":   "export const a = 1;\n\nexport function ok() { return 1; }\nexport function broken( {\n",
+	}, nil)
+
+	_, body := e.app.Get(e.base() + "/")
+
+	assert.Contains(t, body, "codemesh could not parse src/bad.ts (line 4), so its callers and smells are missing. The rest of the repo is analysed.")
+	assert.NotContains(t, body, "did not type-check")
+}
+
+func TestMap_givesTheHottestDeclarationTheHottestColour(t *testing.T) {
+	dir := testrepo.New(t, map[string]string{
 		"go.mod":  "module example.com/hot\n\ngo 1.27\n",
 		"p/a.go":  "package p\n\nfunc A(x int) int {\n\tif x > 0 {\n\t\treturn 1\n\t}\n\treturn 0\n}\n",
 		"p/b.go":  "package p\n\nfunc B() int { return 2 }\n",
 		"main.go": "package main\n\nimport \"example.com/hot/p\"\n\nfunc main() { println(p.A(1), p.B()) }\n",
 	}, nil)
 	// b.go churns, a.go is complex: no single file is both.
-	dir := e.src.Dir
 	for i := range 3 {
 		require.NoError(t, testrepo.Write(dir, map[string]string{"p/b.go": fmt.Sprintf("package p\n\nfunc B() int { return %d }\n", i)}))
 		require.NoError(t, testrepo.Git(dir, "commit", "-qam", "churn"))
 	}
-	e.src.Refresh()
+	e := serveDirs(t, dir)
 
-	_, body := e.app.Get("/?lens=hotspot")
+	_, body := e.app.Get(e.base() + "/?lens=hotspot")
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["d",[^\]]*"B","",5,"example.com/hot/p.B",1\]`, body, "the hottest declaration sets the scale")
 }
 
 func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 	scale := ""
-	for _, u := range e.src.Current().Review.Units {
+	for _, u := range e.reviewUnits(t) {
 		if u.Name == "Scale" {
 			scale = u.Key
 		}
 	}
-	require.NoError(t, e.state.Set(scale, true))
+	require.NoError(t, e.reviewed(t).Set(scale, true))
 
-	_, body := e.app.Get("/review")
+	_, body := e.app.Get(e.base() + "/review")
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Contains(t, body, `data-ignore-morph`)
-	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$_atlas, \{reviewed: \$_reviewed, focus: \$_focus\}\)"`, body)
+	assert.Regexp(t, `data-effect="codemesh.atlas\(el, \$_atlas, \{reviewed: \$_reviewed, focus: \$_focus, thread: \$_path, side: \$_pane\}\)"`, body)
 	assert.Regexp(t, `\["p",[^\]]*"calc","",0,"",0\]`, body, "a package tile")
 	assert.Regexp(t, `\["d",[^\]]*"Scale","u[0-9a-f]+",0,"",1\]`, body, "Scale is lit with its card id")
 	assert.Regexp(t, `data-signals:_reviewed="\["u[0-9a-f]+"\]"`, body, "the reviewed card")
@@ -237,7 +316,6 @@ func TestReview_feedsTheAtlasIslandItsLayoutAndMarks(t *testing.T) {
 }
 
 func TestAssets_serveD3WithAYearOfCaching(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
 
 	resp, err := e.app.Client().Get(e.app.URL() + "/_codemesh/d3.min.js")
@@ -256,81 +334,294 @@ func manyParams(n int) string {
 	return b.String()
 }
 
+func TestMap_offersSixtyMoreSmellsAtATime(t *testing.T) {
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(130)})
+
+	_, body := e.app.Get(e.base() + "/?in=example.com/calc/calc")
+
+	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
+	assert.Contains(t, body, "Show 60 more smells (")
+}
+
+// The page rewrites the whole list in one stream line, which vt reads only up
+// to 64 KiB: with a handoff button on each row, that is about 70 rows.
 func TestMap_pagesASmellsListPastSixty(t *testing.T) {
-	t.Parallel()
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(130)}).app
-	conn := app.Connect()
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(70)})
+	conn := e.app.ConnectAt(e.base()+"/", "{}")
 	t.Cleanup(conn.Close)
 
-	_, body := app.Get("/?in=example.com/calc/calc")
+	_, body := e.app.Get(e.base() + "/?in=example.com/calc/calc")
 	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
-	require.Contains(t, body, "Show 60 more smells (")
+	require.Contains(t, body, "Show 11 more smells (11 left)")
 
-	status, _ := app.Action(0).Over(conn).Fire()
+	actions := actionURL.FindAllStringSubmatch(body, -1)
+	require.NotEmpty(t, actions)
+	more := actions[len(actions)-1] // after each row's handoff button
+	status, _ := e.app.Action(0).Over(conn).Raw(html.UnescapeString(more[2] + more[1])).Fire()
 	require.Equal(t, http.StatusNoContent, status)
-	assert.NotContains(t, conn.Await("Smells · "), "Show 60 more smells (", "the second page leaves fewer than 60")
+	assert.NotContains(t, conn.Await("Smells · "), "more smells (", "the second page lists the rest")
 }
 
 func TestMap_namesWhereEachDeclarationSmellIs(t *testing.T) {
-	t.Parallel()
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(1)}).app
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(1)})
 
-	_, body := app.Get("/")
+	_, body := e.app.Get(e.base() + "/")
 	assert.Contains(t, body, ", limit 5 · calc/many.go:3<")
 }
 
 func TestMap_scopesToAPackageByItsDirectory(t *testing.T) {
-	t.Parallel()
 	e := serve(t)
+	b := e.base()
 
-	_, byPath := e.app.Get("/?in=example.com/calc/calc")
-	_, byDir := e.app.Get("/?in=calc")
-	assert.Contains(t, byDir, `<span class="sep">/</span><a href="/?lens=smells&amp;in=example.com%2Fcalc%2Fcalc">calc</a>`)
+	_, byPath := e.app.Get(b + "/?in=example.com/calc/calc")
+	_, byDir := e.app.Get(b + "/?in=calc")
+	assert.Contains(t, byDir, `<span class="sep">/</span><a href="`+b+`/?lens=smells&amp;in=example.com%2Fcalc%2Fcalc">calc</a>`)
 	smells := regexp.MustCompile(`Smells · \d+`)
 	assert.Equal(t, smells.FindString(byPath), smells.FindString(byDir))
 }
 
-func TestFrame_namesNestedModulesTheMapLeavesOut(t *testing.T) {
-	t.Parallel()
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{
+func TestFrame_offersANestedModuleAsItsOwnRoot(t *testing.T) {
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{
 		"tools/go.mod": "module example.com/tools\n\ngo 1.27\n",
-		"tools/t.go":   "package tools\n",
-	}).app
+		"tools/t.go":   "package tools\n\nfunc T() {}\n",
+	})
+	b := e.base()
 
-	_, home := app.Get("/")
-	_, deps := app.Get("/deps")
-	_, rev := app.Get("/review")
-	for _, body := range []string{home, deps} {
-		assert.Contains(t, body, "Nested module tools/ not mapped. Run codemesh in tools/ to map it.")
-	}
-	assert.NotContains(t, rev, "not mapped", "the review lists nested module files")
+	_, home := e.app.Get(b + "/")
+	_, tools := e.app.Get(b + "/?root=tools")
+	assert.Contains(t, home, `href="`+b+`/?root=tools"`, "the root switcher")
+	assert.Contains(t, home, "Nested module tools/ is a separate root", "the root's map says where the nested module went")
+	assert.Contains(t, tools, "example.com/tools")
+	assert.Contains(t, tools, `href="`+b+`/deps?root=tools"`, "tabs keep the root")
 }
 
 func TestMap_keepsADeclarationWithOnlyInfoSmellsLukewarm(t *testing.T) {
-	t.Parallel()
-	app := serveRepo(t, testrepo.CalcBase, map[string]string{
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{
 		"internal/x/x.go": "package x\n\nfunc Unused() {}\n",
-	}).app
+	})
 
-	_, body := app.Get("/")
+	_, body := e.app.Get(e.base() + "/")
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["d",[^\]]*"Unused","",2,"example.com/calc/internal/x.Unused",1\]`, body,
 		"one info smell on one line is dense, yet only info")
 }
 
-func TestDiagnose_marksAPlaceAndOpensItsPrognosis(t *testing.T) {
-	t.Parallel()
+func TestHealth_marksAPlaceAndOpensItsPrognosis(t *testing.T) {
 	e := serve(t)
 
-	status, body := e.app.Get("/diagnose")
+	status, body := e.app.Get(e.base() + "/health")
 	require.Equal(t, http.StatusOK, status)
 	body = html.UnescapeString(body)
 	assert.Contains(t, body, `"key":"complex:example.com/calc/calc.tangle"`, "tangle is past the complexity limit")
 	assert.Contains(t, body, "Hard to follow")
 
-	status, body = e.app.Get("/prognosis/" + url.PathEscape("complex:example.com/calc/calc.tangle"))
+	status, body = e.app.Get(e.base() + "/prognosis/" + url.PathEscape("complex:example.com/calc/calc.tangle"))
 	require.Equal(t, http.StatusOK, status)
 	for _, want := range []string{"Why it matters", "What to do", "How to check"} {
 		assert.Contains(t, body, want)
 	}
+}
+
+func TestRepoPages_answerNotFoundForAnUnknownRepo(t *testing.T) {
+	e := serve(t)
+
+	for _, p := range []string{"/", "/deps", "/health", "/review", "/prs"} {
+		status, _ := e.app.Get("/r/nope" + p)
+		assert.Equal(t, http.StatusNotFound, status, p)
+	}
+}
+
+func TestFrame_switchesRepoAndCountsTheBasket(t *testing.T) {
+	e := serveDirs(t, testrepo.New(t, testrepo.CalcBase, nil), testrepo.New(t, testrepo.CalcBase, nil))
+	_, empty := e.app.Get(e.base() + "/")
+	_, err := e.a.BasketAdd(handoff.Item{Kind: handoff.Finding, Repo: e.repo.ID, Title: "Split Clamp"})
+	require.NoError(t, err)
+
+	_, body := e.app.Get(e.base() + "/")
+
+	assert.Contains(t, body, `href="/r/`+e.repos[1].ID+`/"`, "the other repo is one click away")
+	assert.Regexp(t, `href="/basket"[^>]*>Basket<span class="count">0</span>`, empty)
+	assert.Regexp(t, `href="/basket"[^>]*>Basket<span class="count">1</span>`, body)
+}
+
+func TestWorkspace_asksForARepoWhenEmpty(t *testing.T) {
+	e := serveDirs(t)
+
+	status, body := e.app.Get("/")
+	require.Equal(t, http.StatusOK, status)
+	assert.Regexp(t, `(?s)<form class="add".*?</form>[^<]*<p class="hint">Add a repo by path or git URL, e\.g\. ~/src/app or https://github\.com/org/repo</p>`, body, "the hint sits right under the input")
+	assert.NotContains(t, body, `class="empty"`, "the hint is not a second, distant line")
+}
+
+// pageWith polls path until its body holds every want.
+func pageWith(t *testing.T, e env, path string, want ...string) string {
+	t.Helper()
+	var body string
+	require.Eventually(t, func() bool {
+		_, body = e.app.Get(path)
+		for _, w := range want {
+			if !strings.Contains(body, w) {
+				return false
+			}
+		}
+		return true
+	}, time.Minute, 100*time.Millisecond, "%s never showed %q; last body:\n%s", path, want, body)
+	return body
+}
+
+func TestWorkspace_listsEachRepoWithItsHealthAndLanguage(t *testing.T) {
+	e := serveDirs(t, testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead), testrepo.New(t, testrepo.CalcBase, nil))
+
+	body := pageWith(t, e, "/", "typed", `class="dx-census"`)
+	for _, r := range e.repos {
+		assert.Contains(t, body, `href="/r/`+r.ID+`/"`, r.Name)
+		assert.Contains(t, body, r.Name)
+	}
+	assert.Regexp(t, `\d+ (fix first|fix soon|when convenient)`, body, "the head tree's complex function")
+}
+
+func TestWorkspace_inboxListsADirtyTreeAndOpenPRsAndSkipsACleanTree(t *testing.T) {
+	e := serveDirs(t, testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead), testrepo.New(t, testrepo.CalcBase, nil))
+	e.ghExits(t, "")
+
+	body := pageWith(t, e, "/", "Needs reading", "Add cache")
+	assert.Contains(t, body, `href="/r/`+e.repos[0].ID+`/review"`, "the dirty tree reads as a review")
+	assert.NotContains(t, body, `href="/r/`+e.repos[1].ID+`/review"`, "a clean tree has nothing to read")
+	assert.Contains(t, body, `href="/r/`+e.repos[0].ID+`/pr/7"`, "a PR row opens its review")
+}
+
+func TestWorkspace_addsARepoByPath(t *testing.T) {
+	e := serveDirs(t)
+	dir := testrepo.New(t, testrepo.CalcBase, nil)
+	conn := e.app.Connect()
+	t.Cleanup(conn.Close)
+
+	status, _ := e.app.Action(0).Over(conn).Body(`{"input":` + fmt.Sprintf("%q", dir) + `}`).Fire()
+	require.Equal(t, http.StatusNoContent, status)
+
+	repos, err := e.a.Repos()
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, filepath.Base(dir), repos[0].Name)
+}
+
+func TestWorkspace_clonesAGitURLAndMapsIt(t *testing.T) {
+	src := testrepo.New(t, testrepo.CalcBase, nil)
+	bare := filepath.Join(t.TempDir(), "origin.git")
+	require.NoError(t, testrepo.Git(src, "clone", "-q", "--bare", src, bare))
+	e := serveDirs(t)
+	conn := e.app.Connect()
+	t.Cleanup(conn.Close)
+
+	status, _ := e.app.Action(0).Over(conn).Body(`{"input":"file://` + bare + `"}`).Fire()
+	require.Equal(t, http.StatusNoContent, status)
+
+	require.Eventually(t, func() bool { r, _ := e.a.Repos(); return len(r) == 1 }, time.Minute, 50*time.Millisecond, "the clone never registered")
+	repos, _ := e.a.Repos()
+	_, body := e.app.Get("/r/" + repos[0].ID + "/")
+	assert.Contains(t, html.UnescapeString(body), `"example.com/calc/calc"`, "a clone maps its default branch")
+}
+
+func TestWorkspace_removesARepoAndLeavesItsFiles(t *testing.T) {
+	dir := testrepo.New(t, testrepo.CalcBase, nil)
+	e := serveDirs(t, dir)
+	conn := e.app.Connect()
+	t.Cleanup(conn.Close)
+	_, page := e.app.Get("/")
+	actions := actionURL.FindAllStringSubmatch(page, -1)
+	require.Len(t, actions, 2, "add, then remove")
+
+	status, _ := e.app.ChildAction("r", 1).Over(conn).Raw(html.UnescapeString(actions[1][2] + actions[1][1])).Fire()
+	require.Equal(t, http.StatusNoContent, status)
+
+	repos, err := e.a.Repos()
+	require.NoError(t, err)
+	assert.Empty(t, repos)
+	assert.FileExists(t, filepath.Join(dir, "go.mod"))
+}
+
+func TestPRs_listsOpenPullRequestsFromGH(t *testing.T) {
+	e := serve(t)
+	e.ghExits(t, "")
+
+	body := pageWith(t, e, e.base()+"/prs", "Add cache")
+	assert.Contains(t, body, "Fix typo")
+	assert.Contains(t, body, `href="`+e.base()+`/pr/7"`)
+}
+
+func TestPRs_saysHowToLogInWhenGHIsNotAuthenticated(t *testing.T) {
+	e := serve(t)
+	e.ghExits(t, "4")
+
+	pageWith(t, e, e.base()+"/prs", "gh auth login")
+}
+
+func TestPRs_saysWhyThereAreNoneWhenGHFails(t *testing.T) {
+	e := serve(t)
+
+	pageWith(t, e, e.base()+"/prs", "Pull requests are not available")
+}
+
+func complexFuncs(n int) string {
+	var b strings.Builder
+	b.WriteString("package calc\n")
+	for i := range n {
+		fmt.Fprintf(&b, "\nfunc Twist%d(x int) int {\n", i)
+		for j := range 11 {
+			fmt.Fprintf(&b, "\tif x == %d {\n\t\treturn %d\n\t}\n", j+2, j)
+		}
+		b.WriteString("\treturn 0\n}\n")
+	}
+	return b.String()
+}
+
+func TestHealth_titlesEachRowWithItsSymbolAndSaysASharedReasonOnce(t *testing.T) {
+	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/twist.go": complexFuncs(3)})
+
+	_, body := e.app.Get(e.base() + "/health")
+
+	list := regexp.MustCompile(`(?s)<aside class="dx-side".*?</aside>`).FindString(body)
+	for _, name := range []string{"Twist0", "Twist1", "Twist2"} {
+		assert.Contains(t, list, `class="dx-row-title">`+name+`<`, "the symbol is the title")
+	}
+	assert.Equal(t, 1, strings.Count(list, "Hard to follow"), "three rows share one reason, said once above the list")
+	assert.Regexp(t, `<h2>Start here</h2><p class="hint dx-why">Hard to follow</p><ul`, list)
+}
+
+func TestHealth_keepsALoneRowsReasonOnTheRow(t *testing.T) {
+	e := serve(t)
+
+	_, body := e.app.Get(e.base() + "/health")
+
+	assert.Contains(t, body, `class="dx-row-title">tangle<`)
+	assert.Contains(t, body, `class="dx-row-why">Hard to follow<`, "the reason is the dim line under the symbol")
+	assert.NotContains(t, body, `dx-why"`, "one row has no reason to share")
+}
+
+func TestWorkspace_aPRRowIsOneScannableLine(t *testing.T) {
+	e := serveDirs(t, testrepo.New(t, testrepo.CalcBase, nil))
+	e.ghExits(t, "")
+
+	body := pageWith(t, e, "/", "Add cache")
+
+	assert.Regexp(t, `<a class="title-link" href="/r/`+e.repo.ID+`/pr/7">Add cache</a><span class="by"> · ana</span>`, body, "the title is the link, with its author")
+	assert.Regexp(t, `class="inbox-lines">(?:<span class="(?:add|del)">[^<]*</span>)+</span>`, body, "the lines sit on one nowrap line, with no unit count until the change is read")
+	assert.NotContains(t, body, "0 units", "a change not read yet has no unit count to show")
+	assert.NotContains(t, body, `<a class="inbox-row"`, "a row is not an anchor around anchors")
+}
+
+func TestWorkspace_showsReviewProgressAsABarAndPlainText(t *testing.T) {
+	e := serveDirs(t, testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead))
+
+	body := pageWith(t, e, "/", `class="progress"`)
+
+	assert.Regexp(t, `<meter class="progress"[^>]*></meter><span class="hint">0/10</span>`, body)
+}
+
+func TestWorkspace_putsTheReposBesideTheInbox(t *testing.T) {
+	e := serveDirs(t, testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead))
+
+	body := pageWith(t, e, "/", `class="ws-grid"`)
+
+	assert.Regexp(t, `(?s)<div class="ws-grid"><section>.*?Inbox.*?</section><aside[^>]*>.*?Repos.*?</aside></div>`, body)
 }

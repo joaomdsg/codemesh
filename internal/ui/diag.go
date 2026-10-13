@@ -1,8 +1,8 @@
 package ui
 
 import (
+	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/code"
-	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/prognosis"
 )
 
@@ -13,6 +13,8 @@ type diag struct {
 	W     float64          `json:"w"`
 	H     float64          `json:"h"`
 	Lens  string           `json:"lens"`
+	Base  string           `json:"base"` // the repo's URL prefix, for links
+	Root  string           `json:"root,omitempty"`
 	Tiles []atlasTile      `json:"tiles"`
 	Heats map[string][]int `json:"heats"`
 	Marks []mark           `json:"marks"`
@@ -38,7 +40,7 @@ type mark struct {
 	Name    string `json:"name"`
 }
 
-func diagOf(a *live.Analysis, gs []prognosis.Prognosis, lens string) diag {
+func diagOf(a *app.Analysis, gs []prognosis.Prognosis, lens string) diag {
 	s := a.Snap
 	busy := prognosis.BusyChurn(s)
 	instab := instabilities(s)

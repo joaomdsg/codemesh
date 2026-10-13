@@ -7,8 +7,8 @@ import (
 
 	"github.com/go-via/via"
 	"github.com/go-via/via/h"
+	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/code"
-	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
@@ -17,28 +17,29 @@ import (
 type depsPage struct{ shell }
 
 func (p *depsPage) OnInit(ctx *via.Ctx) error {
-	p.start(ctx)
-	return nil
+	return p.start(ctx)
 }
 
 func (p *depsPage) PageMeta() via.Meta { return via.Meta{Title: "Dependencies · codemesh"} }
 
 func (p *depsPage) View() h.H {
-	a := p.src.Current()
-	if a == nil || a.Snap == nil {
-		return p.frame(tabDeps, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
+	a := p.analysis()
+	defer a.Release()
+	if a.Snap == nil {
+		return p.unavailable(tabDeps, a)
 	}
-	return p.frame(tabDeps, a, h.Div(h.Class("map-layout"), matrix(a), h.Aside(h.Class("side"), structureFindings(a))))
+	return p.frame(tabDeps, a, h.Div(h.Class("map-layout"),
+		matrix(a, p.mapURL("", "", "")), h.Aside(h.Class("side"), structureFindings(a, p.mapURL("smells", "", "")))))
 }
 
 // structureFindings lists the smells about how packages relate, the ones a
 // matrix makes you look for.
-func structureFindings(a *live.Analysis) h.H {
+func structureFindings(a *app.Analysis, m mapURL) h.H {
 	var rows []h.H
 	for _, f := range a.Findings {
 		switch f.Rule {
 		case smell.UnstableDep, smell.EnviousFunc, smell.UntestedPackage:
-			rows = append(rows, findingRow(f, "smells"))
+			rows = append(rows, findingRow(m, f))
 		}
 	}
 	if len(rows) == 0 {
@@ -60,14 +61,15 @@ type depRow struct {
 // dsm is what the matrix draws from: the rows in order, the references
 // between packages, and the unstable imports to mark.
 type dsm struct {
-	a    *live.Analysis
+	a    *app.Analysis
+	link mapURL // the repo's map; a row opens a package on it
 	rows []depRow
 	refs map[[2]string]int
 	bad  map[[2]string]smell.Finding
 }
 
-func matrix(a *live.Analysis) h.H {
-	m := dsm{a: a, rows: depRows(a.Snap), refs: packageRefs(a.Snap), bad: map[[2]string]smell.Finding{}}
+func matrix(a *app.Analysis, link mapURL) h.H {
+	m := dsm{a: a, link: link, rows: depRows(a.Snap), refs: packageRefs(a.Snap), bad: map[[2]string]smell.Finding{}}
 	for _, f := range a.Findings {
 		if f.Rule == smell.UnstableDep {
 			m.bad[[2]string{f.Package, f.Target}] = f
@@ -103,7 +105,7 @@ func (m dsm) head() []h.H {
 func (m dsm) row(i int) h.H {
 	r := m.rows[i]
 	cells := []h.H{
-		h.Th(h.Class("dsm-name"), h.A(h.Href(mapURL{in: r.pkg.Path}.String()), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(m.a, r.pkg)))),
+		h.Th(h.Class("dsm-name"), h.A(h.Href(m.link.at(r.pkg.Path, "").String()), h.Span(h.Class("dsm-no"), h.Str(i+1)), h.Str(pkgName(m.a, r.pkg)))),
 		h.Td(h.Class("num"), h.Str(fmt.Sprintf("%.2f", r.unstable))),
 		h.Td(h.Class("num"), h.Str(r.ca)),
 		h.Td(h.Class("num"), h.Str(r.ce)),

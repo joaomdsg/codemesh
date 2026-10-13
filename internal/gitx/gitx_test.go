@@ -2,7 +2,6 @@ package gitx_test
 
 import (
 	"cmp"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,6 +137,28 @@ func TestRepo_mergeBaseFindsForkPoint(t *testing.T) {
 	commit(t, dir, "main work")
 
 	got, err := open(t, dir).MergeBase("feature")
+	require.NoError(t, err)
+	assert.Equal(t, fork, got)
+}
+
+func TestRepo_mergeBaseOfFindsTheForkPointOfTwoRevsNotOfHEAD(t *testing.T) {
+	t.Parallel()
+	dir := newRepo(t)
+	write(t, dir, "z.txt", "z\n")
+	commit(t, dir, "zero")
+	zero := git(t, dir, "rev-parse", "HEAD")
+	write(t, dir, "a.txt", "a\n")
+	commit(t, dir, "one")
+	fork := git(t, dir, "rev-parse", "HEAD")
+	git(t, dir, "checkout", "-q", "-b", "feature")
+	write(t, dir, "b.txt", "b\n")
+	commit(t, dir, "feature work")
+	git(t, dir, "checkout", "-q", "main")
+	write(t, dir, "c.txt", "c\n")
+	commit(t, dir, "main work")
+	git(t, dir, "checkout", "-q", "--detach", zero)
+
+	got, err := open(t, dir).MergeBaseOf("main", "feature")
 	require.NoError(t, err)
 	assert.Equal(t, fork, got)
 }
@@ -499,32 +520,6 @@ func TestRepo_worktreeChecksOutRevAndCleansUp(t *testing.T) {
 	assert.NoDirExists(t, wt)
 	assert.NotContains(t, git(t, dir, "worktree", "list"), filepath.Base(wt))
 	assert.Len(t, strings.Split(git(t, dir, "worktree", "list"), "\n"), 1)
-}
-
-func TestRepo_sweepRemovesWorktreesOfDeadServersOnly(t *testing.T) {
-	t.Parallel()
-	dir := newRepo(t)
-	write(t, dir, "f.txt", "v1\n")
-	commit(t, dir, "one")
-	r := open(t, dir)
-
-	live, cleanup, err := r.Worktree("HEAD")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = cleanup() })
-	dead := exec.Command("true")
-	require.NoError(t, dead.Run())
-	gone := filepath.Join(t.TempDir(), "gone")
-	git(t, dir, "worktree", "add", "--detach", "--lock", "--reason", fmt.Sprintf("codemesh pid %d", dead.Process.Pid), gone, "HEAD")
-	other := filepath.Join(t.TempDir(), "other")
-	git(t, dir, "worktree", "add", "--detach", "--lock", "--reason", "someone else's", other, "HEAD")
-
-	require.NoError(t, r.Sweep())
-	list := git(t, dir, "worktree", "list", "--porcelain")
-	assert.Contains(t, list, "worktree "+live+"\nHEAD")
-	assert.Contains(t, list, fmt.Sprintf("locked codemesh pid %d", os.Getpid()), "this process holds its own worktree")
-	assert.NotContains(t, list, gone)
-	assert.NoDirExists(t, gone)
-	assert.Contains(t, list, "worktree "+other+"\n", "a lock codemesh did not take")
 }
 
 func TestRepo_worktreeErrorsOnUnknownRev(t *testing.T) {

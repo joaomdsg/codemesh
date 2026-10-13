@@ -82,26 +82,52 @@ func TestRender(t *testing.T) {
 	names := map[string]string{"shop": "Shop", "blog": "Blog"}
 	cases := []struct {
 		name  string
+		intro string
 		items []Item
 		ctx   Context
 	}{
-		{"empty", nil, Context{}},
-		{"finding", []Item{finding}, Context{Repos: names, Branch: "main"}},
-		{"prognosis", []Item{prognosis}, Context{Repos: names}},
-		{"note", []Item{note}, Context{Repos: names}},
-		{"thread", []Item{thread}, Context{Repos: names}},
-		{"introduced", []Item{introduced}, Context{Repos: names}},
-		{"pr", []Item{note, introduced}, Context{Repos: names, Branch: "fix-price", PR: "#7 Fix price rounding", BaseSHA: "1a2b3c4", HeadSHA: "9f8e7d6"}},
-		{"mixed", []Item{thread, other, finding, note, prognosis, introduced}, Context{Repos: names}},
+		{"empty", "", nil, Context{}},
+		{"finding", "", []Item{finding}, Context{Repos: names, Branch: "main"}},
+		{"prognosis", "", []Item{prognosis}, Context{Repos: names}},
+		{"note", "", []Item{note}, Context{Repos: names}},
+		{"thread", "", []Item{thread}, Context{Repos: names}},
+		{"introduced", "", []Item{introduced}, Context{Repos: names}},
+		{"intro", "Make Cart.Total readable without changing what it returns.", []Item{finding, prognosis}, Context{Repos: names}},
+		{"pr", "", []Item{note, introduced}, Context{Repos: names, Branch: "fix-price", PR: "#7 Fix price rounding", BaseSHA: "1a2b3c4", HeadSHA: "9f8e7d6"}},
+		{"mixed", "", []Item{thread, other, finding, note, prognosis, introduced}, Context{Repos: names}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			golden(t, c.name, Render(Basket{Items: c.items}, c.ctx))
+			golden(t, c.name, Render(Basket{Intro: c.intro, Items: c.items}, c.ctx))
 		})
 	}
 }
 
-func TestRenderDeterministic(t *testing.T) {
+func TestRender_endsWithInstructionsToVerifyAndRunTests(t *testing.T) {
+	got := Render(Basket{Items: []Item{finding}}, Context{})
+	i := strings.Index(got, "## When you are done")
+	if i < 0 {
+		t.Fatalf("no closing instructions:\n%s", got)
+	}
+	for _, want := range []string{"verify", "run the tests", "skip"} {
+		if !strings.Contains(strings.ToLower(got[i:]), want) {
+			t.Errorf("closing instructions do not mention %q:\n%s", want, got[i:])
+		}
+	}
+	if strings.Index(got, "#### Cart.Total") > i {
+		t.Error("the instructions come before the items")
+	}
+}
+
+func TestRender_dropsTheIntroWhenBlank(t *testing.T) {
+	blank := Render(Basket{Intro: "  \t", Items: []Item{finding}}, Context{})
+	none := Render(Basket{Items: []Item{finding}}, Context{})
+	if blank != none {
+		t.Errorf("a blank intro changed the prompt:\n%s", blank)
+	}
+}
+
+func TestRender_ignoresTheOrderReposWereAddedIn(t *testing.T) {
 	ctx := Context{Repos: map[string]string{"shop": "Shop", "blog": "Blog"}}
 	a := Item{Kind: Finding, Repo: "shop", Title: "a", Where: "x.go:1"}
 	b := Item{Kind: Finding, Repo: "blog", Title: "b", Where: "x.go:1"}
@@ -112,12 +138,12 @@ func TestRenderDeterministic(t *testing.T) {
 	}
 }
 
-func TestRenderOrdersWithinRepo(t *testing.T) {
+func TestRender_keepsTheBasketOrderWithinAKind(t *testing.T) {
 	early := Item{Kind: Finding, Repo: "shop", Title: "first added", Where: "z/z.go:1"}
 	late := Item{Kind: Finding, Repo: "shop", Title: "second added", Where: "a/a.go:1"}
 	sameFile := Item{Kind: Finding, Repo: "shop", Title: "third added", Where: "a/a.go:9"}
 	got := Render(Basket{Items: []Item{early, late, sameFile}}, Context{})
-	want := []string{"second added", "third added", "first added"}
+	want := []string{"first added", "second added", "third added"}
 	var order []string
 	for _, line := range strings.Split(got, "\n") {
 		if t, ok := strings.CutPrefix(line, "#### "); ok {
@@ -125,11 +151,11 @@ func TestRenderOrdersWithinRepo(t *testing.T) {
 		}
 	}
 	if !slices.Equal(order, want) {
-		t.Errorf("item order = %q, want %q (by file, then as added)", order, want)
+		t.Errorf("item order = %q, want %q (the order the user gave)", order, want)
 	}
 }
 
-func TestRenderFencesCodeContainingFences(t *testing.T) {
+func TestRender_fencesCodeContainingFences(t *testing.T) {
 	it := Item{Kind: Finding, Repo: "r", Title: "t", Code: []string{"```go", "x := 1", "```"}}
 	got := Render(Basket{Items: []Item{it}}, Context{})
 	if !strings.Contains(got, "````\n```go\nx := 1\n```\n````\n") {
@@ -189,5 +215,47 @@ func TestStore(t *testing.T) {
 	}
 	if err := s.Remove("nope"); err != nil {
 		t.Errorf("Remove of an unknown ID: %v", err)
+	}
+}
+
+func TestGroups_listReposByNameThenKindsInPromptOrder(t *testing.T) {
+	ctx := Context{Repos: map[string]string{"shop": "Shop", "blog": "Blog"}}
+	b := Basket{Items: []Item{finding, other, introduced, note, prognosis}}
+
+	var got []string
+	for _, g := range Groups(b, ctx) {
+		var titles []string
+		for _, it := range g.Items {
+			titles = append(titles, it.Title)
+		}
+		got = append(got, g.Repo+"/"+g.Heading+": "+strings.Join(titles, ","))
+	}
+	want := []string{
+		"Blog/Findings: " + other.Title,
+		"Shop/Introduced by this change: " + introduced.Title,
+		"Shop/Findings: " + finding.Title,
+		"Shop/Prognoses: " + prognosis.Title,
+		"Shop/Review notes: " + note.Title,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("groups:\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestStore_keepsTheIntro(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "basket.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetIntro("Clean up the cart."); err != nil {
+		t.Fatal(err)
+	}
+	re, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := re.Basket().Intro; got != "Clean up the cart." {
+		t.Errorf("intro after reopen = %q", got)
 	}
 }

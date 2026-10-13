@@ -9,44 +9,52 @@ import (
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
-// mapURL addresses one view of the map: a lens, a scope (package or file
-// path) and a selected declaration. Empty fields are left out.
-type mapURL struct{ lens, in, decl string }
+// mapURL addresses one view of a repo's map: a lens, a scope (package or
+// file path) and a selected declaration. Empty fields are left out.
+type mapURL struct{ repo, root, lens, in, decl string }
 
 func (u mapURL) String() string {
 	var q []string
-	for _, kv := range [][2]string{{"lens", u.lens}, {"in", u.in}, {"d", u.decl}} {
+	for _, kv := range [][2]string{{"lens", u.lens}, {"in", u.in}, {"d", u.decl}, {"root", u.root}} {
 		if kv[1] != "" {
 			q = append(q, kv[0]+"="+url.QueryEscape(kv[1]))
 		}
 	}
+	base := "/r/" + url.PathEscape(u.repo) + "/"
 	if len(q) == 0 {
-		return "/"
+		return base
 	}
-	return "/?" + strings.Join(q, "&")
+	return base + "?" + strings.Join(q, "&")
+}
+
+// at is u pointed at another scope and declaration.
+func (u mapURL) at(in, decl string) mapURL {
+	u.in, u.decl = in, decl
+	return u
 }
 
 // findingURL opens the map where a finding is: its declaration, else its
-// file, else its package.
-func findingURL(f smell.Finding, lens string) string {
+// file, else its package. m names the repo, root and lens.
+func findingURL(m mapURL, f smell.Finding) string {
 	switch {
 	case f.Decl != "":
-		return mapURL{lens, f.File, f.Decl}.String()
+		return m.at(f.File, f.Decl).String()
 	case f.File != "":
-		return mapURL{lens, f.File, ""}.String()
+		return m.at(f.File, "").String()
 	}
-	return mapURL{lens, f.Package, ""}.String()
+	return m.at(f.Package, "").String()
 }
 
-func findingRow(f smell.Finding, lens string) h.H {
-	return h.Li(h.Class("finding"),
+// findingRow lists f with its link to the map; extra controls follow it.
+func findingRow(m mapURL, f smell.Finding, extra ...h.H) h.H {
+	return h.Li(append([]h.H{h.Class("finding"),
 		sevMark(f.Severity),
-		h.A(h.Href(findingURL(f, lens)),
+		h.A(h.Href(findingURL(m, f)),
 			h.Span(h.Class("rule"), h.Str(ruleLabel(f.Rule))),
 			h.Span(h.Class("subject"), h.Str(f.Subject)),
 		),
 		h.Span(h.Class("detail"), h.Title(f.Rule.Why()), h.Str(f.Detail+where(f))),
-	)
+	}, extra...)...)
 }
 
 // where names a declaration finding's file and line: names repeat across

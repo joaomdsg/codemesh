@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/bluekeyes/go-gitdiff/gitdiff"
@@ -77,8 +76,11 @@ func Open(dir string) (*Repo, error) {
 }
 
 // MergeBase returns the full sha of the merge base of ref and HEAD.
-func (r *Repo) MergeBase(ref string) (string, error) {
-	out, err := run(r.Dir, "merge-base", ref, "HEAD")
+func (r *Repo) MergeBase(ref string) (string, error) { return r.MergeBaseOf(ref, "HEAD") }
+
+// MergeBaseOf returns the full sha of the merge base of two revs.
+func (r *Repo) MergeBaseOf(a, b string) (string, error) {
+	out, err := run(r.Dir, "merge-base", a, b)
 	if err != nil {
 		return "", err
 	}
@@ -259,8 +261,8 @@ func (r *Repo) ChurnAt(rev string, since time.Duration) (map[string]int, error) 
 	return counts, nil
 }
 
-// lockedBy prefixes the lock reason on a worktree this process owns, so Sweep
-// can find worktrees whose owner died without removing them.
+// lockedBy prefixes the lock reason on a worktree this process owns, so a
+// prune leaves it alone and a reader can tell whose it is.
 const lockedBy = "codemesh pid "
 
 // Worktree checks out rev detached in a temporary directory. Call cleanup to remove it.
@@ -278,42 +280,4 @@ func (r *Repo) Worktree(rev string) (dir string, cleanup func() error, err error
 		_, err := run(r.Dir, "worktree", "remove", "--force", "--force", dir)
 		return errors.Join(err, os.RemoveAll(dir))
 	}, nil
-}
-
-// Sweep removes the worktrees of codemesh processes that died without
-// cleaning up, such as on SIGKILL or a crash. Worktrees of live processes,
-// and those codemesh did not lock, stay.
-func (r *Repo) Sweep() error {
-	out, err := run(r.Dir, "worktree", "list", "--porcelain")
-	if err != nil {
-		return err
-	}
-	var errs []error
-	var path string
-	for _, line := range strings.Split(string(out), "\n") {
-		if p, ok := strings.CutPrefix(line, "worktree "); ok {
-			path = p
-			continue
-		}
-		owner, ok := strings.CutPrefix(line, "locked "+lockedBy)
-		if pid, err := strconv.Atoi(owner); !ok || err != nil || alive(pid) {
-			continue
-		}
-		_, err := run(r.Dir, "worktree", "unlock", path)
-		errs = append(errs, err, os.RemoveAll(path))
-	}
-	// Prune drops the unlocked entries whose directories are now gone.
-	_, err = run(r.Dir, "worktree", "prune")
-	return errors.Join(append(errs, err)...)
-}
-
-// alive reports whether process pid exists. Signal 0 only checks; EPERM
-// means it exists under another user.
-func alive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = p.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
 }

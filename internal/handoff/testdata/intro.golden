@@ -1,0 +1,49 @@
+# Codemesh handoff
+
+Goal: Make Cart.Total readable without changing what it returns.
+
+Codemesh, a code-health and review tool, collected 2 items below. Each says where the code is, what is wrong, the steps to take where there are any, and how to check the result. Work through them in order.
+
+- Repos: Shop
+
+## Shop
+
+### Findings
+
+#### Cart.Total has cyclomatic complexity 31
+
+Where: `cart/cart.go:42`
+Scope: working tree
+
+The method branches on every discount type.
+
+Code:
+
+```
+func (c *Cart) Total() int {
+	if c.vip {
+		...
+}
+```
+
+### Prognoses
+
+#### Split Cart.Total by discount type
+
+Where: `cart/cart.go:42`
+Scope: working tree
+
+Three discount branches share one loop.
+
+Steps:
+1. Extract each discount into its own function.
+2. Keep Total as the dispatcher.
+
+Check: go test ./cart passes and Total's complexity is under 10.
+
+## When you are done
+
+1. Verify each claim in the code before you change anything. Items come from static analysis and a reviewer's notes, so one may be wrong or already fixed. If it is, skip it and say why.
+2. Change only what an item calls for. Do not reformat or refactor around it.
+3. Run the tests and the build in each repo you changed, and fix what you broke.
+4. Reply with one line per item: changed, skipped (why), or needs a decision. End with the test result.

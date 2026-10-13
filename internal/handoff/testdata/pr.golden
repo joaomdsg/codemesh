@@ -1,6 +1,8 @@
 # Codemesh handoff
 
-Work through the items below. Each says where the code is, what is wrong and how to check the fix. Change only what an item calls for.
+Goal: resolve each item below.
+
+Codemesh, a code-health and review tool, collected 2 items below. Each says where the code is, what is wrong, the steps to take where there are any, and how to check the result. Work through them in order.
 
 - Repos: Shop
 - Branch: fix-price
@@ -15,7 +17,7 @@ Work through the items below. Each says where the code is, what is wrong and how
 #### New dead code: store.legacyPrice
 
 Where: `store/store.go:60`
-Scope: pr:7@9f8e7d6
+Scope: PR #7 at 9f8e7d6
 
 Nothing calls it.
 
@@ -26,10 +28,19 @@ Check: The finding is gone from the PR compare.
 #### Rounding drops a cent
 
 Where: `store/store.go:17`
-Scope: pr:7@9f8e7d6
+Scope: PR #7 at 9f8e7d6
 
 Use integer cents here, not float64.
+
+Code:
 
 ```
 +	price := float64(n) * 0.1
 ```
+
+## When you are done
+
+1. Verify each claim in the code before you change anything. Items come from static analysis and a reviewer's notes, so one may be wrong or already fixed. If it is, skip it and say why.
+2. Change only what an item calls for. Do not reformat or refactor around it.
+3. Run the tests and the build in each repo you changed, and fix what you broke.
+4. Reply with one line per item: changed, skipped (why), or needs a decision. End with the test result.

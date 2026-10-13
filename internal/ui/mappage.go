@@ -14,8 +14,9 @@ import (
 	"github.com/go-via/via/expr"
 	"github.com/go-via/via/h"
 	"github.com/go-via/via/on"
+	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/code"
-	"github.com/joaomdsg/codemesh/internal/live"
+	"github.com/joaomdsg/codemesh/internal/handoff"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
 
@@ -27,6 +28,7 @@ type mapPage struct {
 	lens string
 	decl string // selected decl ID
 	rows int    // smells listed; grows a page at a time
+	err  string // the last basket write that failed
 
 	// The atlas island's inputs, client-only and rendered by the server: the
 	// layout with a heat per declaration, and the tile to fly to.
@@ -52,8 +54,7 @@ func (p *mapPage) OnInit(ctx *via.Ctx) error {
 	if !slices.ContainsFunc(lenses, func(l lens) bool { return l.key == p.lens }) {
 		p.lens = "smells"
 	}
-	p.start(ctx)
-	return nil
+	return p.start(ctx)
 }
 
 // smellsPage is how many smells the side panel lists at a time, in severity
@@ -63,15 +64,33 @@ const smellsPage = 60
 // More lists the next page of smells.
 func (p *mapPage) More(_ *via.Ctx) { p.rows += smellsPage }
 
+// Handoff puts the smell with this key in the handoff basket.
+func (p *mapPage) Handoff(_ *via.Ctx, key string) {
+	a := p.analysis()
+	defer a.Release()
+	if a.Snap == nil {
+		return
+	}
+	for _, f := range a.Findings {
+		if findingKey(f) == key {
+			_, err := p.app.BasketAdd(findingItem(a, f))
+			p.err = basketError(err)
+			return
+		}
+	}
+}
+
 func (p *mapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
 
 func (p *mapPage) View() h.H {
-	a := p.src.Current()
-	if a == nil || a.Snap == nil {
-		return p.frame(tabMap, a, h.P(h.Class("empty"), h.Str("Analysing the module…")))
+	a := p.analysis()
+	defer a.Release()
+	if a.Snap == nil {
+		return p.unavailable(tabMap, a)
 	}
 	sc := p.scope(a)
 	return p.frame(tabMap, a,
+		basketErrorLine(p.err),
 		h.Div(h.Class("map-layout"),
 			h.Section(h.Class("map-pane"),
 				h.Div(h.Class("map-bar"), p.crumbs(a, sc), p.lensBar()),
@@ -91,7 +110,7 @@ type scope struct {
 	file *code.File
 }
 
-func (p *mapPage) scope(a *live.Analysis) scope {
+func (p *mapPage) scope(a *app.Analysis) scope {
 	if pkg := a.Snap.Package(p.in); pkg != nil {
 		return scope{pkg: pkg}
 	}
@@ -108,9 +127,9 @@ func (p *mapPage) scope(a *live.Analysis) scope {
 	return scope{}
 }
 
-func (p *mapPage) href(in, decl string) string { return mapURL{p.lens, in, decl}.String() }
+func (p *mapPage) href(in, decl string) string { return p.mapURL(p.lens, in, decl).String() }
 
-func (p *mapPage) crumbs(a *live.Analysis, sc scope) h.H {
+func (p *mapPage) crumbs(a *app.Analysis, sc scope) h.H {
 	parts := []h.H{h.A(h.Href(p.href("", "")), h.Str(path.Base(a.Snap.Module)))}
 	if sc.pkg != nil {
 		parts = append(parts, h.Span(h.Class("sep"), h.Str("/")), h.A(h.Href(p.href(sc.pkg.Path, "")), h.Str(pkgName(a, sc.pkg))))
@@ -128,7 +147,7 @@ func (p *mapPage) lensBar() h.H {
 		if l.key == p.lens {
 			cls = "seg on"
 		}
-		kids = append(kids, h.A(h.Class(cls), h.Href(mapURL{l.key, p.in, p.decl}.String()), h.Title(l.help), h.Str(l.label)))
+		kids = append(kids, h.A(h.Class(cls), h.Href(p.mapURL(l.key, p.in, p.decl).String()), h.Title(l.help), h.Str(l.label)))
 	}
 	return h.Nav(append([]h.H{h.Class("segs"), h.Aria("label", "Colour by")}, kids...)...)
 }
@@ -145,7 +164,7 @@ func (p *mapPage) lensHelp() string {
 // atlas lays the module out with each declaration's lens value bucketed into
 // a heat from 0 to 5, and every tile named by its path or decl ID so a click
 // can open it.
-func (p *mapPage) atlas(a *live.Analysis) atlas {
+func (p *mapPage) atlas(a *app.Analysis) atlas {
 	byDecl := smell.ByDecl(a.Findings)
 	values, caps := map[int]float64{}, map[int]int{}
 	at := atlasOf(a, mapW, mapH, func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
@@ -172,7 +191,7 @@ func (p *mapPage) atlas(a *live.Analysis) atlas {
 			at.Tiles[i].Heat = min(at.Tiles[i].Heat, c)
 		}
 	}
-	at.Lens = p.lens
+	at.Lens, at.Base, at.Root = p.lens, p.base(), p.root
 	return at
 }
 
@@ -233,7 +252,7 @@ func weight(s smell.Severity) int {
 	return 1
 }
 
-func (p *mapPage) side(a *live.Analysis, sc scope) h.H {
+func (p *mapPage) side(a *app.Analysis, sc scope) h.H {
 	if d := a.Snap.Decl(p.decl); d != nil {
 		return p.declPanel(a, d)
 	}
@@ -251,8 +270,11 @@ func (p *mapPage) side(a *live.Analysis, sc scope) h.H {
 	}
 	title := fmt.Sprintf("Smells · %d", len(fs))
 	var rows []h.H
+	held := p.app.Basket()
 	for _, f := range fs[:min(len(fs), p.rows)] {
-		rows = append(rows, findingRow(f, p.lens))
+		key := findingKey(f)
+		add := handoffControl(inBasket(held, handoff.Finding, p.repo.ID, key), on.Click(on.Bind(p.Handoff, key)))
+		rows = append(rows, findingRow(p.mapURL(p.lens, "", ""), f, add))
 	}
 	var more h.H
 	if rest := len(fs) - p.rows; rest > 0 {
@@ -261,7 +283,7 @@ func (p *mapPage) side(a *live.Analysis, sc scope) h.H {
 	return group([]h.H{h.H2(h.Str(title)), h.Ul(append([]h.H{h.Class("findings")}, rows...)...), more})
 }
 
-func (p *mapPage) declPanel(a *live.Analysis, d *code.Decl) h.H {
+func (p *mapPage) declPanel(a *app.Analysis, d *code.Decl) h.H {
 	var fs []h.H
 	for _, f := range a.Findings {
 		if f.Decl == d.ID {
@@ -347,7 +369,7 @@ func ruleLabel(r smell.Rule) string {
 
 // shortPkg prefixes a name with its package's last element when it is not
 // the module root.
-func shortPkg(a *live.Analysis, pkg string) string {
+func shortPkg(a *app.Analysis, pkg string) string {
 	if pkg == a.Snap.Module {
 		return ""
 	}

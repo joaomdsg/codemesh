@@ -41,8 +41,9 @@ type Item struct {
 	Key   string
 }
 
-// Basket is the ordered list of items.
+// Basket is the ordered list of items, and the line that opens the prompt.
 type Basket struct {
+	Intro string
 	Items []Item
 }
 
@@ -110,6 +111,15 @@ func (s *Store) Move(id string, to int) error {
 	return s.write(next)
 }
 
+// SetIntro replaces the line that states the prompt's goal.
+func (s *Store) SetIntro(intro string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := clone(s.b)
+	next.Intro = intro
+	return s.write(next)
+}
+
 func (s *Store) index(id string) int {
 	return slices.IndexFunc(s.b.Items, func(it Item) bool { return it.ID == id })
 }
@@ -123,5 +133,6 @@ func (s *Store) write(next Basket) error {
 }
 
 func clone(b Basket) Basket {
-	return Basket{Items: slices.Clone(b.Items)}
+	b.Items = slices.Clone(b.Items)
+	return b
 }

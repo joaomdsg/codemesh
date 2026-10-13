@@ -28,6 +28,18 @@ func (x node) named() bool    { return x.n.IsNamed() }
 func (x node) broken() bool   { return x.n.HasError() }
 func (x node) leaf() bool     { return x.n.ChildCount() == 0 }
 
+// errorLine is the line of the first syntax error below x.
+func (x node) errorLine() int {
+	if !x.n.IsError() {
+		for _, c := range x.children() {
+			if c.broken() {
+				return c.errorLine()
+			}
+		}
+	}
+	return x.startLine()
+}
+
 func (x node) field(name string) node {
 	return node{x.n.ChildByFieldName(name, x.lang), x.lang, x.src}
 }

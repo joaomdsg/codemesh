@@ -10,8 +10,8 @@ import (
 
 	"github.com/go-via/via/expr"
 	"github.com/go-via/via/h"
+	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/code"
-	"github.com/joaomdsg/codemesh/internal/live"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/treemap"
 )
@@ -24,6 +24,8 @@ type atlas struct {
 	W     float64     `json:"w"`
 	H     float64     `json:"h"`
 	Lens  string      `json:"lens,omitempty"` // map only: the lens the heats were taken with
+	Base  string      `json:"base,omitempty"` // map only: the repo's URL prefix, for links
+	Root  string      `json:"root,omitempty"` // map only: ?root= of the page, for links
 	Tiles []atlasTile `json:"tiles"`
 }
 
@@ -47,14 +49,14 @@ func (t atlasTile) MarshalJSON() ([]byte, error) {
 // atlasOf lays the module out in a w × h space and lets mark fill in each
 // tile's page-specific fields; exactly one of pkg, f, d is the tile's own
 // level, the others are its parents.
-func atlasOf(a *live.Analysis, w, h float64, mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)) atlas {
+func atlasOf(a *app.Analysis, w, h float64, mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)) atlas {
 	b := atlasBuilder{a: a, mark: mark, out: atlas{At: a.At.UnixMilli(), W: w, H: h, Tiles: []atlasTile{}}}
 	b.packages(treemap.Rect{W: w, H: h})
 	return b.out
 }
 
 type atlasBuilder struct {
-	a    *live.Analysis
+	a    *app.Analysis
 	mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)
 	out  atlas
 }
@@ -125,16 +127,6 @@ func feed(vals map[expr.Expr]any) h.H {
 		kids = append(kids, h.Data("signals:"+strings.TrimPrefix(string(ref), "$"), string(b)))
 	}
 	return h.Div(kids...)
-}
-
-// reviewAtlas lights each declaration that has a review unit with its card id.
-func reviewAtlas(a *live.Analysis) atlas {
-	units := unitCards(a.Review)
-	return atlasOf(a, 900, 600, func(_ int, t *atlasTile, _ *code.Package, _ *code.File, d *code.Decl) {
-		if d != nil {
-			t.Unit = units[d.ID]
-		}
-	})
 }
 
 // unitCards maps each declaration unit's decl ID to its card id.
