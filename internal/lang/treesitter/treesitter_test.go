@@ -317,14 +317,57 @@ func TestLoadTypeScript_aDeclsOwnNameIsNotACallOfAnotherDeclWithThatName(t *test
 	assert.Empty(t, decl(t, s, "app/src.B.get").Callers)
 }
 
-func TestLoadTypeScript_aMemberCallThatTwoDeclsAnswerToLinksNeitherOfThem(t *testing.T) {
+func TestLoadTypeScript_aMemberCallLinksOnlyWhereItsReceiverIsKnown(t *testing.T) {
 	t.Parallel()
-	s := tsProject(t, "export class A { get(): number { return 1; } }\nexport class B { get(): number { return 2; } }\n"+
-		"export class C { only(): number { return 3; } }\nexport function use(a: A, c: C) { return a.get() + c.only(); }\n")
+	s := tsProject(t, "export class A { get(): number { return 1; }\n  twice(): number { return this.get() * 2; } }\n"+
+		"export class B { get(): number { return 2; } }\n"+
+		"export class C { only(): number { return 3; }\n  static make(): number { return 4; } }\n"+
+		"export function typed(a: A) { return a.get(); }\n"+
+		"export function built() { const b = new B(); return b.get(); }\n"+
+		"export function untyped(x: any) { return x.only(); }\n"+
+		"export function viaClass() { return C.make(); }\n"+
+		"export const table = { only: 1 };\n")
 
-	assert.Empty(t, decl(t, s, "app/src.A.get").Callers, "a.get() could be either get; it is not known which")
-	assert.Empty(t, decl(t, s, "app/src.B.get").Callers)
-	assert.Equal(t, []string{"app/src.use"}, decl(t, s, "app/src.C.only").Callers, "one candidate: linked")
+	assert.ElementsMatch(t, []string{"app/src.A.twice", "app/src.typed"}, decl(t, s, "app/src.A.get").Callers)
+	assert.Equal(t, []string{"app/src.built"}, decl(t, s, "app/src.B.get").Callers)
+	assert.Empty(t, decl(t, s, "app/src.C.only").Callers, "an untyped receiver says nothing, and an object key is no call")
+	assert.Equal(t, []string{"app/src.viaClass"}, decl(t, s, "app/src.C.make").Callers)
+}
+
+func TestLoadPython_aMemberCallLinksOnlyWhereItsReceiverIsKnown(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.Python, project(t, map[string]string{
+		"pyproject.toml":  "[project]\nname = \"app\"\n",
+		"app/__init__.py": "",
+		"app/a.py":        "class A:\n    def get(self):\n        return 1\n\n    def twice(self):\n        return self.get() * 2\n\n\nclass B:\n    def get(self):\n        return 2\n\n    def only(self):\n        return 3\n",
+		"app/util.py":     "def helper():\n    return 1\n",
+		"app/b.py":        "from app import util\nfrom app.a import B\n\n\ndef built():\n    b = B()\n    return b.get()\n\n\ndef untyped(x):\n    return x.only()\n\n\ndef viamodule():\n    return util.helper()\n",
+	}))
+
+	assert.Equal(t, []string{"app.A.twice"}, decl(t, s, "app.A.get").Callers)
+	assert.Equal(t, []string{"app.built"}, decl(t, s, "app.B.get").Callers)
+	assert.Empty(t, decl(t, s, "app.B.only").Callers)
+	assert.Equal(t, []string{"app.viamodule"}, decl(t, s, "app.helper").Callers)
+}
+
+func TestLoadRust_aMemberCallLinksOnlyWhereItsReceiverIsKnown(t *testing.T) {
+	t.Parallel()
+	s := load(t, treesitter.Rust, project(t, map[string]string{
+		"Cargo.toml": "[package]\nname = \"app\"\n",
+		"src/lib.rs": "mod util;\npub struct A { n: i32 }\nimpl A {\n    pub fn new() -> A { A { n: 1 } }\n    pub fn n(&self) -> i32 { self.n }\n    pub fn twice(&self) -> i32 { self.n() * 2 }\n}\n" +
+			"pub struct B;\nimpl B {\n    pub fn n(&self) -> i32 { 2 }\n}\n" +
+			"pub struct C { only: i32 }\nimpl C {\n    pub fn only(&self) -> i32 { 3 }\n}\n" +
+			"pub fn built() -> i32 { let a = A::new(); a.n() + util::helper() }\n" +
+			"pub fn untyped<T: Clone>(x: T) -> i32 { x.only() }\n" +
+			"pub fn read(c: C) -> i32 { let d = C { only: 1 }; c.only + d.only }\n",
+		"src/util.rs": "pub fn helper() -> i32 { 1 }\n",
+	}))
+
+	assert.ElementsMatch(t, []string{"crate.A.twice", "crate.built"}, decl(t, s, "crate.A.n").Callers)
+	assert.Empty(t, decl(t, s, "crate.B.n").Callers)
+	assert.Equal(t, []string{"crate.built"}, decl(t, s, "crate.A.new").Callers)
+	assert.Empty(t, decl(t, s, "crate.C.only").Callers, "a field read or set is no call, and an untyped receiver says nothing")
+	assert.Equal(t, []string{"crate.built"}, decl(t, s, "crate::util.helper").Callers)
 }
 
 func project(t *testing.T, files map[string]string) string {

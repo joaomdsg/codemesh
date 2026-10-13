@@ -64,9 +64,11 @@ and `M.f` to M's, through `const M = ...` aliases and
 TypeScript and JavaScript, Python and Rust are parsed with tree-sitter
 (`internal/lang/treesitter`), which parses and runs no type checker. A name
 reaches a declaration of its own package, or an exported one of a package it
-imports. A member name that several declarations answer to links to none of
-them: without types it says nothing about which one is meant, and linking
-all would invent callers. A file that is a quarter syntax errors or more is
+imports. A name reached through a receiver links only where the receiver
+names its owner: `self`/`this` the enclosing type, a local its annotated or
+constructed type, `T.f` or `mod::f` the type or module. Any other receiver
+links nothing, and neither does a Rust field read or an object key: a
+same-named method elsewhere is a guess, and guessing invents callers. A file that is a quarter syntax errors or more is
 reported on its package.
 
 ## Map

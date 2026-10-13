@@ -232,8 +232,10 @@ badge counts the items.
 | Rust | `Cargo.toml` | tree-sitter | named |
 
 Go resolves every call with types. For the others a call is matched to
-declarations by name, scoped by the imports, and a name that several
-declarations answer to as a member links to none of them. Callers and
+declarations by name, scoped by the imports. A call through a receiver,
+`obj.f()`, links only when the receiver says whose `f` it is: `self` or
+`this`, a local typed or built in place, or a type or module named in place.
+Callers and
 references there are estimates, which the workspace cards say. The
 pass-through, same-argument and middle-man smells need types and apply to Go
 only.

@@ -1,6 +1,6 @@
 // Package treesitter reads TypeScript and JavaScript, Python and Rust with
 // tree-sitter grammars. It parses only: no type checker runs, so references
-// are matched by name and scoped by imports, as the Julia frontend does.
+// are matched by name, scoped by imports and by what a receiver names.
 package treesitter
 
 import (
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -175,13 +176,15 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 		for _, r := range x.refs {
 			var cands []*code.Decl
 			for _, to := range byName[r.name] {
-				visible := to.Package == x.d.Package || (to.Exported || crate[to]) && imports[x.d.Package][to.Package]
-				if visible && r.reaches(to) {
+				// A module named in place is as good as an import of it.
+				named := r.recv == recvName && to.Kind != code.Method && inModule(to, r.on)
+				visible := to.Package == x.d.Package || (to.Exported || crate[to]) && (imports[x.d.Package][to.Package] || named)
+				if visible && r.reaches(to, x.d) {
 					cands = append(cands, to)
 				}
 			}
-			// Without types, a member name several decls answer to says nothing
-			// about which one is meant; linking all of them invents callers.
+			// A member name several decls answer to, with no receiver type to
+			// pick one, says nothing about which is meant.
 			if r.kind == refMember && len(cands) > 1 {
 				continue
 			}
@@ -226,16 +229,45 @@ func single(r func(module string, srcs []*source) func(*source, string) string) 
 	}
 }
 
-// reaches reports whether a reference of this kind can mean to: a bare name
-// is not a method, a type annotation names a type.
-func (r ref) reaches(to *code.Decl) bool {
+// reaches reports whether a reference of this kind, made in from, can mean
+// to: a bare name is not a method, a type annotation names a type, and a name
+// reached through a receiver belongs to what the receiver names.
+func (r ref) reaches(to, from *code.Decl) bool {
 	switch r.kind {
 	case refPlain:
 		return to.Kind != code.Method
 	case refType:
-		return to.Kind == code.Type
+		return to.Kind == code.Type && (r.recv == recvNone || inModule(to, r.on))
 	}
-	return true
+	switch r.recv {
+	case recvSelf:
+		return to.Kind == code.Method && owner(to.Name) == owner(from.Name)
+	case recvType:
+		return to.Kind == code.Method && last(owner(to.Name)) == r.on
+	case recvName:
+		if to.Kind == code.Method {
+			return last(owner(to.Name)) == r.on
+		}
+		return inModule(to, r.on)
+	}
+	return false
+}
+
+func owner(name string) string { return name[:max(strings.LastIndex(name, "."), 0)] }
+
+func last(path string) string { return path[strings.LastIndexAny(path, "./:")+1:] }
+
+// inModule reports whether to lives in the module a receiver names: its
+// package, or its file, as Python and TypeScript import files by stem.
+func inModule(to *code.Decl, name string) bool {
+	if name == "crate" || name == "super" || name == "self" {
+		return true
+	}
+	stem := strings.TrimSuffix(path.Base(to.File), path.Ext(to.File))
+	if stem == "__init__" || stem == "index" || stem == "mod" {
+		stem = path.Base(path.Dir(to.File))
+	}
+	return last(to.Package) == name || stem == name
 }
 
 var skipDirs = []string{"node_modules", "vendor", "target", "dist", "build", "__pycache__", "venv", "testdata"}

@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // table names the node kinds one grammar's metrics and references read.
@@ -14,9 +15,13 @@ type table struct {
 	ops     map[string]bool
 	nest    map[string]bool // statements that nest
 
-	plain, member, typ map[string]bool   // identifier kinds, by the position they name
-	typeCtx            map[string]bool   // kinds whose descendants are type positions
-	memberOf           map[string]string // kind → the field holding a name reached through a path or attribute
+	plain, member, typ map[string]bool // identifier kinds, by the position they name
+	typeCtx            map[string]bool // kinds whose descendants are type positions
+	// via maps a kind that reaches a name through a receiver (obj.f, mod::f)
+	// to its name and receiver fields. call maps such a kind to the call whose
+	// function it must be to name a method: a Rust field read is no call.
+	via  map[string][2]string
+	call map[string]string
 
 	// binds returns the patterns x introduces names in: a parameter, a let, a
 	// loop variable. pattern lists the kinds a pattern nests names in, each with
@@ -113,30 +118,78 @@ type refKind int
 
 const (
 	refPlain  refKind = iota // a bare name: not a method
-	refMember                // reached through a path or attribute: a method or a function
+	refMember                // reached through a receiver: a method, or a module's function
 	refType                  // a type annotation
+)
+
+type recvKind int
+
+const (
+	recvNone    recvKind = iota // a bare name
+	recvSelf                    // this, self, Self: the enclosing type
+	recvType                    // a local of a known type
+	recvName                    // a type or module named in place
+	recvUnknown                 // an expression or an untyped local: says nothing
 )
 
 type ref struct {
 	name string
 	kind refKind
+	recv recvKind
+	on   string // the type or module recv names
 }
 
-// locals returns the names bound inside n, leaving out the subtrees rooted at
-// nodes in skip. A bare name that one of them binds refers to it, not to a
+var pathRe = regexp.MustCompile(`^[A-Za-z_]\w*((\.|::)[A-Za-z_]\w*)*$`)
+
+// receiver says what r, the receiver of a member ref under a node of kind
+// parent, names. A dotted path names its last segment, unless it starts at
+// self or at a local.
+func receiver(r node, parent string, locals map[string]string) (recvKind, string) {
+	t := r.text()
+	if !pathRe.MatchString(t) {
+		return recvUnknown, ""
+	}
+	segs := strings.FieldsFunc(t, func(c rune) bool { return c == '.' || c == ':' })
+	first, last := segs[0], segs[len(segs)-1]
+	switch first {
+	case "this", "self", "cls", "Self":
+		switch {
+		case first == "self" && strings.HasPrefix(parent, "scoped_"): // Rust's self::f is a module path
+			return recvName, last
+		case len(segs) > 1:
+			return recvUnknown, ""
+		}
+		return recvSelf, ""
+	}
+	if typ, ok := locals[first]; ok {
+		if len(segs) > 1 || typ == "" {
+			return recvUnknown, ""
+		}
+		return recvType, typ
+	}
+	return recvName, last
+}
+
+// locals returns the names bound inside n, each with the type it is
+// declared or built as when the binding says, leaving out the subtrees rooted
+// at nodes in skip. A bare name that one of them binds refers to it, not to a
 // decl of the same name elsewhere.
-func (t *table) locals(n node, skip map[[2]int]bool) map[string]bool {
-	out := map[string]bool{}
-	var pattern func(p node)
-	pattern = func(p node) {
+func (t *table) locals(n node, skip map[[2]int]bool) map[string]string {
+	out := map[string]string{}
+	var pattern func(p node, typ string)
+	pattern = func(p node, typ string) {
 		switch k := p.kind(); {
 		case t.names[k]:
-			out[p.text()] = true
+			out[p.text()] = typ
 		default:
 			if f, ok := t.pattern[k]; ok {
+				typ = ""
+				if k == "typed_parameter" { // Python's x: T
+					typ = typeName(p)
+				}
 				for _, c := range p.children() {
 					if !same(p.field(f), c) {
-						pattern(c)
+						pattern(c, typ)
 					}
 				}
 			}
@@ -148,12 +201,49 @@ func (t *table) locals(n node, skip map[[2]int]bool) map[string]bool {
 		}
 		if t.binds != nil && !same(x, n) {
 			for _, p := range t.binds(x) {
-				pattern(p)
+				pattern(p, typeName(x))
 			}
 		}
 		return true
 	})
 	return out
+}
+
+// typeName is the type a binding x declares, as in x: T, or builds, as in
+// new T(), T(), T::new() or T { .. }; "" when it says neither.
+func typeName(x node) string {
+	if ty := x.field("type"); ty.ok() {
+		var name string
+		each(ty, func(c node) bool {
+			if name == "" && (c.kind() == "type_identifier" || c.kind() == "identifier") {
+				name = c.text()
+			}
+			return name == ""
+		})
+		return name
+	}
+	v := x.field("value")
+	if !v.ok() {
+		v = x.field("right")
+	}
+	switch v.kind() {
+	case "new_expression":
+		return v.field("constructor").text()
+	case "struct_expression":
+		return v.field("name").text()
+	case "call", "call_expression":
+		f := v.field("function")
+		if f.kind() == "scoped_identifier" {
+			f = f.field("path")
+		}
+		if t := f.text(); f.kind() != "" && pathRe.MatchString(t) {
+			t = t[strings.LastIndexAny(t, ".:")+1:]
+			if t != "" && unicode.IsUpper(rune(t[0])) {
+				return t
+			}
+		}
+	}
+	return ""
 }
 
 // refs lists the identifiers under n, in order, leaving out the subtrees
@@ -166,34 +256,42 @@ func (t *table) refs(n node, skip map[[2]int]bool) []ref {
 		own = n.field("left") // a Python assignment
 	}
 	locals := t.locals(n, skip)
-	var walk func(x, parent node, inType bool)
-	walk = func(x, parent node, inType bool) {
+	var walk func(x, parent, grand node, inType bool)
+	walk = func(x, parent, grand node, inType bool) {
 		if isComment(x) || same(own, x) || (parent.ok() && skip[[2]int{x.start(), x.end()}]) {
 			return
 		}
 		k := x.kind()
 		inType = inType || t.typeCtx[k]
-		switch {
-		case t.typ[k]:
-			out = append(out, ref{x.text(), refType})
-		case t.member[k]:
-			out = append(out, ref{x.text(), refMember})
-		case t.plain[k]:
-			switch f := t.memberOf[parent.kind()]; {
-			case inType:
-				out = append(out, ref{x.text(), refType})
-			case f != "" && same(parent.field(f), x):
-				out = append(out, ref{x.text(), refMember})
-			case locals[x.text()]:
+		if t.typ[k] || t.member[k] || t.plain[k] {
+			kind := refPlain
+			if t.typ[k] || inType {
+				kind = refType
+			}
+			switch v, ok := t.via[parent.kind()]; {
+			case ok && same(parent.field(v[0]), x):
+				if c, ok := t.call[parent.kind()]; ok && kind != refType && !(grand.kind() == c && same(grand.field("function"), parent)) {
+					break
+				}
+				if kind == refPlain {
+					kind = refMember
+				}
+				recv, on := receiver(parent.field(v[1]), parent.kind(), locals)
+				out = append(out, ref{x.text(), kind, recv, on})
+			case t.member[k]: // a key or a field declared: no receiver, no call
+			case kind == refType:
+				out = append(out, ref{name: x.text(), kind: refType})
 			default:
-				out = append(out, ref{x.text(), refPlain})
+				if _, local := locals[x.text()]; !local {
+					out = append(out, ref{name: x.text(), kind: refPlain})
+				}
 			}
 		}
 		for _, c := range x.children() {
-			walk(c, x, inType)
+			walk(c, x, parent, inType)
 		}
 	}
-	walk(n, node{}, false)
+	walk(n, node{}, node{}, false)
 	return out
 }
 

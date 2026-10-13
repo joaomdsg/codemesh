@@ -78,10 +78,24 @@ document.addEventListener("keydown", (e) => {
       break;
     }
     case "n": {
-      const line = hop
-        ? hop.querySelector(".dl-call .no[data-ln]")
-        : at >= 0 && (units[at].querySelector(".dl-add .no[data-ln]") || units[at].querySelector(".dl-del .no[data-ln]"));
-      if (!click(line)) return;
+      if (hop) {
+        if (!click(hop.querySelector(".dl-call .no[data-ln]"))) return;
+        break;
+      }
+      if (at < 0) return;
+      const id = units[at].id;
+      const line = () => {
+        const u = document.getElementById(id);
+        return u && (u.querySelector(".dl-add .no[data-ln]") || u.querySelector(".dl-del .no[data-ln]"));
+      };
+      if (click(line())) break;
+      // A folded unit has no lines yet: show its diff, then note on it once
+      // the server has sent the lines.
+      if (!click(units[at].querySelector(".fold .expand"))) return;
+      let tries = 20;
+      const wait = setInterval(() => {
+        if (click(line()) || --tries === 0) clearInterval(wait);
+      }, 100);
       break;
     }
     default: return;

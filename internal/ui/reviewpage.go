@@ -849,6 +849,7 @@ func (p *reviewPage) help() h.H {
 	row := func(k, what string) h.H { return h.Li(h.Kbd(h.Str(k)), h.Span(h.Str(what))) }
 	return h.Div(h.Class("keys-help"), h.Role("dialog"), h.Aria("label", "Keyboard shortcuts"),
 		h.H3(h.Str("Keys")),
+		h.Button(h.Class("btn small ghost keys-open keys-close"), h.Type("button"), h.Aria("label", "Close"), h.Str("×")),
 		h.Ul(
 			row("j / k", "next and previous unit"),
 			row("r", "mark the unit reviewed, go to the next"),
