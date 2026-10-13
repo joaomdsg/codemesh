@@ -76,9 +76,9 @@ func scopeOf(a *app.Analysis) string {
 func findingItem(a *app.Analysis, f smell.Finding) handoff.Item {
 	where := f.Subject
 	if f.File != "" {
-		where = f.File
+		where = repoPath(a.Root, f.File)
 		if f.Line > 0 {
-			where = fmt.Sprintf("%s:%d", f.File, f.Line)
+			where = fmt.Sprintf("%s:%d", where, f.Line)
 		}
 	}
 	body := f.Rule.Why()
@@ -95,16 +95,22 @@ func findingItem(a *app.Analysis, f smell.Finding) handoff.Item {
 		Title: ruleLabel(f.Rule) + ": " + f.Subject,
 		Where: where,
 		Body:  body,
-		Check: fmt.Sprintf("The %q smell for %s is gone when the code is analysed again, and the tests still pass.", ruleLabel(f.Rule), f.Subject),
+		Check: smellCheck(f),
 		Code:  declLines(a.Snap, f.Decl),
 		Key:   findingKey(f),
 	}
 }
 
+// smellCheck is how whoever fixes a smell can tell it is fixed, without
+// running codemesh.
+func smellCheck(f smell.Finding) string {
+	return fmt.Sprintf("Re-read the code: the %s no longer applies to %s, and the build and tests still pass.", strings.ToLower(ruleLabel(f.Rule)), f.Subject)
+}
+
 func prognosisItem(a *app.Analysis, g prognosis.Prognosis) handoff.Item {
 	where := g.Name
 	if g.File != "" {
-		where = fmt.Sprintf("%s:%d", g.File, g.Line)
+		where = fmt.Sprintf("%s:%d", repoPath(a.Root, g.File), g.Line)
 	}
 	body := g.Summary + " " + g.Why
 	var facts []string

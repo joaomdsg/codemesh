@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"testing"
 
 	"github.com/joaomdsg/codemesh/internal/testrepo"
@@ -105,6 +106,44 @@ func TestAdd_duplicateIsNoOp(t *testing.T) {
 	assert.Equal(t, cloned, cloneAgain)
 
 	assert.Equal(t, []workspace.Repo{first, cloned}, repos(t))
+}
+
+func TestAdd_anotherSpellingOfAClonedURLIsTheSameRepo(t *testing.T) {
+	w, _ := open(t)
+	url, origin := bare(t)
+	first, err := w.Add(url)
+	require.NoError(t, err)
+	require.NoError(t, os.RemoveAll(origin)) // a second clone would now fail
+
+	again, err := w.Add(url + "/")
+
+	require.NoError(t, err)
+	assert.Equal(t, first, again)
+	assert.Len(t, repos(t), 1)
+}
+
+func TestAdd_urlsWithParentElementsAreRefused(t *testing.T) {
+	w, root := open(t)
+
+	for _, arg := range []string{"https://127.0.0.1:1/o/..", "https://127.0.0.1:1/../r/..", "https://..:1/o/r"} {
+		_, err := w.Add(arg)
+		assert.ErrorContains(t, err, "not a usable git URL", arg)
+	}
+
+	assert.Empty(t, repos(t))
+	assert.NoDirExists(t, filepath.Join(root, "cache", "codemesh", "clones"))
+}
+
+func TestRemove_neverDeletesOutsideTheClonesDir(t *testing.T) {
+	w, root := open(t)
+	victim := t.TempDir()
+	reg := `{"version":1,"repos":[{"id":"x-000000","name":"x","url":"https://h/o/x","clonePath":` + strconv.Quote(victim) + `}]}`
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "config", "codemesh"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "config", "codemesh", "workspace.json"), []byte(reg), 0o644))
+
+	assert.Error(t, w.Remove("x-000000"))
+
+	assert.DirExists(t, victim)
 }
 
 func TestAdd_sameNameDifferentPathGetsDifferentIDs(t *testing.T) {

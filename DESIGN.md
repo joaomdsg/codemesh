@@ -1,7 +1,7 @@
 # codemesh design (v0.1)
 
-codemesh is a local web tool for Go modules and Julia packages. It does
-three jobs:
+codemesh is a local web tool for Go, Julia, TypeScript, Python and Rust
+projects. It does three jobs:
 
 1. **Map**: show where the smells are, packages first.
 2. **Review**: make reading a change fast enough that review stops being the
@@ -9,9 +9,12 @@ three jobs:
 3. **Diagnose**: mark the places that need attention and say what to do
    about each.
 
-Run it in a module: `codemesh [-addr localhost:7777] [-base REF] [-poll 1s]
-[dir]`. It analyses the working tree, so it reviews uncommitted work as
-well as branches.
+Run it with `codemesh [-addr localhost:7777] [-poll 1s] [path|url ...]`.
+It serves a workspace of repos, each given as a local path or a git URL. It
+analyses their working trees, so it reviews uncommitted work, and their open
+pull requests, through `gh`. Its files live in the XDG directories, not in
+your repos; in a local repo's `.git` it adds only `refs/codemesh/pr/*` and
+the registrations of its worktrees. See Workspace below.
 
 ## What we kept from the Intent Canvas, and what we dropped
 
@@ -35,32 +38,48 @@ We dropped:
 - **Marks, fences, the dispatch gate and agent runs.** These are agent
   orchestration, which is out of scope for v0.1.
 - **PR-number history.** It is GitHub-specific. Churn comes from plain
-  `git log`.
+  `git log`. Pull requests are read for what they change, through `gh`.
 
 ## Truth over approximation
 
 All Go code facts come from `go/packages` with full type information:
 callers, uses, imports. No text matching. A smell the tool reports must be a
-fact you can click through to.
+fact you can click through to. Go links are **typed**.
 
-Julia is the exception, because it picks a method when the code runs. Its
+The other languages are **named**: a call is matched to declarations by name,
+so callers and references are inferred, and the workspace cards say so.
+Julia is the first case, because it picks a method when the code runs. Its
 facts come from Julia's own parser (`Base.JuliaSyntax`), run by
-`internal/code/julia.jl`, so spans, names, complexity and modules are exact;
-but a call is matched to declarations by name, so callers and references are
-inferred, and the Diagnose legend says so. Each module that owns files is a
-package, a submodule declared inside another module's file stays in that
-file's package with its names qualified, and each method is a declaration
-of its own, its ID carrying its argument types: `area(Square)`. A name links
+`internal/lang/julia/julia.jl`, so spans, names, complexity and modules are
+exact; the Diagnose legend says its callers are estimates. Each module that
+owns files is a package, a submodule declared inside another module's file
+stays in that file's package with its names qualified, and each method is a
+declaration of its own, its ID carrying its argument types: `area(Square)`.
+A name links
 to the same package's declarations, to exported ones of packages it uses,
 and `M.f` to M's, through `const M = ...` aliases and
 `Base.get_extension`. A method of another module's function, such as
 `Base.show`, is a method: called by dispatch, never dead.
 
+TypeScript and JavaScript, Python and Rust are parsed with tree-sitter
+(`internal/lang/treesitter`), which parses and runs no type checker. A name
+reaches a declaration of its own package, or an exported one of a package it
+imports. A member name that several declarations answer to links to none of
+them: without types it says nothing about which one is meant, and linking
+all would invent callers. A file that is a quarter syntax errors or more is
+reported on its package.
+
 ## Map
 
-Go loads a nested module (a directory below the root with its own
-`go.mod`) as a separate module, so the map, smells and matrix leave it out,
-and a banner names it. Imports of it are not module-internal edges.
+A repo holds one or more **roots**: directories with a project file of a
+supported language (`go.mod`, `Project.toml`, `package.json`, `tsconfig.json`,
+`pyproject.toml`, `setup.py`, `Cargo.toml`), found below the repo's top and
+skipping hidden, underscore, `testdata`, `vendor` and `node_modules`
+directories. Each root is one snapshot, and the pages below show one root at
+a time. Go loads a nested module (a directory below a root with its own
+`go.mod`) as a separate module, so the map, smells and matrix of the outer
+root leave it out, and a banner points to it as a root of its own. Imports of
+it are not module-internal edges.
 
 - **Atlas.** One squarified treemap of the whole module: packages holding
   files holding declarations, area by lines of code. The server lays it out;
@@ -81,8 +100,9 @@ and a banner names it. Imports of it are not module-internal edges.
 - **Smells list** for the current scope, ranked by severity, 60 at a time.
   Each smell gives its measure, its threshold, its file and line, and one
   line on why it matters. A declaration opens with its source, metrics and
-  callers. The scope `?in=` takes an import path, a package directory or a
-  file path.
+  callers. The scope, `in=` in the map's path segment
+  (`/r/{repo}/map/lens=churn&in=pkg`), takes an import path, a package
+  directory or a file path.
 - **Dependencies** as a dependency structure matrix (DSM), with packages
   ordered by layer. A node-link graph turns into a hairball past 20 packages.
   Go forbids import cycles, so every mark sits right of the diagonal; the
@@ -124,7 +144,8 @@ no longer shows how many paths a test must cover.
 Code lines are lines holding a Go token. A long string literal (see Other
 below) counts as one line, so an inlined script does not make a large file.
 
-Pass-through, same argument everywhere and middle man are Go only. Tests'
+Pass-through, same argument everywhere and middle man are Go only: the other
+frontends have no types to tell a forward from a coincidence. Tests'
 call sites do not count against same argument everywhere: a parameter only
 tests vary is a test seam in the production interface.
 
@@ -135,21 +156,25 @@ together is a main package's job.
 ## Review
 
 A diff is a list of lines. A reviewer cares about declarations and their
-consequences. codemesh turns `base...worktree` into a queue of **change
-units**, one per declaration added, removed or modified.
+consequences. codemesh turns a change into a queue of **change units**, one
+per declaration added, removed or modified. A change is either the working
+tree of a local repo, read against its merge-base with the first of
+`origin/HEAD`, `main` and `master` that resolves (else `HEAD`; a repo's
+`defaultBase` in `workspace.json` overrides it), or an open pull request,
+read as its head against the merge-base with its base branch. A clone has no
+working tree, so only its pull requests are read.
 
 1. **Triage into lanes.** Lanes are ordered by how much reading they need:
    - **Contract**: exported declarations of importable packages (not under
-     `internal/`, not `main`) added, removed or re-signed, and the module's
-     `go.mod`. A struct's signature is its exported fields, so a new private
-     field is not a contract change.
+     `internal/`, not `main`) added, removed or re-signed, and the root's
+     `go.mod` or `Project.toml`. A struct's signature is its exported
+     fields, so a new private field is not a contract change.
    - **Logic**: other body and signature changes.
    - **Tests**: test code and `testdata` fixtures.
-   - **Other**: non-Go files, a nested module's `go.mod`, and long string
+   - **Other**: non-code files, a nested module's `go.mod`, and long string
      literals: a package-level const or var whose value is only string
-     literals over several lines, such as an inlined script. Go files of a nested module
-     have no type information here and become one unit per file, in Logic
-     or Tests, or Noise when only comments and layout changed.
+     literals over several lines, such as an inlined script. Each root has its
+     own review: a file below a nested root is left out of the outer root's.
    - **Noise**: units whose syntax tree is unchanged apart from comments and
      formatting, pure moves (same source, other file or package), generated
      files, `go.sum`, and import lines. A declaration moved and edited is
@@ -160,17 +185,22 @@ units**, one per declaration added, removed or modified.
    complexity after the change and its delta, lines changed, and whether
    any test calls the unit directly. Test callers are listed but add no
    risk. The reasons show as chips, so the order explains itself.
-3. **Impact beside the hunk.** The real callers of a changed function are
-   listed next to its diff, from type information. Callers changed in the
-   same diff come first and link to their unit, so a contract change and its
-   call sites are read together.
-4. **Smell delta.** The base is analysed in a temporary worktree. Each smell
-   the change introduces shows as a chip on its unit; the header counts new
-   and fixed smells.
+3. **Impact beside the hunk.** The callers of a changed function are
+   listed next to its diff, typed for Go and by name otherwise. Callers
+   changed in the same diff come first and link to their unit, so a contract
+   change and its call sites are read together.
+4. **Graph diff.** Both snapshots are analysed, each in a worktree under the
+   cache, and `internal/graphdiff` compares them: declarations added,
+   removed, moved (same name, kind and shape under another ID) and changed;
+   reference edges and module-internal imports added and removed; smells
+   introduced and fixed. The header sums it up. A unit's chips carry the
+   smells it introduces, its callers new in this change and a changed
+   signature.
 5. **Review state that survives new pushes.** Marking a unit reviewed stores
-   its identity plus a hash of its source in `.git/codemesh/`. When the
-   author pushes again, only the units whose source changed come back.
-   Re-review costs only the delta.
+   its identity plus a hash of its source in the repo's state directory, not
+   in the repo. When the author pushes again, only the units whose source
+   changed come back. Re-review costs only the delta. A repo with no state
+   yet starts from the marks an older version left in `.git/codemesh/`.
 6. **Read only what needs reading.** Contract and Logic diffs render up to a
    budget of 3000 lines; Tests, Other and Noise cards, and anything past the
    budget, show their header and open on demand. A lane lists 60 units at
@@ -179,12 +209,40 @@ units**, one per declaration added, removed or modified.
    in 1.9 s; grouping by package was rejected because it breaks the risk
    order across the lane. An outline lists the listed units by lane with
    their marks.
-7. **Where the change sits.** Above the outline, an atlas of the whole
-   module lights every declaration the change touches: blue while open,
-   green once reviewed. It flies to the focused unit's file, and clicking a
-   lit tile opens its card.
-8. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
-   next unreviewed unit, `n` skips to it, `o` shows or hides a diff.
+7. **Where the change sits.** An atlas pane beside the reading lights every
+   declaration the change touches: blue while open, green once reviewed. It
+   flies to the focused unit's file, and clicking a lit tile opens its card.
+   Its Head and Base buttons show the head, or the base where removed and
+   rewritten code stood.
+8. **Follow the blast radius.** Under a unit, "Callers" lists its callers
+   and users: file and line, the call line in context, the caller's own
+   caller count, and a link when the caller is a unit of this change. Opening
+   a hop lists its callers in turn. The open path is a **thread**
+   (`internal/thread`): root, then hops. It is the last path segment of the
+   page's address, `/pr/{n}/{a~b~c}`, so a link reopens it, with `~` and `%`
+   in a decl ID escaped; a bar above the reading shows it as pills to trim.
+   Candidates are ordered production before tests, then by their own caller
+   count. The head atlas draws the thread as a line across its tiles.
+9. **Notes.** A click on a diff line, or on a hop, opens a note box.
+   `internal/notes` stores the note per repo with its change (the working
+   tree, or the pull request at any head), the unit's key when written and
+   the line's text. When the unit's source changes the note shows as
+   outdated instead of vanishing.
+10. **Keyboard first.** `j`/`k` move, `r` marks reviewed and moves to the
+    next unreviewed unit, `c` opens callers, `n` writes a note, `t` keeps the
+    thread, `o` shows or hides a diff, `b` opens the basket, `?` lists the
+    keys.
+
+## Handoff
+
+The basket (`internal/handoff`, `/basket`) is one list across repos of what
+a coding agent should act on: findings and prognoses, notes, kept threads, and
+the smells a pull request introduced. An item copies its text when added, so
+the prompt does not change under the user, and keeps its source's key so a
+stale one can be told. `Render` writes the prompt, grouped by repo then kind
+in the order the user gave, under an editable opening line; the page previews
+it, Copy puts it on the clipboard and `/basket.txt` serves it as text. It is
+a prompt to paste, not a run: codemesh starts no agent.
 
 ## Diagnose
 
@@ -218,11 +276,68 @@ matters, what to do and how to check it.
    framed on the place, with the related places listed below it and why
    each matters.
 
+## Workspace
+
+`internal/workspace` is the registry of repos, `workspace.json` under
+`$XDG_CONFIG_HOME/codemesh`. A repo has a stable ID, its name plus six hex
+characters of a hash of its path or URL, which is what URLs carry:
+`/r/{repo}/`, `/r/{repo}/in/{root}/` for a root other than the repo's top,
+then `map/{view}`, `deps`, `health[/{lens}]`, `prognosis/{key}`,
+`review[/{thread}]`, `prs` and `pr/{n}[/{thread}]`. A page's state is in its
+path, not its query: via addresses a live page's stream and actions by the
+mount pattern alone, which sees no query. `/` is the inbox and the repo cards,
+`/basket` the handoff.
+
+A local path must be inside a git repo; the repo's top directory is what is
+registered. A git URL (`scheme://` or `user@host:owner/name`) is cloned into
+`$XDG_CACHE_HOME/codemesh/clones/` with `--filter=blob:none`: blobs come on
+demand, history stays complete, as merge bases and churn need it. A shallow
+clone would break both. Removing a repo deletes its clone and never touches a
+local checkout.
+
+Files go by the XDG rules: the registry in the config directory; in the state
+directory what the user produced, `basket.json` and per repo
+`repos/{id}/reviewed.json` and `notes.json`; in the cache directory what can
+be rebuilt, clones and the worktrees of analysed commits. Worktrees a killed
+run left behind are swept at start.
+
+## Pull requests
+
+`internal/ghx` runs `gh pr list --state open --json ...` in the repo and
+nothing else of `gh`; it never touches git. Exit code 4 means not logged in,
+a missing binary means no `gh`, and either shows on the repo's card as one
+line with the fix. The list is cached for a minute, refreshed in the
+background, and on the Pull requests tab by a button. A clone first fetches
+its remote and moves to its branch head.
+
+Opening pull request `n`:
+
+1. `git fetch origin +pull/n/head:refs/codemesh/pr/n` gets the head. That
+   ref lives on the base repository, so forks work.
+2. If the base branch moved past what the repo has, fetch it.
+3. The base is `git merge-base` of the head and `baseRefOid`.
+4. `internal/analysis` loads both commits as snapshots, each from a
+   worktree checked out under the cache and shared by roots of one commit,
+   and compares them: the graph diff, the files, the findings of each side.
+5. `internal/review` ranks the units from that.
+
+The inbox lists every open pull request and every local tree with changes, in
+"Needs reading" when a Contract or Logic unit is unreviewed and "Skim"
+otherwise. Its rows come from the same review, built in the background; pull
+request summaries one at a time, as each loads two snapshots.
+
 ## Live
 
-codemesh watches the working tree. On change it re-analyses and pushes the
-update to open pages over via's SSE stream. Keep it open while you code:
-the map and the review queue follow your edits.
+codemesh watches the working tree of each local repo (`internal/live`): it
+polls at `-poll`, hashes the sizes and modification times of source files and
+project files, and on a change re-analyses and announces it on a topic. The
+app turns that into an event, and open pages re-render over via's SSE stream.
+Keep it open while you code: the map and the review follow your edits. A
+clone has no working tree to watch.
+
+Snapshots are cached by repo, root and commit (`internal/analysis`), with a
+bounded number of loads running at once, as a load holds a process tree. A
+snapshot's worktree lives as long as its cache entry.
 
 ## Stack
 
@@ -239,10 +354,18 @@ the map and the review queue follow your edits.
   them to `atlas.js`, which only draws, zooms and links. The Diagnose
   island, `diagnose.js`, follows the same pattern.
 - Dependencies:
-  - `golang.org/x/tools/go/packages` loads Go code; Julia's own parser,
-    through the `julia` on the PATH, loads Julia code. A pure-Go
-    tree-sitter grammar was tried first and mis-parsed 4 of HyperSignal.jl's
-    10 files.
+  - `golang.org/x/tools/go/packages` loads Go code. Julia's own parser,
+    through the `julia` on the PATH, loads Julia code: a pure-Go tree-sitter
+    grammar was tried first and mis-parsed 4 of HyperSignal.jl's 10 files, so
+    Julia keeps JuliaSyntax.
+  - `github.com/odvcencio/gotreesitter` parses TypeScript, JavaScript,
+    Python and Rust. It is pure Go, so `CGO_ENABLED=0` and a plain
+    `go build` still work, with no C toolchain and no build tag; the cost is a
+    bigger binary. These languages have no parser we could call without
+    their toolchain on the PATH, and Node would break the no-Node rule. Only
+    `internal/lang/treesitter/parse.go` imports it, so the runtime can be
+    swapped.
+  - The `git` and `gh` binaries on the PATH do the rest: no git library.
   - `github.com/bluekeyes/go-gitdiff` parses diffs. It handles renames,
     binary files and mode changes correctly, where the alternatives do not.
   - Complexity is hand-rolled, about 40 lines, to avoid an
@@ -251,13 +374,23 @@ the map and the review queue follow your edits.
 ## Layout
 
 ```
-cmd/codemesh        flags, wiring, serve
-internal/code       load a module: packages, files, decls, metrics, refs
-internal/smell      detectors over a code.Snapshot
-internal/gitx       git: merge-base, diff, churn, worktree
+cmd/codemesh        flags, wiring, serve, the prognoses command
+internal/code       the model: Snapshot, packages, files, decls, refs; Builder
+internal/lang       frontends: golang, julia, treesitter (TS/JS, Python, Rust); roots
+internal/smell      detectors over a code.Snapshot, and the delta of two
+internal/gitx       git: merge-base, diff, churn, clone, fetch, worktrees
+internal/ghx        open pull requests through gh
+internal/store      XDG directories, atomic JSON files
+internal/workspace  the repo registry, clones
+internal/analysis   cached snapshots per repo, root and commit; compare
+internal/graphdiff  two snapshots → declarations, edges, imports, smells
 internal/review     diff + base/head snapshots → ranked change units
+internal/thread     callers of a declaration, followed hop by hop
+internal/notes      review notes on units
+internal/handoff    the basket and its prompt
 internal/prognosis  snapshot + smells → plain-language prognoses
-internal/live       re-analyse on change, keep the base worktree, publish
+internal/live       watch local working trees, re-analyse, announce
+internal/app        what the UI calls: workspace, engine, watchers, gh, stores
 internal/treemap    squarified layout, pure
 internal/ui         via pages
 internal/testrepo   throwaway git repos and the calc fixture, for tests

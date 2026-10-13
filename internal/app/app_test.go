@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,9 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/analysis"
 	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/handoff"
+	"github.com/joaomdsg/codemesh/internal/store"
 	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/joaomdsg/codemesh/internal/workspace"
 	"github.com/stretchr/testify/assert"
@@ -31,13 +34,10 @@ func newApp(t *testing.T) *app.App {
 	for _, v := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		t.Setenv(v, t.TempDir())
 	}
-	// The engine finishes a load after its caller's context ends, so the app
-	// outlives the test body: cleanups wait for its jobs, then cancel.
-	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
-	t.Cleanup(cancel)
-	a, err := app.New(ctx, app.Config{Poll: time.Hour, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	testrepo.QuietGo(t)
+	a, err := app.New(t.Context(), app.Config{Poll: time.Hour, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	require.NoError(t, err)
-	t.Cleanup(a.Wait)
+	t.Cleanup(func() { assert.NoError(t, a.Close(context.Background())) })
 	return a
 }
 
@@ -107,6 +107,85 @@ func TestPRReview_comparesThePRHeadWithItsMergeBase(t *testing.T) {
 	assert.Nil(t, pr.Base.Snap.Decl("example.com/calc/calc.Clamp"))
 }
 
+func TestPRReview_aStaleListedBaseIsRefreshedBeforeTheMergeBase(t *testing.T) {
+	a := newApp(t)
+	dir := testrepo.New(t, testrepo.CalcBase, nil)
+	g := func(args ...string) { require.NoError(t, testrepo.Git(dir, args...)) }
+	repoAt, err := gitx.Open(dir)
+	require.NoError(t, err)
+	sha := func(rev string) string {
+		s, err := repoAt.ResolveRef(rev)
+		require.NoError(t, err)
+		return s
+	}
+	oldMain := sha("main")
+	g("checkout", "-q", "-b", "feat")
+	require.NoError(t, testrepo.Write(dir, testrepo.CalcHead))
+	g("add", "-A")
+	g("commit", "-qm", "feat")
+	g("remote", "add", "origin", dir)
+	gh(t, 7, sha("feat"), oldMain)
+	repo := add(t, a, dir)
+	require.NoError(t, a.PRs(repo.ID).Err)
+	a.Wait()
+
+	g("checkout", "-q", "main")
+	require.NoError(t, testrepo.Write(dir, map[string]string{"NOTES.md": "main moved on\n"}))
+	g("add", "-A")
+	g("commit", "-qm", "main moves")
+	newMain := sha("main")
+	g("checkout", "-q", "feat")
+	g("rebase", "-q", "main")
+	head := sha("feat")
+	g("update-ref", "refs/pull/7/head", head)
+	gh(t, 7, head, newMain)
+	a.AgePRs(repo.ID, 2*time.Minute)
+
+	pr, err := a.PRReview(repo.ID, "", 7)
+	require.NoError(t, err)
+	defer pr.Release()
+
+	assert.Equal(t, newMain, pr.BaseSHA, "the diff starts where the PR's own commits start, not at the old base")
+}
+
+func TestReading_aFailedPRSummaryIsTriedAgainWhenTheListRefreshes(t *testing.T) {
+	a := newApp(t)
+	dir := testrepo.New(t, testrepo.CalcBase, nil)
+	g := func(args ...string) { require.NoError(t, testrepo.Git(dir, args...)) }
+	repoAt, err := gitx.Open(dir)
+	require.NoError(t, err)
+	sha := func(rev string) string {
+		s, err := repoAt.ResolveRef(rev)
+		require.NoError(t, err)
+		return s
+	}
+	g("checkout", "-q", "-b", "feat")
+	require.NoError(t, testrepo.Write(dir, testrepo.CalcHead))
+	g("add", "-A")
+	g("commit", "-qm", "feat")
+	head := sha("feat")
+	g("checkout", "-q", "main")
+	g("remote", "add", "origin", dir)
+	gh(t, 7, head, sha("main"))
+	repo := add(t, a, dir)
+
+	a.Reading(repo.ID, 7)
+	a.Wait()
+	rd := a.Reading(repo.ID, 7)
+	require.True(t, rd.Ready)
+	require.Error(t, rd.Err, "the PR head is not on the remote yet, so the fetch fails")
+
+	g("update-ref", "refs/pull/7/head", head)
+	a.RefreshPRs(repo.ID)
+	a.Wait()
+	a.Reading(repo.ID, 7)
+	a.Wait()
+
+	rd = a.Reading(repo.ID, 7)
+	assert.NoError(t, rd.Err)
+	assert.Positive(t, rd.Units)
+}
+
 func TestReviewed_startsFromTheLegacyFileInTheGitDir(t *testing.T) {
 	a := newApp(t)
 	dir := testrepo.New(t, testrepo.CalcBase, nil)
@@ -124,6 +203,101 @@ func TestReviewed_startsFromTheLegacyFileInTheGitDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, again.Reviewed("calc.Scale@def"))
 	assert.FileExists(t, filepath.Join(os.Getenv("XDG_STATE_HOME"), "codemesh", "repos", repo.ID, "reviewed.json"))
+}
+
+func TestRemoveRepo_dropsItsSnapshotsAndWorktrees(t *testing.T) {
+	a := newApp(t)
+	repo := add(t, a, testrepo.New(t, testrepo.CalcBase, nil))
+	an := a.Analyse(repo.ID, "", "HEAD")
+	require.NoError(t, an.Err)
+	an.Release()
+	cache, err := store.CacheDir()
+	require.NoError(t, err)
+	wts := filepath.Join(cache, "worktrees", repo.ID)
+	left := func() int {
+		entries, _ := os.ReadDir(wts)
+		return len(entries)
+	}
+	require.Equal(t, 1, left(), "the cached commit keeps its worktree")
+
+	require.NoError(t, a.RemoveRepo(repo.ID))
+
+	assert.Zero(t, left())
+	assert.Error(t, a.Analyse(repo.ID, "", "HEAD").Err, "the repo is gone")
+}
+
+func TestRefreshPRs_advancesACloneToItsRemote(t *testing.T) {
+	a := newApp(t)
+	gh(t, 7, "abc", "def")
+	origin := testrepo.New(t, testrepo.CalcBase, nil)
+	require.NoError(t, a.AddRepo("file://"+origin))
+	t.Cleanup(a.Wait)
+	var repo workspace.Repo
+	require.Eventually(t, func() bool {
+		repos, _ := a.Repos()
+		if len(repos) == 1 {
+			repo = repos[0]
+		}
+		return len(repos) == 1
+	}, time.Minute, 20*time.Millisecond)
+	clamp := func() bool {
+		an := a.Analyse(repo.ID, "", "")
+		defer an.Release()
+		require.NoError(t, an.Err)
+		return an.Snap.Decl("example.com/calc/calc.Clamp") != nil
+	}
+	require.False(t, clamp())
+	require.NoError(t, testrepo.Write(origin, testrepo.CalcHead))
+	require.NoError(t, testrepo.Git(origin, "add", "-A"))
+	require.NoError(t, testrepo.Git(origin, "commit", "-qm", "head"))
+
+	a.RefreshPRs(repo.ID)
+	a.Wait()
+
+	assert.True(t, clamp(), "the default view follows origin")
+}
+
+func TestClose_refusesLaterAnalyses(t *testing.T) {
+	a := newApp(t)
+	repo := add(t, a, testrepo.New(t, testrepo.CalcBase, nil))
+
+	require.NoError(t, a.Close(context.Background()))
+
+	assert.ErrorIs(t, a.Analyse(repo.ID, "", "HEAD").Err, analysis.ErrClosed)
+}
+
+func TestClose_removesTheWorktreesOfCachedSnapshots(t *testing.T) {
+	a := newApp(t)
+	repo := add(t, a, testrepo.New(t, testrepo.CalcBase, nil))
+	an := a.Analyse(repo.ID, "", "HEAD")
+	require.NoError(t, an.Err)
+	an.Release()
+	cache, err := store.CacheDir()
+	require.NoError(t, err)
+	wts := filepath.Join(cache, "worktrees", repo.ID)
+	require.DirExists(t, wts)
+
+	require.NoError(t, a.Close(context.Background()))
+
+	assert.NoDirExists(t, wts)
+}
+
+func TestNew_sweepsTheWorktreesAnEarlierRunLeft(t *testing.T) {
+	a := newApp(t)
+	repo := add(t, a, testrepo.New(t, testrepo.CalcBase, nil))
+	an := a.Analyse(repo.ID, "", "HEAD")
+	require.NoError(t, an.Err)
+	an.Release()
+	cache, err := store.CacheDir()
+	require.NoError(t, err)
+	wts := filepath.Join(cache, "worktrees", repo.ID)
+	require.DirExists(t, wts)
+
+	_, err = app.New(t.Context(), app.Config{Poll: time.Hour})
+	require.NoError(t, err)
+
+	entries, _ := os.ReadDir(wts)
+	assert.Empty(t, entries)
 }
 
 func TestBasket_survivesARestartAndRendersEachRepoByName(t *testing.T) {
@@ -148,4 +322,39 @@ func TestBasket_survivesARestartAndRendersEachRepoByName(t *testing.T) {
 
 	require.NoError(t, again.BasketRemove(first.ID))
 	assert.Len(t, again.Basket().Items, 1)
+}
+
+func TestAddRepo_expandsAHomeDirectory(t *testing.T) {
+	a := newApp(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, "src", "app")
+	require.NoError(t, os.MkdirAll(filepath.Dir(dir), 0o755))
+	repo := testrepo.New(t, testrepo.CalcBase, nil)
+	require.NoError(t, os.Rename(repo, dir))
+	t.Cleanup(a.Wait)
+
+	require.NoError(t, a.AddRepo("~/src/app"))
+
+	repos, err := a.Repos()
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, dir, repos[0].Path)
+}
+
+func TestAddRepo_aPathThatIsNotThereIsAnErrorNotAClone(t *testing.T) {
+	a := newApp(t)
+
+	err := a.AddRepo(filepath.Join(t.TempDir(), "nowhere"))
+
+	require.Error(t, err)
+	assert.Empty(t, a.Pending(), "a path is not cloned")
+}
+
+func TestPRList_hintForAFailureOfGHIsOneQuietLineWithoutItsMessage(t *testing.T) {
+	err := errors.New("gh pr list: exit status 1: none of the git remotes configured for this repository point to a known GitHub host")
+
+	hint := app.PRList{Err: err}.Hint()
+
+	assert.Equal(t, "Pull requests are not available for this repo.", hint)
 }

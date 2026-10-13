@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -80,16 +81,23 @@ func New(a *app.App, origin string) http.Handler {
 	)
 	sh := shell{app: a}
 	via.Mount(r, "/", workspacePage{app: a})
-	via.Mount(r, "/r/{repo}/", mapPage{shell: sh})
-	via.Mount(r, "/r/{repo}/deps", depsPage{shell: sh})
-	via.Mount(r, "/r/{repo}/review", reviewPage{shell: sh})
-	via.Mount(r, "/r/{repo}/review/{thread}", reviewPage{shell: sh})
-	via.Mount(r, "/r/{repo}/pr/{n}", reviewPage{shell: sh})
-	via.Mount(r, "/r/{repo}/pr/{n}/{thread}", reviewPage{shell: sh})
-	via.Mount(r, "/r/{repo}/prs", prsPage{shell: sh})
-	via.Mount(r, "/r/{repo}/health", diagnosePage{shell: sh})
-	via.Mount(r, "/r/{repo}/health/{lens}", diagnosePage{shell: sh})
-	via.Mount(r, "/r/{repo}/prognosis/{key}", diagnosePage{shell: sh})
+	// A page's state is in its path: a live page's stream and actions are
+	// addressed by the mount pattern alone, and see no query. A repo's pages
+	// are at /r/{repo}/ for its first root, and at /r/{repo}/in/{root}/ for
+	// another.
+	for _, at := range []string{"/r/{repo}", "/r/{repo}/in/{root}"} {
+		via.Mount(r, at+"/", mapPage{shell: sh})
+		via.Mount(r, at+"/map/{view}", mapPage{shell: sh})
+		via.Mount(r, at+"/deps", depsPage{shell: sh})
+		via.Mount(r, at+"/review", reviewPage{shell: sh})
+		via.Mount(r, at+"/review/{thread}", reviewPage{shell: sh})
+		via.Mount(r, at+"/pr/{n}", reviewPage{shell: sh})
+		via.Mount(r, at+"/pr/{n}/{thread}", reviewPage{shell: sh})
+		via.Mount(r, at+"/prs", prsPage{shell: sh})
+		via.Mount(r, at+"/health", diagnosePage{shell: sh})
+		via.Mount(r, at+"/health/{lens}", diagnosePage{shell: sh})
+		via.Mount(r, at+"/prognosis/{key}", diagnosePage{shell: sh})
+	}
 	via.Mount(r, "/basket", basketPage{app: a})
 	mux := http.NewServeMux()
 	// Browsers ask for a favicon on every page; answer instead of logging 404s.
@@ -97,7 +105,29 @@ func New(a *app.App, origin string) http.Handler {
 	mux.HandleFunc("GET /_codemesh/", serveAssets)
 	mux.HandleFunc("GET /basket.txt", serveBasketText(a))
 	mux.Handle("/", r)
-	return mux
+	return onlyHosts(mux, origin)
+}
+
+// onlyHosts refuses requests addressed to a name other than the origin's or a
+// loopback one. A page on any other name that resolves to this machine passes
+// the origin checks as same-origin, and could then drive every action.
+func onlyHosts(next http.Handler, origin string) http.Handler {
+	own := ""
+	if u, err := url.Parse(origin); err == nil {
+		own = strings.ToLower(u.Hostname())
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.ToLower(r.Host)
+		if h, _, err := net.SplitHostPort(name); err == nil {
+			name = h
+		}
+		name = strings.Trim(name, "[]")
+		if name != own && name != "localhost" && !net.ParseIP(name).IsLoopback() {
+			http.Error(w, "unknown host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // shell is the frame every repo page shares: the header, the stamp, and the
@@ -105,7 +135,7 @@ func New(a *app.App, origin string) http.Handler {
 type shell struct {
 	app   *app.App
 	repo  workspace.Repo
-	root  string // ?root=, "" for the repo's first root
+	root  string // the root in the path, "" for the repo's first
 	state *review.State
 	Stamp via.State[string]
 }
@@ -120,7 +150,7 @@ func (s *shell) start(ctx *via.Ctx) error {
 		return err
 	}
 	s.repo, s.state = r, st
-	s.root = ctx.Request().URL.Query().Get("root")
+	s.root = ctx.Request().PathValue("root")
 	s.Stamp.Set(s.stamp())
 	ctx.Listen(s.app.Events, s.onEvent)
 	return nil
@@ -135,16 +165,21 @@ func (s *shell) stamp() string {
 // analysis is the repo's current root at its default revision.
 func (s *shell) analysis() *app.Analysis { return s.app.Analyse(s.repo.ID, s.root, "") }
 
-// base is the URL prefix of the repo's pages.
-func (s *shell) base() string { return "/r/" + url.PathEscape(s.repo.ID) + "/" }
+// base is the URL prefix of the repo's pages in the root being viewed.
+func (s *shell) base() string { return repoBase(s.repo.ID, s.root) }
+
+// repoBase is the URL prefix of a repo's pages in root. The repo's top
+// directory, "." in a path, is the first root and needs no prefix.
+func repoBase(repo, root string) string {
+	b := "/r/" + url.PathEscape(repo) + "/"
+	if root == "" || root == "." {
+		return b
+	}
+	return b + "in/" + url.PathEscape(root) + "/"
+}
 
 // href is the repo page at path, in the root being viewed.
-func (s *shell) href(path string) string {
-	if s.root == "" {
-		return s.base() + path
-	}
-	return s.base() + path + "?root=" + url.QueryEscape(s.root)
-}
+func (s *shell) href(path string) string { return s.base() + path }
 
 func (s *shell) mapURL(lens, in, decl string) mapURL {
 	return mapURL{repo: s.repo.ID, root: s.root, lens: lens, in: in, decl: decl}
@@ -251,7 +286,7 @@ func (s *shell) rootSwitcher(a *app.Analysis) h.H {
 		if a != nil && r.Dir == a.Root {
 			cls = "seg on"
 		}
-		kids = append(kids, h.A(h.Class(cls), h.Href(s.base()+"?root="+url.QueryEscape(r.Dir)), h.Title(string(r.Lang)), h.Str(s.rootLabel(r.Dir, a))))
+		kids = append(kids, h.A(h.Class(cls), h.Href(repoBase(s.repo.ID, r.Dir)), h.Title(string(r.Lang)), h.Str(s.rootLabel(r.Dir, a))))
 	}
 	return h.Nav(append([]h.H{h.Class("segs roots"), h.Aria("label", "Project")}, kids...)...)
 }

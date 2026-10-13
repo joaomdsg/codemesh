@@ -17,6 +17,15 @@ func spansOf(d gitx.FileDiff) (newSpans, oldSpans []span) {
 	return newSpans, oldSpans
 }
 
+// changedLines is the lines a file's hunks delete and add.
+func changedLines(d gitx.FileDiff) (deleted, added int) {
+	for _, h := range d.Hunks {
+		deleted += h.OldLines
+		added += h.NewLines
+	}
+	return deleted, added
+}
+
 // touchedIn returns the IDs of f's decls that a hunk side touches.
 func touchedIn(f *code.File, spans []span) []string {
 	if f == nil {

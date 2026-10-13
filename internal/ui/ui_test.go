@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -43,6 +44,34 @@ type env struct {
 // base is the URL prefix of the first repo's pages.
 func (e env) base() string { return "/r/" + e.repo.ID }
 
+// mapView is the map page's path for a view, given as key, value pairs.
+func mapView(pairs ...string) string {
+	q := url.Values{}
+	for i := 0; i+1 < len(pairs); i += 2 {
+		q.Set(pairs[i], pairs[i+1])
+	}
+	return "/map/" + url.PathEscape(q.Encode())
+}
+
+func TestHost_aNameThatIsNotTheOriginsIsRefused(t *testing.T) {
+	h := ui.New(newApp(t), "http://localhost:7777")
+	get := func(host string) int {
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Host = host
+		req.Header.Set("Origin", "http://"+host)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	assert.Equal(t, http.StatusForbidden, get("evil.example:7777"), "a name pointed at this machine, as in DNS rebinding")
+	assert.Equal(t, http.StatusOK, get("localhost:7777"))
+	assert.Equal(t, http.StatusOK, get("LOCALHOST:7777"))
+	assert.Equal(t, http.StatusOK, get("127.0.0.1:7777"))
+	assert.Equal(t, http.StatusOK, get("[::1]:7777"))
+}
+
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // newApp is an app in its own XDG directories, with a gh that fails.
@@ -56,19 +85,16 @@ func newApp(t *testing.T) *app.App {
 	for _, v := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		t.Setenv(v, t.TempDir())
 	}
+	testrepo.QuietGo(t)
 	fake, err := filepath.Abs("../ghx/testdata/fake-gh")
 	require.NoError(t, err)
 	bin := t.TempDir()
 	require.NoError(t, os.Symlink(fake, filepath.Join(bin, "gh")))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("FAKE_GH_EXIT", "1")
-	// The engine finishes a load after its caller's context ends, so the app
-	// outlives the test body: cleanups wait for its jobs, then cancel.
-	ctx, cancel := context.WithCancel(context.WithoutCancel(t.Context()))
-	t.Cleanup(cancel)
-	a, err := app.New(ctx, app.Config{Poll: time.Hour, Log: quiet()})
+	a, err := app.New(t.Context(), app.Config{Poll: time.Hour, Log: quiet()})
 	require.NoError(t, err)
-	t.Cleanup(a.Wait)
+	t.Cleanup(func() { assert.NoError(t, a.Close(context.Background())) })
 	return a
 }
 
@@ -91,7 +117,7 @@ func serveDirs(t *testing.T, dirs ...string) env {
 	}
 	repos, err := a.Repos()
 	require.NoError(t, err)
-	e := env{app: vt.Serve(t, ui.New(a, "http://localhost:7777")), a: a, repos: repos}
+	e := env{app: vt.Serve(t, ui.New(a, "http://example.com")), a: a, repos: repos}
 	if len(repos) > 0 {
 		e.repo = repos[0]
 	}
@@ -142,7 +168,7 @@ func TestMap_showsEveryPackageWithItsFindings(t *testing.T) {
 func TestMap_opensADeclarationWithItsSourceAndCallers(t *testing.T) {
 	e := serve(t)
 
-	status, body := e.app.Get(e.base() + "/?in=calc/calc.go&d=" + url.QueryEscape("example.com/calc/calc.Scale"))
+	status, body := e.app.Get(e.base() + mapView("d", "example.com/calc/calc.Scale", "in", "calc/calc.go"))
 	require.Equal(t, http.StatusOK, status)
 	assert.Contains(t, body, "func Scale(x, k int) int {")
 	assert.Contains(t, body, "Called by")
@@ -190,21 +216,22 @@ func TestReview_markRecordsTheUnitAsReviewed(t *testing.T) {
 func TestLinks_carryScopeLensAndDeclarationToTheMap(t *testing.T) {
 	e := serve(t)
 	b := e.base()
-	scale := url.QueryEscape("example.com/calc/calc.Scale")
+	scale := "example.com/calc/calc.Scale"
 
 	_, home := e.app.Get(b + "/")
-	_, decl := e.app.Get(b + "/?lens=churn&in=calc/calc.go&d=" + scale)
+	_, decl := e.app.Get(b + mapView("d", scale, "in", "calc/calc.go", "lens", "churn"))
 	_, deps := e.app.Get(b + "/deps")
 	_, rev := e.app.Get(b + "/review")
 	_, thread := e.app.Get(b + "/review/" + url.PathEscape("example.com/calc/calc.Scale"))
 
-	assert.Contains(t, home, `href="`+b+`/?lens=smells"`, "crumb to the module")
-	assert.Contains(t, decl, `href="`+b+`/?lens=complexity&amp;in=calc%2Fcalc.go&amp;d=`+scale+`"`, "lens keeps the scope")
-	assert.Contains(t, decl, `href="`+b+`/?lens=churn&amp;in=calc%2Fcalc.go"`, "closing the panel keeps the lens")
-	assert.Contains(t, decl, `href="`+b+`/?lens=churn&amp;in=main.go&amp;d=example.com%2Fcalc.main"`, "caller link")
-	assert.Contains(t, deps, `href="`+b+`/?in=example.com%2Fcalc%2Fcalc"`, "matrix row")
-	assert.Contains(t, rev, `href="`+b+`/?in=calc%2Fcalc.go&amp;d=example.com%2Fcalc%2Fcalc.Clamp"`, "unit location")
-	assert.Contains(t, thread, `href="`+b+`/?in=main.go&amp;d=example.com%2Fcalc.main"`, "caller hop")
+	link := func(pairs ...string) string { return `href="` + html.EscapeString(b+mapView(pairs...)) + `"` }
+	assert.Contains(t, home, link("lens", "smells"), "crumb to the module")
+	assert.Contains(t, decl, link("d", scale, "in", "calc/calc.go", "lens", "complexity"), "lens keeps the scope")
+	assert.Contains(t, decl, link("in", "calc/calc.go", "lens", "churn"), "closing the panel keeps the lens")
+	assert.Contains(t, decl, link("d", "example.com/calc.main", "in", "main.go", "lens", "churn"), "caller link")
+	assert.Contains(t, deps, link("in", "example.com/calc/calc"), "matrix row")
+	assert.Contains(t, rev, link("d", "example.com/calc/calc.Clamp", "in", "calc/calc.go"), "unit location")
+	assert.Contains(t, thread, link("d", "example.com/calc.main", "in", "main.go"), "caller hop")
 }
 
 func TestFavicon_answersWithoutContent(t *testing.T) {
@@ -290,7 +317,7 @@ func TestMap_givesTheHottestDeclarationTheHottestColour(t *testing.T) {
 	}
 	e := serveDirs(t, dir)
 
-	_, body := e.app.Get(e.base() + "/?lens=hotspot")
+	_, body := e.app.Get(e.base() + mapView("lens", "hotspot"))
 	body = html.UnescapeString(body) // the feed attribute escapes its JSON
 	assert.Regexp(t, `\["d",[^\]]*"B","",5,"example.com/hot/p.B",1\]`, body, "the hottest declaration sets the scale")
 }
@@ -337,7 +364,7 @@ func manyParams(n int) string {
 func TestMap_offersSixtyMoreSmellsAtATime(t *testing.T) {
 	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(130)})
 
-	_, body := e.app.Get(e.base() + "/?in=example.com/calc/calc")
+	_, body := e.app.Get(e.base() + mapView("in", "example.com/calc/calc"))
 
 	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
 	assert.Contains(t, body, "Show 60 more smells (")
@@ -347,10 +374,10 @@ func TestMap_offersSixtyMoreSmellsAtATime(t *testing.T) {
 // to 64 KiB: with a handoff button on each row, that is about 70 rows.
 func TestMap_pagesASmellsListPastSixty(t *testing.T) {
 	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(70)})
-	conn := e.app.ConnectAt(e.base()+"/", "{}")
+	conn := e.app.ConnectAt(e.base()+mapView("in", "example.com/calc/calc"), "{}")
 	t.Cleanup(conn.Close)
 
-	_, body := e.app.Get(e.base() + "/?in=example.com/calc/calc")
+	_, body := e.app.Get(e.base() + mapView("in", "example.com/calc/calc"))
 	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
 	require.Contains(t, body, "Show 11 more smells (11 left)")
 
@@ -373,9 +400,9 @@ func TestMap_scopesToAPackageByItsDirectory(t *testing.T) {
 	e := serve(t)
 	b := e.base()
 
-	_, byPath := e.app.Get(b + "/?in=example.com/calc/calc")
-	_, byDir := e.app.Get(b + "/?in=calc")
-	assert.Contains(t, byDir, `<span class="sep">/</span><a href="`+b+`/?lens=smells&amp;in=example.com%2Fcalc%2Fcalc">calc</a>`)
+	_, byPath := e.app.Get(b + mapView("in", "example.com/calc/calc"))
+	_, byDir := e.app.Get(b + mapView("in", "calc"))
+	assert.Contains(t, byDir, `<span class="sep">/</span><a href="`+html.EscapeString(b+mapView("in", "example.com/calc/calc", "lens", "smells"))+`">calc</a>`)
 	smells := regexp.MustCompile(`Smells · \d+`)
 	assert.Equal(t, smells.FindString(byPath), smells.FindString(byDir))
 }
@@ -388,11 +415,11 @@ func TestFrame_offersANestedModuleAsItsOwnRoot(t *testing.T) {
 	b := e.base()
 
 	_, home := e.app.Get(b + "/")
-	_, tools := e.app.Get(b + "/?root=tools")
-	assert.Contains(t, home, `href="`+b+`/?root=tools"`, "the root switcher")
+	_, tools := e.app.Get(b + "/in/tools/")
+	assert.Contains(t, home, `href="`+b+`/in/tools/"`, "the root switcher")
 	assert.Contains(t, home, "Nested module tools/ is a separate root", "the root's map says where the nested module went")
 	assert.Contains(t, tools, "example.com/tools")
-	assert.Contains(t, tools, `href="`+b+`/deps?root=tools"`, "tabs keep the root")
+	assert.Contains(t, tools, `href="`+b+`/in/tools/deps"`, "tabs keep the root")
 }
 
 func TestMap_keepsADeclarationWithOnlyInfoSmellsLukewarm(t *testing.T) {

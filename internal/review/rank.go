@@ -3,6 +3,7 @@ package review
 import (
 	"cmp"
 	"fmt"
+	"slices"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/smell"
@@ -24,9 +25,14 @@ func (b *builder) rank(u *Unit, old, new *code.Decl) {
 	if u.Change == Removed {
 		add("", 4)
 	}
+	if new == nil {
+		// Who called it and is still there now has to stop.
+		u.Callers = slices.DeleteFunc(slices.Clone(old.Callers), func(id string) bool { return b.in.Head.Decl(id) == nil })
+		b.addCallerRisk(u.Callers, add)
+	}
 	if new != nil {
 		u.Callers = new.Callers
-		b.addCallerRisk(new, add)
+		b.addCallerRisk(new.Callers, add)
 		if n := b.gained[new.ID]; old != nil && n > 0 {
 			add(plural(n, "new reference"), 2*min(n, 5))
 		}
@@ -47,13 +53,13 @@ func (b *builder) addFuncRisk(old, new *code.Decl, add func(string, int)) {
 		return
 	}
 	add(complexityReason(old, new))
-	if _, tests := b.callers(new); !new.Test && tests == 0 {
+	if _, tests := b.callers(new.Callers); !new.Test && tests == 0 {
 		add("no direct test", 5)
 	}
 }
 
-func (b *builder) addCallerRisk(d *code.Decl, add func(string, int)) {
-	prod, tests := b.callers(d)
+func (b *builder) addCallerRisk(callers []string, add func(string, int)) {
+	prod, tests := b.callers(callers)
 	if prod+tests == 0 {
 		return
 	}
@@ -101,8 +107,8 @@ func complexityReason(old, new *code.Decl) (string, int) {
 
 // callers splits a decl's callers into production and test code. Only
 // production callers widen the blast radius.
-func (b *builder) callers(d *code.Decl) (prod, tests int) {
-	for _, id := range d.Callers {
+func (b *builder) callers(ids []string) (prod, tests int) {
+	for _, id := range ids {
 		if c := b.in.Head.Decl(id); c != nil && c.Test {
 			tests++
 		} else {

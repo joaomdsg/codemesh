@@ -52,8 +52,9 @@ func (b *Builder) File(p *Package, f File) *File {
 	return &f
 }
 
-// Decl adds a copy of d to f and returns it. An ID already taken gets
-// "#<Start>" appended, so IDs stay unique in the Snapshot.
+// Decl adds a copy of d to f and returns it. An ID already taken gets "#" and
+// its ordinal among the duplicates appended, so IDs stay unique in the Snapshot
+// and an edit that only moves a declaration does not rename it.
 func (b *Builder) Decl(f *File, d Decl) *Decl { return b.Attach(f, &d) }
 
 // Attach adds d itself to f, as Decl does a copy, for a loader that holds
@@ -64,7 +65,10 @@ func (b *Builder) Attach(f *File, d *Decl) *Decl {
 		d.Refs = map[string]int{}
 	}
 	if b.s.decls[d.ID] != nil {
-		d.ID += fmt.Sprintf("#%d", d.Start)
+		id := d.ID
+		for n := 2; b.s.decls[d.ID] != nil; n++ {
+			d.ID = fmt.Sprintf("%s#%d", id, n)
+		}
 	}
 	b.s.decls[d.ID] = d
 	f.Decls = append(f.Decls, d)

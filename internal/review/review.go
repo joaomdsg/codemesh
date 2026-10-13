@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -110,7 +111,7 @@ func Build(in Input) *Review {
 	if in.Graph == nil {
 		in.Graph = graphdiff.Between(in.Base, in.Head, in.BaseFindings, in.HeadFindings)
 	}
-	b := &builder{in: in, src: map[string][]string{}, gained: gained(in)}
+	b := &builder{in: in, src: map[string][]string{}, gained: gained(in), oldSpans: map[string][]span{}, newSpans: map[string][]span{}}
 	var touched orderedSet
 	rev := &Review{}
 	for _, d := range in.Diffs {
@@ -121,6 +122,7 @@ func Build(in Input) *Review {
 			continue
 		}
 		newSpans, oldSpans := spansOf(d)
+		b.newSpans[d.NewPath], b.oldSpans[d.OldPath] = newSpans, oldSpans
 		touched.add(touchedIn(hf, newSpans)...)
 		touched.add(touchedIn(bf, oldSpans)...)
 		if u := b.looseUnit(d, hf, bf, newSpans, oldSpans); u != nil {
@@ -143,6 +145,8 @@ type builder struct {
 	in     Input
 	src    map[string][]string // absolute path → lines
 	gained map[string]int      // head decl ID → production edges into it that base lacks
+	// The changed line ranges of each diffed file, by its path on that side.
+	oldSpans, newSpans map[string][]span
 }
 
 func gained(in Input) map[string]int {
@@ -188,6 +192,19 @@ func (b *builder) text(s *code.Snapshot, d *code.Decl) []string {
 	return l[d.Start-1 : d.End]
 }
 
+// declLines counts the lines of d that the hunks of its file touch, as git
+// counts a change.
+func declLines(spans map[string][]span, d *code.Decl) int {
+	if d == nil {
+		return 0
+	}
+	n := 0
+	for _, s := range spans[d.File] {
+		n += max(0, min(s.start+s.n-1, d.End)-max(s.start, d.Start)+1)
+	}
+	return n
+}
+
 func (b *builder) declUnit(old, new *code.Decl) *Unit {
 	cur := cmp.Or(new, old)
 	u := &Unit{ID: cur.ID, Name: cur.Name, Package: cur.Package, File: cur.File, Kind: cur.Kind, Exported: cur.Exported}
@@ -200,6 +217,7 @@ func (b *builder) declUnit(old, new *code.Decl) *Unit {
 		newStart = new.Start
 	}
 	u.setLines(diffLines(oldText, newText, oldStart, newStart))
+	u.Deleted, u.Added = declLines(b.oldSpans, old), declLines(b.newSpans, new)
 	u.Key = key(u.ID, cmp.Or(strings.Join(newText, "\n"), strings.Join(oldText, "\n")))
 
 	switch {
@@ -227,13 +245,14 @@ func (b *builder) fileUnit(d gitx.FileDiff, hf *code.File) *Unit {
 	u := &Unit{ID: p, Name: p, File: p}
 	u.Change, u.Reasons = fileChange(d)
 	oldText, newText := b.lines(b.in.Base, d.OldPath), b.lines(b.in.Head, d.NewPath)
+	u.Deleted, u.Added = changedLines(d)
 	switch {
 	case d.Binary:
 		u.Reasons = append(u.Reasons, "binary")
 	case len(oldText)*len(newText) > maxCells:
 		u.Reasons = append(u.Reasons, "too large to show")
 	default:
-		u.setLines(diffLines(oldText, newText, 1, 1))
+		u.Lines = diffLines(oldText, newText, 1, 1)
 	}
 	lane, why := fileLane(p, hf, oldText, newText)
 	u.Lane, u.Reasons = lane, append(u.Reasons, why...)
@@ -293,7 +312,8 @@ var laneRules = []struct {
 }
 
 // looseUnit gathers changed lines outside any declaration: imports and
-// free-floating comments. Blank lines alone do not make a unit.
+// free-floating comments, and in the languages that run statements at the top
+// of a file, those statements. Blank lines alone do not make a unit.
 func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpans []span) *Unit {
 	lines := append(b.looseLines(bf, b.in.Base, d.OldPath, oldSpans, '-'),
 		b.looseLines(hf, b.in.Head, d.NewPath, newSpans, '+')...)
@@ -307,6 +327,9 @@ func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpa
 	}
 	u := &Unit{ID: p + "#file", Name: path.Base(p) + " (file level)", Package: pkg, File: p, Change: Modified, Lane: Noise,
 		Reasons: []string{"imports and file-level lines"}}
+	if b.in.Head.Lang != code.Go && slices.ContainsFunc(lines, func(l Line) bool { return !importOrComment.MatchString(strings.TrimSpace(l.Text)) }) {
+		u.Lane, u.Reasons = Logic, []string{"top-level statements"}
+	}
 	u.setLines(lines)
 	var all []string
 	for _, l := range lines {
@@ -315,6 +338,10 @@ func (b *builder) looseUnit(d gitx.FileDiff, hf, bf *code.File, newSpans, oldSpa
 	u.Key = key(u.ID, strings.Join(all, "\n"))
 	return u
 }
+
+// importOrComment matches the file-level lines that run nothing: imports,
+// the closing lines and names of a wrapped import, and comments.
+var importOrComment = regexp.MustCompile(`^(import\b|from\b|use\b|using\b|mod\b|extern crate\b|export\s*[*{]|[})\]]|[\w$]+,?$|//|#|/\*|\*)`)
 
 func (b *builder) looseLines(f *code.File, s *code.Snapshot, rel string, spans []span, op byte) []Line {
 	if f == nil {

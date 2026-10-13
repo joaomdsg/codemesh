@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +65,7 @@ type App struct {
 	pending map[string]*Pending
 	stops   map[string]func() // ends the forwarding of a watched repo's updates
 	jobs    map[string]bool
+	removed map[string]bool // repos being removed: not to be opened again meanwhile
 
 	summaries sync.Mutex // one PR summary at a time: each loads two snapshots
 }
@@ -102,14 +104,16 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		pending: map[string]*Pending{},
 		stops:   map[string]func(){},
 		jobs:    map[string]bool{},
+		removed: map[string]bool{},
 	}
 	if a.gh == nil {
 		a.gh = ghx.CLI{}
 	}
+	worktrees := filepath.Join(cacheDir, "worktrees")
 	a.eng = analysis.New(analysis.Config{
-		Worktrees: filepath.Join(cacheDir, "worktrees"),
+		Worktrees: worktrees,
 		Repo:      a.git,
-		Load:      func(_ context.Context, dir string) (*code.Snapshot, error) { return lang.Load(dir) },
+		Load:      lang.LoadContext,
 		Log:       log,
 	})
 	a.watch = live.NewWatcher(ctx, a.eng, cmp.Or(cfg.Poll, time.Second), log)
@@ -118,9 +122,22 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 	for _, r := range repos {
+		a.sweepWorktrees(filepath.Join(worktrees, r.ID), r)
 		a.startWatching(r)
 	}
 	return a, nil
+}
+
+// sweepWorktrees removes the worktrees a run that was killed left in dir.
+func (a *App) sweepWorktrees(dir string, r workspace.Repo) {
+	git, err := gitx.Open(r.Dir())
+	if err == nil {
+		err = git.GCWorktrees(dir, 0, nil)
+	}
+	if err != nil {
+		a.log.Warn("sweeping worktrees", "repo", r.ID, "err", err)
+	}
+	os.Remove(dir)
 }
 
 func (a *App) publish(repo string) { a.Events.Publish(Event{Repo: repo}) }
@@ -169,11 +186,16 @@ func (a *App) Dismiss(arg string) {
 	a.publish("")
 }
 
-// AddRepo registers a local directory, or a git URL. A directory is
-// registered before AddRepo returns. Anything else is cloned in the
-// background and listed by Pending until then; a failed clone stays there with
-// its error.
+// AddRepo registers a local directory, or a git URL. A directory, with a
+// leading ~ taken as the home directory, is registered before AddRepo returns.
+// A URL is cloned in the background and listed by Pending until then; a failed
+// clone stays there with its error. Anything else is an error.
 func (a *App) AddRepo(arg string) error {
+	if rest, ok := strings.CutPrefix(arg, "~/"); ok || arg == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			arg = filepath.Join(home, rest)
+		}
+	}
 	if fi, err := os.Stat(arg); err == nil && fi.IsDir() {
 		r, err := a.ws.Add(arg)
 		if err != nil {
@@ -182,6 +204,9 @@ func (a *App) AddRepo(arg string) error {
 		a.startWatching(r)
 		a.publish("")
 		return nil
+	}
+	if !workspace.IsURL(arg) {
+		return fmt.Errorf("%s is not a directory", arg)
 	}
 	a.mu.Lock()
 	if p := a.pending[arg]; p != nil && p.Err == nil {
@@ -207,14 +232,23 @@ func (a *App) AddRepo(arg string) error {
 	return nil
 }
 
-// RemoveRepo forgets a repo and deletes its clone, if it has one. Notes and
-// review marks stay on disk.
+// RemoveRepo forgets a repo and deletes its clone, if it has one. Loads in
+// flight for it are cancelled and waited for first, and its snapshots and
+// worktrees dropped. Notes and review marks stay on disk.
 func (a *App) RemoveRepo(id string) error {
+	a.mu.Lock()
+	a.removed[id] = true
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.removed, id)
+		a.mu.Unlock()
+	}()
 	a.stopWatching(id)
+	a.eng.Forget(id)
 	a.mu.Lock()
 	delete(a.repos, id)
 	a.mu.Unlock()
-	a.eng.Invalidate(id, analysis.Worktree)
 	err := a.ws.Remove(id)
 	a.publish("")
 	return err
@@ -318,17 +352,38 @@ func (a *App) background(name, repo string, fn func()) {
 	}()
 }
 
-// Wait returns once no background analysis is running. Callers that delete
-// the directories the app works in, such as tests, wait first.
+// Wait returns once no background analysis or load is running. Callers that
+// delete the directories the app works in, such as tests, wait first.
 func (a *App) Wait() {
 	for {
 		a.mu.Lock()
 		n := len(a.jobs)
 		a.mu.Unlock()
-		if n == 0 {
+		if n == 0 && !a.eng.Busy() {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// Close ends the app's analysis: it cancels the loads in flight, refuses new
+// ones, and waits for them and for the background jobs, or for ctx to end.
+func (a *App) Close(ctx context.Context) error {
+	if err := a.eng.Close(ctx); err != nil {
+		return err
+	}
+	for {
+		a.mu.Lock()
+		n := len(a.jobs)
+		a.mu.Unlock()
+		if n == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 }
 
@@ -361,8 +416,11 @@ type repoState struct {
 // repo returns the state of a registered repo, opening it on first use.
 func (a *App) repo(id string) (*repoState, error) {
 	a.mu.Lock()
-	rs := a.repos[id]
+	rs, gone := a.repos[id], a.removed[id]
 	a.mu.Unlock()
+	if gone {
+		return nil, fmt.Errorf("repo %q is being removed", id)
+	}
 	if rs != nil {
 		return rs, nil
 	}

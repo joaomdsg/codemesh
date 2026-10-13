@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"sync"
+	"time"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/gitx"
@@ -13,6 +14,7 @@ type entry struct {
 	snap     *code.Snapshot
 	findings []smell.Finding
 	repo     *gitx.Repo
+	took     time.Duration
 	wt       string // worktree the snapshot reads from; "" for WORKTREE
 	refs     int
 	used     uint64

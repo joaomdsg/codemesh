@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/url"
 	"os"
@@ -94,14 +95,18 @@ func (w *Workspace) load() (registry, error) {
 	return reg, nil
 }
 
-func (w *Workspace) find(id string) (Repo, bool, error) {
+// findRepo finds the entry for r: one with its ID, or one whose clone sits
+// where r's would, as another spelling of one URL does.
+func (w *Workspace) findRepo(r Repo) (Repo, bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	reg, err := w.load()
 	if err != nil {
 		return Repo{}, false, err
 	}
-	i := slices.IndexFunc(reg.Repos, func(r Repo) bool { return r.ID == id })
+	i := slices.IndexFunc(reg.Repos, func(have Repo) bool {
+		return have.ID == r.ID || r.ClonePath != "" && have.ClonePath == r.ClonePath
+	})
 	if i < 0 {
 		return Repo{}, false, nil
 	}
@@ -117,6 +122,9 @@ func (w *Workspace) Add(arg string) (Repo, error) {
 
 	var r Repo
 	if u, ok := parseURL(arg); ok {
+		if slices.Contains([]string{u.host, u.owner, u.name}, "..") {
+			return Repo{}, fmt.Errorf("not a usable git URL: %s", arg)
+		}
 		r = Repo{ID: id(u.name, u.url), Name: u.name, URL: u.url, ClonePath: filepath.Join(w.clones, u.host, u.owner, u.name)}
 	} else {
 		abs, err := filepath.Abs(arg)
@@ -130,7 +138,7 @@ func (w *Workspace) Add(arg string) (Repo, error) {
 		name := filepath.Base(repo.Dir)
 		r = Repo{ID: id(name, repo.Dir), Name: name, Path: repo.Dir}
 	}
-	if have, ok, err := w.find(r.ID); err != nil || ok {
+	if have, ok, err := w.findRepo(r); err != nil || ok {
 		return have, err
 	}
 	if r.URL != "" {
@@ -173,10 +181,13 @@ func (w *Workspace) Remove(id string) error {
 	if err := store.WriteJSON(w.file, reg); err != nil {
 		return err
 	}
-	if gone.ClonePath != "" {
-		return os.RemoveAll(gone.ClonePath)
+	if gone.ClonePath == "" {
+		return nil
 	}
-	return nil
+	if rel, err := filepath.Rel(w.clones, gone.ClonePath); err != nil || rel == "." || !filepath.IsLocal(rel) {
+		return fmt.Errorf("clone path %s is outside %s: left alone", gone.ClonePath, w.clones)
+	}
+	return os.RemoveAll(gone.ClonePath)
 }
 
 // id is the slug of name plus six hex characters of a hash of key, so two
@@ -193,6 +204,12 @@ func id(name, key string) string {
 type remote struct{ url, host, owner, name string }
 
 var scp = regexp.MustCompile(`^[^@/\s]+@([^:/\s]+):(.+)$`)
+
+// IsURL reports whether arg is a git URL rather than a local path.
+func IsURL(arg string) bool {
+	_, ok := parseURL(arg)
+	return ok
+}
 
 // parseURL reports whether arg is a git URL: scheme://..., or the scp form
 // user@host:owner/name. Everything else is a local path.

@@ -71,15 +71,19 @@ func (t *table) nesting(n node, depth int) int {
 	return deepest
 }
 
-// shape hashes the kinds of n's named nodes, blind to comments, layout and
-// names. A subtree rooted at a node in skip is left out.
+// shape hashes n's syntax tree: the kinds of its named nodes and the text of
+// its tokens, so a changed operator, name or literal changes it. It is blind to
+// comments and layout. A subtree rooted at a node in skip is left out.
 func shape(n node, skip map[[2]int]bool) string {
 	h := fnv.New64a()
 	each(n, func(x node) bool {
 		if isComment(x) || skip[[2]int{x.start(), x.end()}] {
 			return false
 		}
-		if x.named() {
+		switch {
+		case len(x.children()) == 0:
+			h.Write([]byte(x.kind() + "=" + x.text() + ";"))
+		case x.named():
 			h.Write([]byte(x.kind() + ";"))
 		}
 		return true
@@ -101,12 +105,14 @@ type ref struct {
 }
 
 // refs lists the identifiers under n, in order, leaving out the subtrees
-// rooted at nodes in skip: other decls that sit inside n.
+// rooted at nodes in skip: other decls that sit inside n. The token that names
+// n is not a reference, or a method would call the others of its name.
 func (t *table) refs(n node, skip map[[2]int]bool) []ref {
 	var out []ref
+	own := n.field("name")
 	var walk func(x, parent node, inType bool)
 	walk = func(x, parent node, inType bool) {
-		if isComment(x) || (parent.ok() && skip[[2]int{x.start(), x.end()}]) {
+		if isComment(x) || same(own, x) || (parent.ok() && skip[[2]int{x.start(), x.end()}]) {
 			return
 		}
 		k := x.kind()

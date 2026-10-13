@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,23 @@ func TestListParsesPRs(t *testing.T) {
 	}
 	if got[1].Number != 9 || got[1].Author != "bo" || got[1].Draft {
 		t.Errorf("PR 9 = %+v", got[1])
+	}
+}
+
+// gh lists 30 pull requests unless told otherwise; the rest would be missing.
+func TestListAsksForMoreThanGHsDefaultLimit(t *testing.T) {
+	fakeGH(t)
+	args := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_GH_ARGS", args)
+	if _, err := (ghx.CLI{}).List(context.Background(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "--limit 1000") {
+		t.Errorf("gh was run as %q, want --limit 1000", got)
 	}
 }
 

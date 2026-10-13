@@ -11,7 +11,7 @@ import (
 // Snapshot is one module as analysed at one point in time.
 type Snapshot struct {
 	Lang     Lang
-	Module   string // module path; the package name for Julia
+	Module   string // module path, or the project name
 	Dir      string // absolute module root
 	Packages []*Package
 	// Nested are the directories, relative to Dir, of modules inside this
@@ -33,7 +33,7 @@ type Package struct {
 	Errors  []string // load, parse and type errors
 }
 
-// File is one Go source file.
+// File is one source file.
 type File struct {
 	Path      string // slash-separated, relative to the module root
 	Package   string // import path of the owning Package
@@ -103,7 +103,7 @@ type Decl struct {
 	// only calls, unless the receiver implements that field's interface
 	// type; "" otherwise. Go only.
 	Delegates string
-	// Deprecated is set when the doc comment says "Deprecated:". Go only.
+	// Deprecated is set when the doc comment says "Deprecated:".
 	Deprecated bool
 	// Calls counts the production call sites of a func; Escapes is set when
 	// it is also used as a value, whose calls nobody can see. Go only.

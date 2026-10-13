@@ -3,6 +3,7 @@ package analysis_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -187,6 +188,41 @@ func TestGet_worktreeKeyReloadsAfterInvalidate(t *testing.T) {
 	assert.DirExists(t, f.dir)
 }
 
+func TestGet_invalidateDuringALoadDiscardsItsSnapshot(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{}, 2)
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	f := newFixture(t, analysis.Config{Load: func(_ context.Context, dir string) (*code.Snapshot, error) {
+		n := calls.Add(1)
+		started <- struct{}{}
+		if n == 1 {
+			<-proceed
+		}
+		return code.NewBuilder(code.Go, fmt.Sprintf("v%d", n), dir).Finish(), nil
+	}})
+	k := f.key(analysis.Worktree)
+	first := make(chan *analysis.Result)
+	go func() { first <- f.eng.Get(context.Background(), k) }()
+	<-started
+
+	f.eng.Invalidate("calc", analysis.Worktree)
+	second := make(chan *analysis.Result)
+	go func() { second <- f.eng.Get(context.Background(), k) }()
+	close(proceed)
+
+	for _, ch := range []chan *analysis.Result{first, second} {
+		r := <-ch
+		require.NoError(t, r.Err)
+		assert.Equal(t, "v2", r.Snap.Module, "a load that began before the invalidate is not the current tree")
+		r.Release()
+	}
+	r := f.eng.Get(context.Background(), k)
+	defer r.Release()
+	assert.Equal(t, "v2", r.Snap.Module)
+	assert.EqualValues(t, 2, calls.Load())
+}
+
 func TestGet_invalidateLeavesShaEntriesAlone(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, analysis.Config{})
@@ -265,6 +301,29 @@ func TestGet_cancelledCallerStopsWaitingButTheLoadFinishes(t *testing.T) {
 	assert.EqualValues(t, 1, f.loads.Load(), "the abandoned load is reused")
 }
 
+func TestBusy_isTrueWhileALoadRunsEvenWithNoCallerWaiting(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	proceed := make(chan struct{})
+	f := newFixture(t, analysis.Config{Load: func(_ context.Context, dir string) (*code.Snapshot, error) {
+		close(started)
+		<-proceed
+		return code.NewBuilder(code.Go, "m", dir).Finish(), nil
+	}})
+	require.False(t, f.eng.Busy())
+	ctx, cancel := context.WithCancel(context.Background())
+	got := make(chan *analysis.Result)
+	go func() { got <- f.eng.Get(ctx, f.key(analysis.Worktree)) }()
+	<-started
+	cancel()
+	<-got
+
+	assert.True(t, f.eng.Busy(), "the caller left; the load did not")
+
+	close(proceed)
+	require.Eventually(t, func() bool { return !f.eng.Busy() }, 5*time.Second, 5*time.Millisecond)
+}
+
 func TestGet_setsChurnFromTheRevsOwnHistory(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, analysis.Config{Load: func(_ context.Context, dir string) (*code.Snapshot, error) {
@@ -317,6 +376,35 @@ func TestCompare_worktreeHeadDiffsTheWorkingTree(t *testing.T) {
 	assert.Equal(t, "calc/extra.go", c.Files[0].NewPath, "untracked files count")
 }
 
+func TestCompare_aRootThatOneSideLacksReadsAsEmptyThere(t *testing.T) {
+	t.Parallel()
+	head := map[string]string{
+		"extra/go.mod": "module example.com/extra\n\ngo 1.27\n",
+		"extra/e.go":   "package extra\n\nfunc E() int { return 1 }\n",
+	}
+	dir := testrepo.New(t, testrepo.CalcBase, head)
+	require.NoError(t, testrepo.Git(dir, "add", "-A"))
+	require.NoError(t, testrepo.Git(dir, "commit", "-qm", "head"))
+	repo, err := gitx.Open(dir)
+	require.NoError(t, err)
+	eng := analysis.New(analysis.Config{
+		Worktrees: t.TempDir(),
+		Repo:      func(string) (*gitx.Repo, error) { return repo, nil },
+		Load:      lang.LoadContext,
+	})
+
+	added, err := eng.Compare(context.Background(), "calc", "extra", "HEAD~1", "HEAD")
+	require.NoError(t, err)
+	defer added.Release()
+	require.Len(t, added.Diff.Added, 1, "the new project is all additions")
+	assert.Equal(t, "E", added.Diff.Added[0].Name)
+
+	removed, err := eng.Compare(context.Background(), "calc", "extra", "HEAD", "HEAD~1")
+	require.NoError(t, err)
+	defer removed.Release()
+	require.Len(t, removed.Diff.Removed, 1)
+}
+
 func TestCompare_failureReleasesTheOtherSide(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, analysis.Config{Cap: 1})
@@ -329,3 +417,113 @@ func TestCompare_failureReleasesTheOtherSide(t *testing.T) {
 }
 
 func realLoad(_ context.Context, dir string) (*code.Snapshot, error) { return lang.Load(dir) }
+
+// blocking is a Load that signals when it starts and ends when its ctx does.
+func blocking(started chan<- struct{}) func(context.Context, string) (*code.Snapshot, error) {
+	return func(ctx context.Context, _ string) (*code.Snapshot, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+}
+
+func TestClose_cancelsInFlightLoadsAndWaitsForThem(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	f := newFixture(t, analysis.Config{Load: blocking(started)})
+	got := make(chan *analysis.Result)
+	go func() { got <- f.eng.Get(context.Background(), f.key(f.base)) }()
+	<-started
+
+	require.NoError(t, f.eng.Close(context.Background()))
+
+	r := <-got
+	assert.ErrorIs(t, r.Err, context.Canceled)
+	assert.NoDirExists(t, filepath.Join(f.worktrees, "calc", f.base), "the load's worktree is gone once Close returns")
+}
+
+func TestClose_dropsCachedWorktrees(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, analysis.Config{})
+	f.eng.Get(context.Background(), f.key(f.base)).Release()
+	held := f.eng.Get(context.Background(), f.key(f.head))
+	require.NoError(t, held.Err)
+
+	require.NoError(t, f.eng.Close(context.Background()))
+
+	assert.NoDirExists(t, filepath.Join(f.worktrees, "calc", f.base), "an unheld entry goes at once")
+	assert.DirExists(t, held.Snap.Dir, "a held one stays until released")
+	held.Release()
+	assert.NoDirExists(t, filepath.Join(f.worktrees, "calc"), "and its repo dir goes with the last worktree")
+}
+
+func TestClose_refusesLaterLoads(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, analysis.Config{})
+	require.NoError(t, f.eng.Close(context.Background()))
+
+	r := f.eng.Get(context.Background(), f.key(f.base))
+
+	assert.ErrorIs(t, r.Err, analysis.ErrClosed)
+	assert.Zero(t, f.loads.Load())
+}
+
+func TestClose_givesUpWhenItsContextEnds(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	f := newFixture(t, analysis.Config{Load: func(_ context.Context, dir string) (*code.Snapshot, error) {
+		started <- struct{}{}
+		<-release
+		return code.NewBuilder(code.Go, "calc", dir).Finish(), nil
+	}})
+	go func() { f.eng.Get(context.Background(), f.key(f.base)).Release() }()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	assert.ErrorIs(t, f.eng.Close(ctx), context.DeadlineExceeded)
+	close(release)
+	require.NoError(t, f.eng.Close(context.Background()))
+}
+
+func TestForget_cancelsTheReposLoadsAndDropsItsEntries(t *testing.T) {
+	t.Parallel()
+	started := make(chan struct{})
+	var block atomic.Bool
+	f := newFixture(t, analysis.Config{Load: func(ctx context.Context, dir string) (*code.Snapshot, error) {
+		if block.Load() {
+			return blocking(started)(ctx, dir)
+		}
+		return code.NewBuilder(code.Go, "calc", dir).Finish(), nil
+	}})
+	f.eng.Get(context.Background(), f.key(f.base)).Release()
+	block.Store(true)
+	got := make(chan *analysis.Result)
+	go func() { got <- f.eng.Get(context.Background(), f.key(f.head)) }()
+	<-started
+
+	f.eng.Forget("calc")
+
+	assert.ErrorIs(t, (<-got).Err, context.Canceled)
+	assert.NoDirExists(t, filepath.Join(f.worktrees, "calc", f.head))
+	assert.NoDirExists(t, filepath.Join(f.worktrees, "calc", f.base), "a cached sha entry goes too")
+	assert.NoDirExists(t, filepath.Join(f.worktrees, "calc"), "so does the repo's directory")
+	block.Store(false)
+	r := f.eng.Get(context.Background(), f.key(f.head))
+	defer r.Release()
+	assert.NoError(t, r.Err, "the repo can be used again")
+}
+
+func TestGet_setsHowLongTheLoadTook(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t, analysis.Config{})
+
+	r := f.eng.Get(context.Background(), f.key(f.base))
+	defer r.Release()
+	again := f.eng.Get(context.Background(), f.key(f.base))
+	defer again.Release()
+
+	assert.GreaterOrEqual(t, r.Took, 20*time.Millisecond, "the fake load sleeps that long")
+	assert.Equal(t, r.Took, again.Took, "a cached result reports the load that made it")
+}

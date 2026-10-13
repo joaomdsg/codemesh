@@ -5,9 +5,14 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"maps"
+	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,6 +22,9 @@ import (
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/smell"
 )
+
+// ErrClosed is the error of a load asked of a closed Engine.
+var ErrClosed = errors.New("analysis engine closed")
 
 // Worktree is the Rev of the working tree, which changes under the engine.
 // Any other Rev is a ref the engine resolves to a commit sha.
@@ -56,7 +64,7 @@ type Result struct {
 	Key      Key // Rev is the resolved sha, or Worktree
 	Snap     *code.Snapshot
 	Findings []smell.Finding
-	Took     time.Duration
+	Took     time.Duration // how long the load took, for a cached result the load that made it
 	Err      error
 
 	release func()
@@ -81,6 +89,22 @@ type Engine struct {
 	// each worktree, as several roots of one commit share it.
 	wtMu   sync.Mutex
 	wtRefs map[string]int
+
+	// mu guards closed and flights: the loads in progress, which Close and
+	// Forget cancel and wait for. It also guards epochs, which count the
+	// invalidations of a repo's rev, so a load that began before one is not cached.
+	mu      sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	closed  bool
+	flights map[*flight]struct{}
+	epochs  map[string]int
+}
+
+type flight struct {
+	repo   string
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // New returns an Engine.
@@ -94,17 +118,90 @@ func New(cfg Config) *Engine {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Engine{
-		cfg:    cfg,
-		cache:  newCache(cfg.Cap),
-		pool:   make(pool, cfg.Workers),
-		wtRefs: map[string]int{},
+		cfg:     cfg,
+		cache:   newCache(cfg.Cap),
+		pool:    make(pool, cfg.Workers),
+		wtRefs:  map[string]int{},
+		ctx:     ctx,
+		cancel:  cancel,
+		flights: map[*flight]struct{}{},
+		epochs:  map[string]int{},
 	}
+}
+
+// begin registers a load of repo. Its ctx ends with Close or Forget.
+func (e *Engine) begin(repo string) (*flight, context.Context, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return nil, nil, ErrClosed
+	}
+	ctx, cancel := context.WithCancel(e.ctx)
+	f := &flight{repo: repo, cancel: cancel, done: make(chan struct{})}
+	e.flights[f] = struct{}{}
+	return f, ctx, nil
+}
+
+func (e *Engine) end(f *flight) {
+	f.cancel()
+	e.mu.Lock()
+	delete(e.flights, f)
+	e.mu.Unlock()
+	close(f.done)
+}
+
+// Close cancels every load in progress, waits for them to end or for ctx to,
+// refuses later loads, and drops the cache, which removes the worktrees nobody
+// holds. Results still held stay valid until released.
+func (e *Engine) Close(ctx context.Context) error {
+	e.mu.Lock()
+	e.closed = true
+	e.cancel()
+	fs := slices.Collect(maps.Keys(e.flights))
+	e.mu.Unlock()
+	for _, f := range fs {
+		select {
+		case <-f.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	e.finish(e.cache.drop(func(Key) bool { return true }))
+	return nil
+}
+
+// Busy reports whether a load is in progress. A load outlives the Get that
+// asked for it when that Get's context ends.
+func (e *Engine) Busy() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return len(e.flights) > 0
+}
+
+// Forget cancels the loads in progress for repo, waits for them, and drops
+// everything cached for it, so its directories can be removed.
+func (e *Engine) Forget(repo string) {
+	e.mu.Lock()
+	var fs []*flight
+	for f := range e.flights {
+		if f.repo == repo {
+			f.cancel()
+			fs = append(fs, f)
+		}
+	}
+	e.mu.Unlock()
+	for _, f := range fs {
+		<-f.done
+	}
+	e.finish(e.cache.drop(func(k Key) bool { return k.Repo == repo }))
 }
 
 // Get returns the snapshot for key, loading it unless it is cached or being
 // loaded. Callers must Release the result. A cancelled ctx stops the wait,
-// not the load, which other callers or a later Get can use.
+// not the load, which other callers or a later Get can use; Close and Forget
+// stop it.
 func (e *Engine) Get(ctx context.Context, key Key) *Result {
 	repo, err := e.cfg.Repo(key.Repo)
 	if err != nil {
@@ -119,11 +216,12 @@ func (e *Engine) Get(ctx context.Context, key Key) *Result {
 		if ent := e.cache.acquire(key); ent != nil {
 			return e.result(ent)
 		}
-		ch := e.group.DoChan(key.Repo+"\x00"+key.Rev+"\x00"+key.Root, func() (any, error) {
+		epoch := e.epoch(key)
+		ch := e.group.DoChan(key.Repo+"\x00"+key.Rev+"\x00"+key.Root+"\x00"+strconv.Itoa(epoch), func() (any, error) {
 			if e.cache.has(key) {
 				return nil, nil
 			}
-			return nil, e.load(repo, key)
+			return nil, e.load(repo, key, epoch)
 		})
 		select {
 		case <-ctx.Done():
@@ -137,22 +235,37 @@ func (e *Engine) Get(ctx context.Context, key Key) *Result {
 }
 
 // Invalidate drops the cached snapshot of rev in repo, for a Worktree whose
-// files changed. Holders keep their result; the next Get loads afresh.
+// files changed. Holders keep their result; the next Get loads afresh, even if
+// a load of the old files is under way.
 func (e *Engine) Invalidate(repo, rev string) {
+	e.mu.Lock()
+	e.epochs[repo+"\x00"+rev]++
+	e.mu.Unlock()
 	e.finish(e.cache.drop(func(k Key) bool { return k.Repo == repo && k.Rev == rev }))
+}
+
+func (e *Engine) epoch(key Key) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.epochs[key.Repo+"\x00"+key.Rev]
 }
 
 func (e *Engine) result(ent *entry) *Result {
 	var once sync.Once
 	return &Result{
-		Key: ent.key, Snap: ent.snap, Findings: ent.findings,
+		Key: ent.key, Snap: ent.snap, Findings: ent.findings, Took: ent.took,
 		release: func() { once.Do(func() { e.finish(e.cache.release(ent)) }) },
 	}
 }
 
-func (e *Engine) load(repo *gitx.Repo, key Key) (err error) {
+func (e *Engine) load(repo *gitx.Repo, key Key, epoch int) error {
+	fl, ctx, err := e.begin(key.Repo)
+	if err != nil {
+		return err
+	}
+	defer e.end(fl)
 	ent := &entry{key: key, repo: repo}
-	e.pool.run(func() {
+	if perr := e.pool.run(ctx, func() {
 		start := time.Now()
 		checkout := repo.Dir
 		if key.Rev != Worktree {
@@ -161,8 +274,6 @@ func (e *Engine) load(repo *gitx.Repo, key Key) (err error) {
 			}
 			ent.wt = checkout
 		}
-		// The load must not die with the caller that started it.
-		ctx := context.Background()
 		if ent.snap, err = e.cfg.Load(ctx, filepath.Join(checkout, key.Root)); err != nil {
 			e.dropWorktree(ent)
 			return
@@ -177,13 +288,30 @@ func (e *Engine) load(repo *gitx.Repo, key Key) (err error) {
 			applyChurn(ent.snap, checkout, churn)
 		}
 		ent.findings = smell.Find(ent.snap)
-		e.cfg.Log.Debug("analysed", "repo", key.Repo, "rev", key.Rev, "root", key.Root, "took", time.Since(start).Round(time.Millisecond))
+		ent.took = time.Since(start)
+		e.cfg.Log.Debug("analysed", "repo", key.Repo, "rev", key.Rev, "root", key.Root, "took", ent.took.Round(time.Millisecond))
 		err = nil
-	})
+	}); perr != nil {
+		return perr
+	}
 	if err != nil {
 		return err
 	}
-	e.finish(e.cache.add(ent))
+	if err := ctx.Err(); err != nil {
+		e.dropWorktree(ent)
+		return err
+	}
+	// Under mu, so an Invalidate lands either before this check, which
+	// discards the snapshot, or after the add, which drops it.
+	e.mu.Lock()
+	if e.epochs[key.Repo+"\x00"+key.Rev] != epoch {
+		e.mu.Unlock()
+		e.dropWorktree(ent)
+		return nil
+	}
+	gone := e.cache.add(ent)
+	e.mu.Unlock()
+	e.finish(gone)
 	return nil
 }
 
@@ -218,6 +346,8 @@ func (e *Engine) dropWorktree(ent *entry) {
 	if err := ent.repo.RemoveWorktree(ent.wt); err != nil {
 		e.cfg.Log.Warn("remove worktree", "dir", ent.wt, "err", err)
 	}
+	// Fails while other worktrees of the repo remain, which is fine.
+	os.Remove(filepath.Dir(ent.wt))
 }
 
 // applyChurn copies per-path commit counts onto the snapshot's files. Churn

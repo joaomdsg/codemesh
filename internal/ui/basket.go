@@ -153,9 +153,14 @@ func moveBind(edge bool, fn func(*via.Ctx, string), id string) h.H {
 
 // copyPrompt copies the prompt, or selects it for the user to copy where the
 // clipboard is off limits (a page not served from localhost, an old browser).
-var copyPrompt = expr.Raw(`const t = document.getElementById('prompt'); ` +
+//
+// The goal field saves on blur, which the click on Copy causes, so the prompt
+// may not hold it yet: Copy waits, for up to two seconds, for the preview to
+// be built from the field's text.
+var copyPrompt = expr.Raw(`const t = document.getElementById('prompt'), g = document.getElementById('goal'); ` +
 	`const done = () => { el.textContent = 'Copied'; setTimeout(() => { el.textContent = 'Copy' }, 1500) }; ` +
-	`(navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).then(done, () => { t.select(); document.execCommand('copy') && done() })`)
+	`const saved = async () => { for (let i = 0; i < 20 && t.dataset.goal !== g.value.trim(); i++) await new Promise((r) => setTimeout(r, 100)) }; ` +
+	`saved().then(() => navigator.clipboard ? navigator.clipboard.writeText(t.value) : Promise.reject()).then(done, () => { t.select(); document.execCommand('copy') && done() })`)
 
 func (p *basketPage) prompt() h.H {
 	return h.Aside(h.Class("bk-prompt"),
@@ -169,7 +174,7 @@ func (p *basketPage) prompt() h.H {
 			h.Button(h.Class("btn"), h.Type("button"), h.Aria("live", "polite"), on.ClickCS(copyPrompt), h.Str("Copy")),
 			h.A(h.Class("hint"), h.Href("/basket.txt"), h.Str("as text")),
 		),
-		h.Textarea(h.ID("prompt"), h.Class("prompt"), h.ReadOnly(true), h.Aria("label", "Prompt"), h.Rows(28), h.Str(p.app.BasketText())),
+		h.Textarea(h.ID("prompt"), h.Class("prompt"), h.Data("goal", strings.TrimSpace(p.app.Basket().Intro)), h.ReadOnly(true), h.Aria("label", "Prompt"), h.Rows(28), h.Str(p.app.BasketText())),
 	)
 }
 

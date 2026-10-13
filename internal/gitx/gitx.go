@@ -3,6 +3,7 @@ package gitx
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -56,11 +57,33 @@ var elsewhere = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_IMPLICIT_WORK_TREE", "
 	"GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_GRAFT_FILE", "GIT_SHALLOW_FILE", "GIT_PREFIX"}
 
 func run(dir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(env(), "LC_ALL=C")
+	return runContext(context.Background(), dir, args...)
+}
+
+// networkTimeout is how long a command that talks to a remote may take. A
+// stalled server would otherwise hold its caller, and whatever lock it holds,
+// for good.
+var networkTimeout = 10 * time.Minute
+
+func network(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), networkTimeout)
+	defer cancel()
+	return runContext(ctx, dir, args...)
+}
+
+func runContext(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// Without GIT_TERMINAL_PROMPT=0 a remote that wants credentials makes git
+	// ask on the server's terminal and wait.
+	cmd.Env = append(env(), "LC_ALL=C", "GIT_TERMINAL_PROMPT=0")
+	// A killed git leaves its helpers holding the pipes; do not wait for them.
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("timed out after %s", networkTimeout)
+		}
 		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil

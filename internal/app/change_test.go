@@ -44,6 +44,19 @@ func TestWorkingReview_aNestedRootReadsOnlyItsOwnFiles(t *testing.T) {
 	assert.NotZero(t, u.Added, "the unit's lines come from the file, not from nothing")
 }
 
+func TestWorkingReview_theRepoRootLeavesNestedRootsFilesToThem(t *testing.T) {
+	a := newApp(t)
+	repo := add(t, a, twoModules(t))
+
+	wr := a.WorkingReview(repo.ID, ".")
+	defer wr.Release()
+
+	require.NoError(t, wr.Err)
+	require.NotNil(t, wr.Review, wr.Note)
+	require.Len(t, wr.Review.Units, 1, "tools/t.go belongs to the nested root")
+	assert.Equal(t, "Add", wr.Review.Units[0].Name)
+}
+
 func TestReading_countsTheWholeChangeOnceAcrossRoots(t *testing.T) {
 	a := newApp(t)
 	dir := twoModules(t)

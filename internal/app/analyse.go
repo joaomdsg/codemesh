@@ -134,7 +134,7 @@ func (a *App) buildTree(rs *repoState, head *Analysis) *treeReview {
 	defer c.Release()
 	t.snap = c.Head.Snap
 	t.review = review.Build(review.Input{
-		Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, head.Root),
+		Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, head.Root, a.Roots(rs.info.ID)),
 		BaseFindings: c.Base.Findings, HeadFindings: c.Head.Findings, Graph: c.Diff,
 	})
 	t.sum = summarize(head.Root, t.review, c.Files)

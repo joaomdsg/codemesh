@@ -158,9 +158,20 @@ func (f Frontend) Load(ctx context.Context, dir string) (*code.Snapshot, error) 
 	for _, x := range all {
 		callers := map[*code.Decl]bool{}
 		for _, r := range x.refs {
+			var cands []*code.Decl
 			for _, to := range byName[r.name] {
 				visible := to.Package == x.d.Package || to.Exported && imports[x.d.Package][to.Package]
-				if to == x.d || !visible || !r.reaches(to) {
+				if visible && r.reaches(to) {
+					cands = append(cands, to)
+				}
+			}
+			// Without types, a member name several decls answer to says nothing
+			// about which one is meant; linking all of them invents callers.
+			if r.kind == refMember && len(cands) > 1 {
+				continue
+			}
+			for _, to := range cands {
+				if to == x.d {
 					continue
 				}
 				if !callers[to] {
@@ -196,12 +207,20 @@ func (l *language) sources(abs, module string) ([]*source, error) {
 	var out []*source
 	err := filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if p == abs {
+				return err
+			}
+			// One directory we cannot read does not make the project unreadable.
+			return filepath.SkipDir
 		}
 		if d.IsDir() {
 			if name := d.Name(); p != abs && (strings.HasPrefix(name, ".") || slices.Contains(skipDirs, name)) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		// A link may dangle and a pipe blocks a read; git does not follow links either.
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(abs, p)
@@ -223,7 +242,7 @@ func (l *language) sources(abs, module string) ([]*source, error) {
 func (l *language) parse(ps *parsers, abs string, s *source) (parsedFile, error) {
 	src, err := os.ReadFile(filepath.Join(abs, filepath.FromSlash(s.rel)))
 	if err != nil {
-		return parsedFile{}, err
+		return parsedFile{f: code.File{Path: s.rel, Test: s.test}, err: s.rel + ": cannot be read"}, nil
 	}
 	t, err := ps.parse(s.grammar, src)
 	if err != nil {
@@ -234,7 +253,10 @@ func (l *language) parse(ps *parsers, abs string, s *source) (parsedFile, error)
 
 	lines := codeLines(t.root)
 	pf := parsedFile{f: code.File{Path: s.rel, Test: s.test, Generated: generated(src), Lines: len(lines)}}
-	if t.root.broken() {
+	// The parser recovers around a bad token (a valid '&' in a JSX string, say)
+	// and leaves the rest of the tree sound. Once a quarter of the file is
+	// error nodes the recovery has failed and the decls can't be trusted.
+	if t.root.broken() && t.root.errorBytes()*4 > len(src) {
 		pf.err = fmt.Sprintf("%s:%d: syntax errors", s.rel, t.root.errorLine())
 	}
 	raws := l.extract(s)

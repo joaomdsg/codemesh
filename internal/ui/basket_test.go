@@ -212,6 +212,17 @@ func TestBasket_putsTheIntroAtTheTopOfThePrompt(t *testing.T) {
 	assert.Contains(t, page, "Make Clamp easier to read.", "the field and the preview show it")
 }
 
+func TestBasket_copyWaitsForTheGoalTheServerHasNotSavedYet(t *testing.T) {
+	e := serve(t)
+	e.addToBasket(t, handoff.Finding, "Split Clamp")
+	e.basketPressing(t, "/basket", "intro", 0, `{"intro":"Make Clamp easier to read."}`)()
+
+	_, page := e.app.Get("/basket")
+
+	assert.Contains(t, page, `data-goal="Make Clamp easier to read."`, "what the preview was built from")
+	assert.Contains(t, page, "dataset.goal", "Copy compares it with the field before copying: the field saves on blur, which Copy's own click causes")
+}
+
 func TestBasket_previewsThePromptAndCopiesIt(t *testing.T) {
 	e := serve(t)
 	e.addToBasket(t, handoff.Finding, "Split Clamp")

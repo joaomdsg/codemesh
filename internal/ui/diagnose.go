@@ -91,7 +91,7 @@ func (p *diagnosePage) prognosisHref(key string) string {
 // the island builds pointing at this repo.
 func (p *diagnosePage) diag(a *app.Analysis, gs []prognosis.Prognosis, lens string) diag {
 	d := diagOf(a, gs, lens)
-	d.Base, d.Root = p.base(), p.root
+	d.Base = p.base()
 	return d
 }
 

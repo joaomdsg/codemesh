@@ -85,7 +85,10 @@ func run() error {
 	}
 	srv := &http.Server{Handler: ui.New(a, origin), ReadHeaderTimeout: 10 * time.Second}
 	log.Info("serving", "url", origin)
-	return serve(ctx, srv, ln)
+	err = serve(ctx, srv, ln)
+	closing, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return errors.Join(err, a.Close(closing))
 }
 
 // serve serves on ln. The end of ctx or a server error shuts the server down.

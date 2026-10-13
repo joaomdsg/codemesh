@@ -25,6 +25,7 @@ func isolate(t *testing.T) {
 	for _, v := range []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		t.Setenv(v, t.TempDir())
 	}
+	testrepo.QuietGo(t)
 }
 
 // The arguments go into the workspace, and the server stops when the terminal

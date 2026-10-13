@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -48,7 +49,7 @@ var lenses = []lens{
 }
 
 func (p *mapPage) OnInit(ctx *via.Ctx) error {
-	q := ctx.Request().URL.Query()
+	q, _ := url.ParseQuery(ctx.Request().PathValue("view"))
 	p.in, p.lens, p.decl = q.Get("in"), q.Get("lens"), q.Get("d")
 	p.rows = smellsPage
 	if !slices.ContainsFunc(lenses, func(l lens) bool { return l.key == p.lens }) {
@@ -191,7 +192,7 @@ func (p *mapPage) atlas(a *app.Analysis) atlas {
 			at.Tiles[i].Heat = min(at.Tiles[i].Heat, c)
 		}
 	}
-	at.Lens, at.Base, at.Root = p.lens, p.base(), p.root
+	at.Lens, at.Base = p.lens, p.base()
 	return at
 }
 

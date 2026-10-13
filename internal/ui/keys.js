@@ -9,6 +9,9 @@ cm.url = (u) => {
   if (u && u !== location.pathname + location.search) history.replaceState(null, "", u);
 };
 
+// The list's open state sits on the root, which a re-render does not replace.
+const pageRoot = document.documentElement;
+
 const click = (el) => {
   if (!el) return false;
   el.click();
@@ -25,10 +28,10 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && click(form.querySelector(".note-cancel"))) e.preventDefault();
     return;
   }
-  if (e.key === "Escape" && help) help.hidden = true;
+  if (e.key === "Escape" && help) pageRoot.classList.remove("show-keys");
   if (e.target.closest("input, textarea, select")) return;
   if (e.key === "?" && help) {
-    help.hidden = !help.hidden;
+    pageRoot.classList.toggle("show-keys");
     e.preventDefault();
     return;
   }
@@ -90,7 +93,7 @@ document.addEventListener("keydown", (e) => {
 document.addEventListener("click", (e) => {
   const open = e.target.closest && e.target.closest(".keys-open");
   const help = document.querySelector(".keys-help");
-  if (open && help) help.hidden = !help.hidden;
+  if (open && help) pageRoot.classList.toggle("show-keys");
 });
 
 // A line number starts a note on that line: the browser names the line in a

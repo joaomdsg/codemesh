@@ -1,5 +1,7 @@
 #!/bin/sh
-# Stands in for gh on PATH. FAKE_GH_EXIT makes it fail with that code.
+# Stands in for gh on PATH. FAKE_GH_EXIT makes it fail with that code, and
+# FAKE_GH_ARGS names a file it writes its arguments to.
+[ -n "$FAKE_GH_ARGS" ] && echo "$*" > "$FAKE_GH_ARGS"
 if [ -n "$FAKE_GH_EXIT" ]; then
 	echo "fake gh failure" >&2
 	exit "$FAKE_GH_EXIT"

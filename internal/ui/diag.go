@@ -14,7 +14,6 @@ type diag struct {
 	H     float64          `json:"h"`
 	Lens  string           `json:"lens"`
 	Base  string           `json:"base"` // the repo's URL prefix, for links
-	Root  string           `json:"root,omitempty"`
 	Tiles []atlasTile      `json:"tiles"`
 	Heats map[string][]int `json:"heats"`
 	Marks []mark           `json:"marks"`

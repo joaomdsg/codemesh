@@ -1,16 +1,35 @@
 package smell
 
 // Delta splits two finding lists into the findings only head has (introduced)
-// and the ones only base has (fixed).
+// and the ones only base has (fixed). A finding matches one on the same decl
+// first; those left over match by identity, one for one, so a second decl of
+// the same name with the same smell still counts as introduced.
 func Delta(base, head []Finding) (introduced, fixed []Finding) {
-	inBase, inHead := idSet(base), idSet(head)
-	for _, f := range head {
-		if !inBase[identity(f)] {
+	inBase := make([]bool, len(base)) // matched by a head finding
+	inHead := make([]bool, len(head))
+	match := func(key func(Finding) string) {
+		free := map[string][]int{}
+		for i, f := range base {
+			if !inBase[i] {
+				free[key(f)] = append(free[key(f)], i)
+			}
+		}
+		for j, f := range head {
+			if k := key(f); !inHead[j] && len(free[k]) > 0 {
+				inBase[free[k][0]], inHead[j] = true, true
+				free[k] = free[k][1:]
+			}
+		}
+	}
+	match(func(f Finding) string { return identity(f) + "|" + f.Decl })
+	match(identity)
+	for j, f := range head {
+		if !inHead[j] {
 			introduced = append(introduced, f)
 		}
 	}
-	for _, f := range base {
-		if !inHead[identity(f)] {
+	for i, f := range base {
+		if !inBase[i] {
 			fixed = append(fixed, f)
 		}
 	}
@@ -27,12 +46,4 @@ func identity(f Finding) string {
 		return string(f.Rule) + "|file|" + f.File
 	}
 	return string(f.Rule) + "|pkg|" + f.Package + "|" + f.Target
-}
-
-func idSet(list []Finding) map[string]bool {
-	m := map[string]bool{}
-	for _, f := range list {
-		m[identity(f)] = true
-	}
-	return m
 }

@@ -68,3 +68,17 @@ func Git(dir string, args ...string) error {
 	}
 	return nil
 }
+
+// QuietGo turns go's telemetry off in the current XDG_CONFIG_HOME. A go
+// command otherwise leaves a detached process writing there after it exits,
+// which can outlive the test and its temporary directory.
+func QuietGo(t testing.TB) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "go", "telemetry")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mode"), []byte("off 2026-01-01\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

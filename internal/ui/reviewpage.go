@@ -69,6 +69,7 @@ type reviewPage struct {
 	anchors  map[string]anchor
 	notesAt  map[string][]notes.Note
 	unitKeys map[string]bool
+	stale    map[string]bool // note IDs whose code has changed since
 	shown    map[string]bool
 	files    map[string][]string
 }
@@ -120,27 +121,39 @@ func (p *reviewPage) threadURL() string { return p.address(p.path, p.root) }
 
 // address is this change's page in root, with the thread ids in its path.
 func (p *reviewPage) address(ids []string, root string) string {
-	u := p.shell.base() + "review"
+	base := repoBase(p.repo.ID, root)
+	u := base + "review"
 	if p.pr > 0 {
-		u = fmt.Sprintf("%spr/%d", p.shell.base(), p.pr)
+		u = fmt.Sprintf("%spr/%d", base, p.pr)
 	}
 	if len(ids) > 0 {
 		u += "/" + url.PathEscape(joinPath(ids))
 	}
-	if root != "" {
-		u += "?root=" + url.QueryEscape(root)
-	}
 	return u
 }
 
-// A thread's IDs travel as one string; "~" does not occur in decl IDs.
-func joinPath(ids []string) string { return strings.Join(ids, "~") }
+// A thread's IDs travel as one string, "~" between them. A decl ID can hold
+// "~" itself (a Go module path may), so each ID escapes "%" and "~" first.
+var idEscaper = strings.NewReplacer("%", "%25", "~", "%7E")
+var idUnescaper = strings.NewReplacer("%7E", "~", "%25", "%")
+
+func joinPath(ids []string) string {
+	esc := make([]string, len(ids))
+	for i, id := range ids {
+		esc[i] = idEscaper.Replace(id)
+	}
+	return strings.Join(esc, "~")
+}
 
 func splitPath(s string) []string {
 	if s == "" {
 		return nil
 	}
-	return strings.Split(s, "~")
+	ids := strings.Split(s, "~")
+	for i, id := range ids {
+		ids[i] = idUnescaper.Replace(id)
+	}
+	return ids
 }
 
 // dispose gives back the pull request a closed tab held.
@@ -369,11 +382,11 @@ func (p *reviewPage) View() h.H {
 	p.budget = 0
 	p.anchors = map[string]anchor{}
 	p.shown = map[string]bool{}
-	p.notesAt = p.notesByLine(rd)
 	p.unitKeys = map[string]bool{}
 	for _, u := range rev.Units {
 		p.unitKeys[u.Key] = true
 	}
+	p.notesAt = p.notesByLine(rd)
 	t := p.active(rd)
 	done := len(rev.Units) - p.unreviewed(rev)
 
@@ -671,7 +684,7 @@ func (p *reviewPage) chips(rd *reading, u *review.Unit) []h.H {
 		chips = append(chips, h.Span(h.Class("chip"), h.Str(c)))
 	}
 	if g := rd.graph; g != nil {
-		if n := newCallers(g, u.ID); n > 0 {
+		if n := newCallers(g, rd.head.Snap, u.ID); n > 0 {
 			chips = append(chips, h.Span(h.Class("chip chip-new"), h.Str(fmt.Sprintf("+%d new", n))))
 		}
 		for _, c := range g.Changed {
@@ -683,15 +696,16 @@ func (p *reviewPage) chips(rd *reading, u *review.Unit) []h.H {
 	return chips
 }
 
-// newCallers counts the production decls that call id in head and did not in base.
-func newCallers(g *graphdiff.Diff, id string) int {
-	n := 0
+// newCallers counts the production decls that call id in head and did not in
+// base, each once.
+func newCallers(g *graphdiff.Diff, head *code.Snapshot, id string) int {
+	from := map[string]bool{}
 	for _, e := range g.EdgesAdded {
-		if e.To == id {
-			n++
+		if c := head.Decl(e.From); e.To == id && e.Kind == code.Caller && c != nil && !c.Test {
+			from[e.From] = true
 		}
 	}
-	return n
+	return len(from)
 }
 
 // loc is a file:line the browser can follow to the map when the page reads
@@ -833,7 +847,7 @@ func short(sha string) string { return sha[:min(len(sha), 7)] }
 // help lists every shortcut; the ? key shows it.
 func (p *reviewPage) help() h.H {
 	row := func(k, what string) h.H { return h.Li(h.Kbd(h.Str(k)), h.Span(h.Str(what))) }
-	return h.Div(h.Class("keys-help"), h.Hidden(true), h.Role("dialog"), h.Aria("label", "Keyboard shortcuts"),
+	return h.Div(h.Class("keys-help"), h.Role("dialog"), h.Aria("label", "Keyboard shortcuts"),
 		h.H3(h.Str("Keys")),
 		h.Ul(
 			row("j / k", "next and previous unit"),

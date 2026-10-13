@@ -152,11 +152,10 @@
   }
 
   function href(atlas, d, file) {
-    const q = ["lens=" + encodeURIComponent(atlas.lens)];
-    if (d[K] === "d" && file) q.push("in=" + encodeURIComponent(file[ID]), "d=" + encodeURIComponent(d[ID]));
-    else q.push("in=" + encodeURIComponent(d[ID]));
-    if (atlas.root) q.push("root=" + encodeURIComponent(atlas.root));
-    return atlas.base + "?" + q.join("&");
+    const q = new URLSearchParams({ lens: atlas.lens });
+    if (d[K] === "d" && file) { q.set("in", file[ID]); q.set("d", d[ID]); }
+    else q.set("in", d[ID]);
+    return atlas.base + "map/" + encodeURIComponent(q.toString());
   }
 
   // label sizes text to 11 screen pixels at any zoom and shows only labels

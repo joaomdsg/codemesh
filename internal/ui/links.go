@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/smell"
@@ -13,18 +12,20 @@ import (
 // file path) and a selected declaration. Empty fields are left out.
 type mapURL struct{ repo, root, lens, in, decl string }
 
+// The view is one path segment, a query string, so that it reaches the live
+// page: /r/{repo}/map/lens=churn&in=calc.
 func (u mapURL) String() string {
-	var q []string
-	for _, kv := range [][2]string{{"lens", u.lens}, {"in", u.in}, {"d", u.decl}, {"root", u.root}} {
+	q := url.Values{}
+	for _, kv := range [][2]string{{"lens", u.lens}, {"in", u.in}, {"d", u.decl}} {
 		if kv[1] != "" {
-			q = append(q, kv[0]+"="+url.QueryEscape(kv[1]))
+			q.Set(kv[0], kv[1])
 		}
 	}
-	base := "/r/" + url.PathEscape(u.repo) + "/"
+	base := repoBase(u.repo, u.root)
 	if len(q) == 0 {
 		return base
 	}
-	return base + "?" + strings.Join(q, "&")
+	return base + "map/" + url.PathEscape(q.Encode())
 }
 
 // at is u pointed at another scope and declaration.

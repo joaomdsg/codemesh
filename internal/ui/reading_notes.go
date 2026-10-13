@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"cmp"
 	"fmt"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -61,8 +63,8 @@ func (p *reviewPage) SaveNote(_ *via.Ctx) {
 	}
 	n := p.noting
 	saved, err := ns.Add(notes.Note{
-		Repo: p.repo.ID, Scope: rd.scope, File: n.file, DeclID: n.decl, UnitKey: n.key,
-		Side: n.side, Line: n.line, Body: text, Created: time.Now().UTC(),
+		Repo: p.repo.ID, Scope: rd.scope, Root: noteRoot(rd), File: n.file, DeclID: n.decl, UnitKey: n.key,
+		Side: n.side, Line: n.line, Text: p.lineAt(rd, n.side, n.file, n.line), Body: text, Created: time.Now().UTC(),
 	})
 	if err != nil {
 		p.err = "Note not saved: " + err.Error()
@@ -108,15 +110,49 @@ func (p *reviewPage) ToggleNote(_ *via.Ctx, id string) {
 	}
 }
 
-// noteItem is a note as the prompt carries it: the line it is on, as written.
-func (p *reviewPage) noteItem(rd *reading, n notes.Note) handoff.Item {
+// noteRoot is the root a reading's notes belong to, "" for the repo's top.
+func noteRoot(rd *reading) string {
+	if rd.head.Root == "." {
+		return ""
+	}
+	return rd.head.Root
+}
+
+// repoPath is file, which is relative to root, from the repo's top.
+func repoPath(root, file string) string {
+	if root == "" || root == "." {
+		return file
+	}
+	return path.Join(root, file)
+}
+
+// lineAt is the text of a line on one side of the change; "" when the file
+// or the line is not there.
+func (p *reviewPage) lineAt(rd *reading, side, file string, line int) string {
 	snap := rd.head.Snap
-	if n.Side == "-" && rd.base != nil {
+	if side == "-" && rd.base != nil {
 		snap = rd.base.Snap
 	}
+	if src := p.lines(snap, file); line >= 1 && line <= len(src) {
+		return src[line-1]
+	}
+	return ""
+}
+
+// outdated is true when what a note was written on has changed: its unit, or
+// for a note with no unit, the line itself.
+func (p *reviewPage) outdated(rd *reading, n notes.Note) bool {
+	if n.UnitKey != "" {
+		return notes.Outdated(n, p.unitKeys)
+	}
+	return n.Text != "" && p.lineAt(rd, n.Side, n.File, n.Line) != n.Text
+}
+
+// noteItem is a note as the prompt carries it: the line it is on, as written.
+func (p *reviewPage) noteItem(rd *reading, n notes.Note) handoff.Item {
 	var lines []string
-	if src := p.lines(snap, n.File); n.Line >= 1 && n.Line <= len(src) {
-		lines = []string{src[n.Line-1]}
+	if text := cmp.Or(n.Text, p.lineAt(rd, n.Side, n.File, n.Line)); text != "" {
+		lines = []string{text}
 	}
 	title, _, _ := strings.Cut(n.Body, "\n")
 	if r := []rune(title); len(r) > 70 {
@@ -126,22 +162,28 @@ func (p *reviewPage) noteItem(rd *reading, n notes.Note) handoff.Item {
 	if body == title {
 		body = ""
 	}
+	if n.Side == "-" {
+		body = strings.TrimSpace("The line is from the code before the change, and its number counts the old file.\n\n" + body)
+	}
 	return handoff.Item{
 		Kind: handoff.Note, Repo: p.repo.ID, Scope: n.Scope, Title: title,
-		Where: fmt.Sprintf("%s:%d", n.File, n.Line), Body: body, Code: lines, Key: n.ID,
+		Where: fmt.Sprintf("%s:%d", repoPath(n.Root, n.File), n.Line), Body: body, Code: lines, Key: n.ID,
 	}
 }
 
-// notesByLine is the reading's notes by the line they are on.
+// notesByLine is the reading's notes by the line they are on: those of this
+// root, written on this change at any head of it.
 func (p *reviewPage) notesByLine(rd *reading) map[string][]notes.Note {
 	out := map[string][]notes.Note{}
+	p.stale = map[string]bool{}
 	ns, err := p.app.Notes(p.repo.ID)
 	if err != nil {
 		return out
 	}
 	for _, n := range ns.All() {
-		if n.Scope == rd.scope && !n.Resolved {
+		if notes.SameChange(n.Scope, rd.scope) && n.Root == noteRoot(rd) && !n.Resolved {
 			k := lineKey(n.File, n.Side, n.Line)
+			p.stale[n.ID] = p.outdated(rd, n)
 			out[k] = append(out[k], n)
 		}
 	}
@@ -174,7 +216,7 @@ func (p *reviewPage) noteRow(n notes.Note) h.H {
 		label, action = "Take this note out of the handoff", "In handoff ✓"
 	}
 	var stale h.H
-	if notes.Outdated(n, p.unitKeys) {
+	if p.stale[n.ID] {
 		stale = h.Span(h.Class("chip chip-smell"), h.Title("The code under this note changed"), h.Str("outdated"))
 	}
 	return h.Div(h.Class(cls),
@@ -271,25 +313,26 @@ func (p *reviewPage) addSmells(key string) {
 	}
 	for _, f := range rd.graph.Introduced {
 		if k := smellKey(f); (key == "" || k == key) && !p.inBasket(handoff.Introduced, k, rd.scope) {
-			p.add(smellItem(p.repo.ID, rd.scope, f))
+			p.add(smellItem(p.repo.ID, rd, f))
 		}
 	}
 }
 
-func smellItem(repo, scope string, f smell.Finding) handoff.Item {
-	where := f.File
+func smellItem(repo string, rd *reading, f smell.Finding) handoff.Item {
+	where := repoPath(rd.head.Root, f.File)
 	if f.Line > 0 {
-		where = fmt.Sprintf("%s:%d", f.File, f.Line)
+		where = fmt.Sprintf("%s:%d", where, f.Line)
 	}
 	body := f.Rule.Why()
 	if f.Detail != "" {
 		body = f.Detail + ". " + body
 	}
 	return handoff.Item{
-		Kind: handoff.Introduced, Repo: repo, Scope: scope,
+		Kind: handoff.Introduced, Repo: repo, Scope: rd.scope,
 		Title: "New " + strings.ToLower(ruleLabel(f.Rule)) + ": " + f.Subject,
 		Where: where, Body: body,
-		Check: fmt.Sprintf("The %q smell for %s is gone when the code is analysed again, and the tests still pass.", ruleLabel(f.Rule), f.Subject),
+		Check: smellCheck(f),
+		Code:  declLines(rd.head.Snap, f.Decl),
 		Key:   smellKey(f),
 	}
 }

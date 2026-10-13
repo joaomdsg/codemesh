@@ -50,11 +50,13 @@ func TestBuilder_makesDuplicateIDsUnique(t *testing.T) {
 	f := b.File(p, code.File{Path: "src/a.jl"})
 	first := b.Decl(f, code.Decl{ID: "Demo.f", Start: 1})
 	second := b.Decl(f, code.Decl{ID: "Demo.f", Start: 7})
+	third := b.Decl(f, code.Decl{ID: "Demo.f", Start: 12})
 	s := b.Finish()
 
 	assert.Equal(t, "Demo.f", first.ID)
-	assert.Equal(t, "Demo.f#7", second.ID)
-	assert.Same(t, second, s.Decl("Demo.f#7"))
+	assert.Equal(t, "Demo.f#2", second.ID, "the ordinal among the duplicates, which an edit above them does not move")
+	assert.Equal(t, "Demo.f#3", third.ID)
+	assert.Same(t, second, s.Decl("Demo.f#2"))
 }
 
 func TestBuilder_attachKeepsTheCallersDecl(t *testing.T) {
@@ -69,8 +71,8 @@ func TestBuilder_attachKeepsTheCallersDecl(t *testing.T) {
 	assert.Same(t, second, b.Attach(f, second))
 	s := b.Finish()
 
-	assert.Equal(t, "demo.f#7", second.ID)
-	assert.Same(t, second, s.Decl("demo.f#7"))
+	assert.Equal(t, "demo.f#2", second.ID)
+	assert.Same(t, second, s.Decl("demo.f#2"))
 	assert.Equal(t, "a.go", second.File)
 	assert.Equal(t, "demo", second.Package)
 	assert.Equal(t, []*code.Decl{first, second}, f.Decls)

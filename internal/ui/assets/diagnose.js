@@ -72,7 +72,7 @@
     s.marks.append("circle");
 
     const tip = d3.select(el).append("div").attr("class", "dx-tip").attr("hidden", true);
-    const open = (m) => { location.href = d.base + "prognosis/" + encodeURIComponent(m.key) + (d.root ? "?root=" + encodeURIComponent(d.root) : ""); };
+    const open = (m) => { location.href = d.base + "prognosis/" + encodeURIComponent(m.key); };
     s.marks
       .on("mouseenter focus", (e, m) => {
         tip.attr("hidden", null).html("");

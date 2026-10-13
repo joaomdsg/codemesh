@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
+	"maps"
 	"time"
 
 	"github.com/joaomdsg/codemesh/internal/analysis"
@@ -32,7 +32,8 @@ type PRList struct {
 }
 
 // Hint says what to do about a failed listing, in one line, or "" when it
-// worked.
+// worked. The error itself is not in it: a repo gh does not know, such as one
+// off GitHub, is not a fault to report.
 func (l PRList) Hint() string {
 	switch {
 	case l.Err == nil:
@@ -42,8 +43,7 @@ func (l PRList) Hint() string {
 	case errors.Is(l.Err, ghx.ErrNotAuthed):
 		return "Pull requests need a login: run gh auth login"
 	}
-	msg, _, _ := strings.Cut(l.Err.Error(), "\n")
-	return "Pull requests are not available here: " + msg
+	return "Pull requests are not available for this repo."
 }
 
 // PRs returns the repo's open pull requests. The list comes from a cache;
@@ -66,8 +66,8 @@ func (a *App) PRs(id string) PRList {
 	return PRList{PRs: c.prs, Err: c.err, At: c.at}
 }
 
-// RefreshPRs asks gh for the list again, in the background. A clone fetches
-// its remote first, so its branches follow.
+// RefreshPRs asks gh for the list again, in the background. A clone follows
+// its remote first.
 func (a *App) RefreshPRs(id string) {
 	rs, err := a.repo(id)
 	if err != nil {
@@ -75,14 +75,32 @@ func (a *App) RefreshPRs(id string) {
 	}
 	a.background("prs:"+id, id, func() {
 		if rs.info.Path == "" {
-			if err := rs.git.Fetch(); err != nil {
-				a.log.Warn("fetching", "repo", id, "err", err)
-			}
+			a.follow(rs)
 		}
+		list := a.list(rs)
 		rs.mu.Lock()
-		rs.prs = a.list(rs)
+		rs.prs = list
+		// A failed summary is tried again, once per refresh.
+		maps.DeleteFunc(rs.prSum, func(_ string, s *summary) bool { return s.err != nil })
 		rs.mu.Unlock()
 	})
+}
+
+// follow brings a clone's checkout up to its remote's branch. What was read of
+// the old tree is stale once it moves.
+func (a *App) follow(rs *repoState) {
+	before, _ := rs.git.Head()
+	err := rs.git.Fetch()
+	if err == nil {
+		err = rs.git.Advance()
+	}
+	if err != nil {
+		a.log.Warn("following the remote", "repo", rs.info.ID, "err", err)
+		return
+	}
+	if after, _ := rs.git.Head(); after != before {
+		a.changed(rs.info.ID)
+	}
 }
 
 func (a *App) list(rs *repoState) *prCache {
@@ -121,7 +139,7 @@ func (a *App) PRReview(id, root string, n int) (*PRReview, error) {
 	if root, err = a.root(id, root); err != nil {
 		return nil, err
 	}
-	pr, err := a.pr(rs, n)
+	pr, err := a.pr(rs, n, true)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +166,7 @@ func (a *App) PRReview(id, root string, n int) (*PRReview, error) {
 		Base: a.fromResult(rs, root, c.Base), Head: a.fromResult(rs, root, c.Head),
 		Files: c.Files, Graph: c.Diff,
 		Review: review.Build(review.Input{
-			Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, root),
+			Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, root, a.Roots(id)),
 			BaseFindings: c.Base.Findings, HeadFindings: c.Head.Findings, Graph: c.Diff,
 		}),
 	}, nil
@@ -162,19 +180,23 @@ func (a *App) fromResult(rs *repoState, root string, r *analysis.Result) *Analys
 }
 
 // pr finds an open pull request by number: in the cached list, else in a
-// fresh one.
-func (a *App) pr(rs *repoState, n int) (ghx.PR, error) {
+// fresh one. With current set, a list older than prTTL does not count, as its
+// base may have moved; it still answers if gh cannot.
+func (a *App) pr(rs *repoState, n int, current bool) (ghx.PR, error) {
 	rs.mu.Lock()
-	c := rs.prs
+	old := rs.prs
 	rs.mu.Unlock()
-	if p, ok := c.find(n); ok {
+	if p, ok := old.find(n); ok && !(current && time.Since(old.at) > prTTL) {
 		return p, nil
 	}
-	c = a.list(rs)
+	c := a.list(rs)
 	rs.mu.Lock()
 	rs.prs = c
 	rs.mu.Unlock()
 	if c.err != nil {
+		if p, ok := old.find(n); ok {
+			return p, nil
+		}
 		return ghx.PR{}, c.err
 	}
 	if p, ok := c.find(n); ok {

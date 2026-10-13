@@ -578,6 +578,27 @@ func TestRepo_fetchBringsNewCommits(t *testing.T) {
 	assert.Equal(t, git(t, src, "rev-parse", "HEAD"), got)
 }
 
+func TestRepo_advanceMovesAClonesBranchToItsUpstream(t *testing.T) {
+	t.Parallel()
+	src := newRepo(t)
+	write(t, src, "f.txt", "v1\n")
+	commit(t, src, "one")
+	r, err := gitx.Clone("file://"+src, filepath.Join(t.TempDir(), "clone"))
+	require.NoError(t, err)
+	write(t, src, "f.txt", "v2\n")
+	commit(t, src, "two")
+	require.NoError(t, r.Fetch())
+
+	require.NoError(t, r.Advance())
+
+	head, err := r.Head()
+	require.NoError(t, err)
+	assert.Equal(t, git(t, src, "rev-parse", "HEAD"), head)
+	got, err := os.ReadFile(filepath.Join(r.Dir, "f.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "v2\n", string(got), "the checkout follows")
+}
+
 func TestRepo_fetchPRFetchesHeadAndFollowsForcePushes(t *testing.T) {
 	t.Parallel()
 	src := newRepo(t)

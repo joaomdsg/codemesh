@@ -2,11 +2,14 @@ package analysis
 
 import (
 	"context"
+	"errors"
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/graphdiff"
+	"github.com/joaomdsg/codemesh/internal/lang"
 )
 
 // Comparison is two results of one repo and root, and what differs between
@@ -21,6 +24,24 @@ type Comparison struct {
 func (c *Comparison) Release() {
 	c.Base.Release()
 	c.Head.Release()
+}
+
+// fillMissing makes a side that lacks the root read as empty, so a project
+// the change adds or deletes still compares. It reports whether that settles
+// the failed load.
+func (c *Comparison) fillMissing() bool {
+	empty := func(missing *Result, other *code.Snapshot) *Result {
+		return &Result{Key: missing.Key, Snap: code.NewBuilder(other.Lang, other.Module, other.Dir).Finish()}
+	}
+	switch {
+	case c.Head.Err == nil && errors.Is(c.Base.Err, lang.ErrNoProject):
+		c.Base = empty(c.Base, c.Head.Snap)
+	case c.Base.Err == nil && errors.Is(c.Head.Err, lang.ErrNoProject):
+		c.Head = empty(c.Head, c.Base.Snap)
+	default:
+		return false
+	}
+	return true
 }
 
 // Compare loads base and head independently and diffs them. head may be
@@ -40,7 +61,7 @@ func (e *Engine) Compare(ctx context.Context, repoID, root, base, head string) (
 		c.Head = e.Get(ctx, Key{repoID, head, root})
 		return c.Head.Err
 	})
-	if err := g.Wait(); err != nil {
+	if err := g.Wait(); err != nil && !c.fillMissing() {
 		c.Release()
 		return nil, err
 	}

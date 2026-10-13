@@ -9,6 +9,7 @@ import (
 
 	"github.com/joaomdsg/codemesh/internal/ghx"
 	"github.com/joaomdsg/codemesh/internal/gitx"
+	"github.com/joaomdsg/codemesh/internal/lang"
 	"github.com/joaomdsg/codemesh/internal/review"
 	"github.com/joaomdsg/codemesh/internal/workspace"
 )
@@ -64,20 +65,27 @@ func changedLines(files []gitx.FileDiff) (added, deleted int) {
 	return added, deleted
 }
 
-// scopeFiles is the part of a diff that lies in root, with paths relative to
-// it, as the root's snapshot names its files. A file of another root is not
-// the root's to read: its snapshot has no such file, so it would only show as
-// an empty unit.
-func scopeFiles(files []gitx.FileDiff, root string) []gitx.FileDiff {
-	if root == "." {
-		return files
-	}
+// scopeFiles is the part of a diff that lies in root and in none of the roots
+// nested below it, with paths relative to root, as its snapshot names its
+// files. A file of another root is not the root's to read: its snapshot has no
+// such file, so it would only show as an empty unit.
+func scopeFiles(files []gitx.FileDiff, root string, roots []lang.Root) []gitx.FileDiff {
 	prefix := root + "/"
-	rel := func(p string) string {
-		if rest, ok := strings.CutPrefix(p, prefix); ok {
-			return rest
+	if root == "." {
+		prefix = ""
+	}
+	var nested []string
+	for _, r := range roots {
+		if r.Dir != root && r.Dir != "." && strings.HasPrefix(r.Dir+"/", prefix) {
+			nested = append(nested, r.Dir+"/")
 		}
-		return ""
+	}
+	rel := func(p string) string {
+		rest, ok := strings.CutPrefix(p, prefix)
+		if !ok || slices.ContainsFunc(nested, func(n string) bool { return strings.HasPrefix(p, n) }) {
+			return ""
+		}
+		return rest
 	}
 	var out []gitx.FileDiff
 	for _, f := range files {
@@ -121,7 +129,7 @@ func (a *App) Reading(id string, n int) Reading {
 		}
 		return a.treeReading(rs)
 	}
-	pr, err := a.pr(rs, n)
+	pr, err := a.pr(rs, n, false)
 	if err != nil {
 		return Reading{}
 	}

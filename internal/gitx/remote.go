@@ -22,7 +22,7 @@ func Clone(url, dest string) (*Repo, error) {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return nil, err
 	}
-	if _, err := run(parent, "clone", "--quiet", "--filter=blob:none", "--", url, dest); err != nil {
+	if _, err := network(parent, "clone", "--quiet", "--filter=blob:none", "--", url, dest); err != nil {
 		return nil, err
 	}
 	return &Repo{Dir: dest}, nil
@@ -30,7 +30,14 @@ func Clone(url, dest string) (*Repo, error) {
 
 // Fetch updates the remote-tracking branches from origin.
 func (r *Repo) Fetch() error {
-	_, err := run(r.Dir, "fetch", "--quiet", "--prune", "origin")
+	_, err := network(r.Dir, "fetch", "--quiet", "--prune", "origin")
+	return err
+}
+
+// Advance moves the checked-out branch to its upstream, discarding local
+// changes. It is for a clone nobody edits, to follow what Fetch brought.
+func (r *Repo) Advance() error {
+	_, err := run(r.Dir, "reset", "--quiet", "--hard", "@{upstream}")
 	return err
 }
 
@@ -39,7 +46,7 @@ func (r *Repo) Fetch() error {
 // pull/n/head ref. The leading + follows force pushes.
 func (r *Repo) FetchPR(n int) (string, error) {
 	ref := "refs/codemesh/pr/" + strconv.Itoa(n)
-	if _, err := run(r.Dir, "fetch", "--quiet", "--no-tags", "origin", fmt.Sprintf("+pull/%d/head:%s", n, ref)); err != nil {
+	if _, err := network(r.Dir, "fetch", "--quiet", "--no-tags", "origin", fmt.Sprintf("+pull/%d/head:%s", n, ref)); err != nil {
 		return "", err
 	}
 	return r.ResolveRef(ref)

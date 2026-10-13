@@ -78,7 +78,7 @@ func (p *reviewPage) callers(rd *reading, u *review.Unit, t thread.Thread) h.H {
 		return nil
 	}
 	open := t.Root == u.ID
-	verb, glyph, arg := "Show", "▸", u.ID
+	verb, glyph, arg := "Show", "▸", joinPath([]string{u.ID})
 	if open {
 		verb, glyph, arg = "Hide", "▾", ""
 	}
@@ -322,20 +322,30 @@ func (p *reviewPage) KeepThread(_ *via.Ctx) {
 	snap := rd.head.Snap
 	name := func(d *code.Decl) string { return shortPkg(rd.head, d.Package) + d.Name }
 	root := snap.Decl(t.Root)
+	names := []string{name(root)}
 	var body []string
 	for _, hop := range t.Hops {
 		d, from := snap.Decl(hop.DeclID), snap.Decl(hop.From)
 		line, _, _ := p.callSite(snap, d, from)
-		hopLine := fmt.Sprintf("%s ← %s · %s:%d", name(from), name(d), d.File, line)
+		hopLine := fmt.Sprintf("%s ← %s · %s:%d", name(from), name(d), repoPath(rd.head.Root, d.File), line)
 		if hop.Via == thread.User {
 			hopLine += " (uses it)"
 		}
 		body = append(body, hopLine)
+		names = append(names, name(d))
+	}
+	if len(body) == 0 {
+		body = []string{callersText(snap, root)}
 	}
 	p.add(handoff.Item{
 		Kind: handoff.Thread, Repo: p.repo.ID, Scope: rd.scope,
-		Title: "Blast radius of " + name(root), Where: fmt.Sprintf("%s:%d", root.File, root.Start),
-		Body: strings.Join(body, "\n"), Key: threadKey(t),
+		Title: "Blast radius: " + strings.Join(names, " → "), Where: fmt.Sprintf("%s:%d", repoPath(rd.head.Root, root.File), root.Start),
+		Body: strings.Join(body, "\n"), Code: declLines(snap, t.Root), Key: threadKey(t),
+		Steps: []string{
+			"Read the changed declaration, then each caller listed, from the changed code outward.",
+			"At each hop, check the caller still gets what it expects from the one before it.",
+		},
+		Check: "Every declaration on the path still works with the change, and the build and tests pass.",
 	})
 }
 

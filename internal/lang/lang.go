@@ -5,6 +5,7 @@ package lang
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 
@@ -13,6 +14,9 @@ import (
 	"github.com/joaomdsg/codemesh/internal/lang/julia"
 	"github.com/joaomdsg/codemesh/internal/lang/treesitter"
 )
+
+// ErrNoProject means no frontend detects a project in the directory.
+var ErrNoProject = errors.New("no analysable project")
 
 var frontends = []struct {
 	code.Frontend
@@ -27,17 +31,21 @@ var frontends = []struct {
 
 // Load analyses the project rooted at dir with the first frontend that
 // detects one there.
-func Load(dir string) (*code.Snapshot, error) {
+func Load(dir string) (*code.Snapshot, error) { return LoadContext(context.Background(), dir) }
+
+// LoadContext is Load that stops when ctx ends: a frontend that runs child
+// processes kills them.
+func LoadContext(ctx context.Context, dir string) (*code.Snapshot, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
 	for _, f := range frontends {
 		if f.Detect(abs) {
-			return f.Load(context.Background(), abs)
+			return f.Load(ctx, abs)
 		}
 	}
-	return nil, errors.New("no analysable project in " + abs)
+	return nil, fmt.Errorf("%w in %s", ErrNoProject, abs)
 }
 
 // Exts returns the source file extensions of every frontend, sorted.

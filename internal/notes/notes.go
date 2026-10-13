@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,14 +20,27 @@ type Note struct {
 	ID       string
 	Repo     string
 	Scope    string // "wt", or "pr:<n>@<headSHA>"
+	Root     string // the root File is relative to; "" is the repo's top
 	File     string
 	DeclID   string
 	UnitKey  string
 	Side     string // "+" or "-"
 	Line     int
+	Text     string // the line's text when the note was written
 	Body     string
 	Created  time.Time
 	Resolved bool
+}
+
+// SameChange reports whether two scopes are the same change: the working tree,
+// or one pull request at any head.
+func SameChange(a, b string) bool {
+	if a == b {
+		return true
+	}
+	pa, _, okA := strings.Cut(a, "@")
+	pb, _, okB := strings.Cut(b, "@")
+	return okA && okB && pa == pb
 }
 
 // Outdated reports whether the unit a note was written on is gone from the

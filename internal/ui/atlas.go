@@ -25,7 +25,6 @@ type atlas struct {
 	H     float64     `json:"h"`
 	Lens  string      `json:"lens,omitempty"` // map only: the lens the heats were taken with
 	Base  string      `json:"base,omitempty"` // map only: the repo's URL prefix, for links
-	Root  string      `json:"root,omitempty"` // map only: ?root= of the page, for links
 	Tiles []atlasTile `json:"tiles"`
 }
 

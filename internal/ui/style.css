@@ -723,8 +723,8 @@ form.add input { flex: 1; font: 14px var(--mono); color: var(--ink); background:
 .finding.smell .handoff { margin: 0 0 0 auto; flex: none; }
 .finding.fixed { opacity: .75; }
 
-.keys-help { position: fixed; right: var(--sp4); bottom: var(--sp4); z-index: 10; min-width: 260px; padding: var(--sp3) var(--sp4); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 4px 16px rgb(0 0 0 / .18); }
-.keys-help[hidden] { display: none; }
+.keys-help { display: none; position: fixed; right: var(--sp4); bottom: var(--sp4); z-index: 10; min-width: 260px; padding: var(--sp3) var(--sp4); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 4px 16px rgb(0 0 0 / .18); }
+.show-keys .keys-help { display: block; }
 .keys-help h3 { margin: 0 0 var(--sp2); font-size: 13px; }
 .keys-help ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp1); font-size: 13px; }
 .keys-help li { display: grid; grid-template-columns: 56px 1fr; gap: var(--sp2); align-items: baseline; }

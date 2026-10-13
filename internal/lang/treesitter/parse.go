@@ -40,6 +40,20 @@ func (x node) errorLine() int {
 	return x.startLine()
 }
 
+// errorBytes is how many bytes of x sit inside syntax-error nodes.
+func (x node) errorBytes() int {
+	if x.n.IsError() {
+		return x.end() - x.start()
+	}
+	n := 0
+	for _, c := range x.children() {
+		if c.broken() {
+			n += c.errorBytes()
+		}
+	}
+	return n
+}
+
 func (x node) field(name string) node {
 	return node{x.n.ChildByFieldName(name, x.lang), x.lang, x.src}
 }

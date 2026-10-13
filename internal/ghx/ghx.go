@@ -69,7 +69,7 @@ func (CLI) List(ctx context.Context, repoDir string) ([]PR, error) {
 	if err != nil {
 		return nil, ErrNoGH
 	}
-	cmd := exec.CommandContext(ctx, gh, "pr", "list", "--state", "open", "--json", fields)
+	cmd := exec.CommandContext(ctx, gh, "pr", "list", "--state", "open", "--limit", "1000", "--json", fields)
 	cmd.Dir = repoDir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

@@ -15,6 +15,7 @@ import (
 	"github.com/go-via/via/vt"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/handoff"
+	"github.com/joaomdsg/codemesh/internal/notes"
 	"github.com/joaomdsg/codemesh/internal/testrepo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,6 +214,21 @@ func TestReading_followingAHopExtendsTheThread(t *testing.T) {
 	p.urlAfter(url.PathEscape(helperID + "~" + scaleID))
 }
 
+func TestReading_aThreadSurvivesATildeInTheModulePath(t *testing.T) {
+	e := serveRepo(t,
+		map[string]string{"go.mod": "module example.com/box~v2\n\ngo 1.27\n", "box.go": "package box\n\nfunc Size() int { return 1 }\n\nfunc Use() int { return Size() }\n"},
+		map[string]string{"box.go": "package box\n\nfunc Size() int { return 2 }\n\nfunc Use() int { return Size() }\n"})
+	p := e.openPage(t, e.base()+"/review", "")
+
+	p.press("Show callers of Size")
+
+	m := regexp.MustCompile(`"url":"([^"]+)"`).FindStringSubmatch(p.urlAfter())
+	require.NotNil(t, m)
+	status, body := e.app.Get(m[1])
+	require.Equal(t, http.StatusOK, status, m[1])
+	assert.Contains(t, body, "Trim the thread to Size", "the address opens the thread it was made for")
+}
+
 func TestReading_clickingAPillTrimsTheThreadToIt(t *testing.T) {
 	e, _ := servePR(t)
 	p := e.openPage(t, e.base()+"/pr/7", thread(helperID, scaleID, mainID))
@@ -237,6 +253,22 @@ func TestReading_keepingAThreadPutsItsPathInTheBasket(t *testing.T) {
 	assert.Contains(t, items[0].Title, "helper")
 	assert.Regexp(t, `^calc\.helper ← calc\.Scale · calc/calc\.go:\d+$`, strings.Split(items[0].Body, "\n")[0], "each hop, by name, with the line it calls from")
 	assert.Contains(t, items[0].Where, "calc/calc.go:")
+	assert.Equal(t, "Blast radius: calc.helper → calc.Scale", items[0].Title, "the whole path, so threads from one root differ")
+	assert.NotEmpty(t, items[0].Code, "the root's source")
+	assert.NotEmpty(t, items[0].Steps, "what to do with the hops")
+	assert.NotEmpty(t, items[0].Check)
+}
+
+func TestReading_aThreadKeptBeforeAnyHopStillSaysWhoCallsTheRoot(t *testing.T) {
+	e, _ := servePR(t)
+	p := e.openPage(t, e.base()+"/pr/7", thread(helperID))
+
+	p.press("Keep this thread")
+
+	items := e.a.Basket().Items
+	require.Len(t, items, 1)
+	assert.Equal(t, "Blast radius: calc.helper", items[0].Title)
+	assert.Contains(t, items[0].Body, "1 caller", "no hops yet, so the root's own callers")
 }
 
 func TestReading_aThreadKeptOnTheWorkingTreeHasThatScope(t *testing.T) {
@@ -287,6 +319,120 @@ func TestReading_aMarginNoteIsSavedAndJoinsTheHandoff(t *testing.T) {
 	p.seen("Why 1 and not a parameter?")
 }
 
+// noteOnScale writes a note on the PR page's changed line and returns it, as
+// stored.
+func noteOnScale(t *testing.T, e env, body string) notes.Note {
+	t.Helper()
+	p := e.openPage(t, e.base()+"/pr/7", "")
+	p.press("Start a note on a line", "anchor", lineToken(t, p.html(), "\treturn helper(x, 1) * k"))
+	p.seen(`class="note-form"`)
+	p.press("Save the note", "noteText", body, "inHandoff", "false")
+	ns, err := e.a.Notes(e.repo.ID)
+	require.NoError(t, err)
+	all := ns.All()
+	return all[len(all)-1]
+}
+
+// movedTo stores n again under scope, as if it had been written there, and
+// drops the original.
+func movedTo(t *testing.T, e env, n notes.Note, scope string, edit func(*notes.Note)) {
+	t.Helper()
+	ns, err := e.a.Notes(e.repo.ID)
+	require.NoError(t, err)
+	require.NoError(t, ns.Delete(n.ID))
+	n.Scope = scope
+	edit(&n)
+	_, err = ns.Add(n)
+	require.NoError(t, err)
+}
+
+func TestReading_aPRNoteSurvivesANewPush(t *testing.T) {
+	e, _ := servePR(t)
+	n := noteOnScale(t, e, "SURVIVOR")
+	movedTo(t, e, n, "pr:7@"+strings.Repeat("a", 40), func(*notes.Note) {})
+
+	_, body := e.app.Get(e.base() + "/pr/7")
+
+	assert.Contains(t, body, "SURVIVOR", "written on an earlier head of this PR, its unit has not changed")
+	assert.NotContains(t, body, "outdated")
+}
+
+func TestReading_aPRNoteOfAnotherPRIsNotShown(t *testing.T) {
+	e, _ := servePR(t)
+	n := noteOnScale(t, e, "NEIGHBOUR")
+	movedTo(t, e, n, "pr:70@"+strings.Repeat("a", 40), func(*notes.Note) {})
+
+	_, body := e.app.Get(e.base() + "/pr/7")
+
+	assert.NotContains(t, body, "NEIGHBOUR")
+}
+
+func TestReading_aNoteOnAChangedUnitIsOutdatedAfterANewPush(t *testing.T) {
+	e, _ := servePR(t)
+	n := noteOnScale(t, e, "STALE")
+	movedTo(t, e, n, "pr:7@"+strings.Repeat("a", 40), func(n *notes.Note) { n.UnitKey = "an older version of Scale" })
+
+	_, body := e.app.Get(e.base() + "/pr/7")
+
+	assert.Contains(t, body, "STALE")
+	assert.Contains(t, body, "outdated")
+}
+
+func TestReading_aNoteSavedOnALineKeepsItsText(t *testing.T) {
+	e, _ := servePR(t)
+
+	n := noteOnScale(t, e, "text kept")
+
+	assert.Equal(t, "\treturn helper(x, 1) * k", n.Text)
+}
+
+func TestReading_aNoteOnACallerHopIsOutdatedOnceItsLineChanges(t *testing.T) {
+	e, _ := servePR(t)
+	p := e.openPage(t, e.base()+"/pr/7", thread(helperID, scaleID, mainID))
+	p.press("Note on the last hop")
+	p.seen(`class="note-form"`)
+	p.press("Save the note", "noteText", "HOP-NOTE", "inHandoff", "false")
+	ns, err := e.a.Notes(e.repo.ID)
+	require.NoError(t, err)
+	n := ns.All()[0]
+	require.Contains(t, n.Text, "Scale", "the call line, as it was")
+
+	_, fresh := e.app.Get(e.base() + "/pr/7/" + thread(helperID, scaleID, mainID))
+	assert.Contains(t, fresh, "HOP-NOTE")
+	assert.NotContains(t, fresh, "outdated")
+
+	movedTo(t, e, n, n.Scope, func(n *notes.Note) { n.Text = "the line before the push" })
+	_, moved := e.app.Get(e.base() + "/pr/7/" + thread(helperID, scaleID, mainID))
+	assert.Contains(t, moved, "outdated", "line 5 reads differently than when the note was written")
+}
+
+func TestReading_aNoteInTheHandoffKeepsTheLineItWasWrittenOn(t *testing.T) {
+	e, _ := servePR(t)
+	n := noteOnScale(t, e, "look here")
+	movedTo(t, e, n, n.Scope, func(n *notes.Note) { n.Text = "the line then" })
+	p := e.openPage(t, e.base()+"/pr/7", "")
+
+	p.press("Add this note to the handoff")
+
+	items := e.a.Basket().Items
+	require.Len(t, items, 1)
+	assert.Equal(t, []string{"the line then"}, items[0].Code, "as written, not as the file reads now")
+}
+
+func TestReading_aNoteOnTheOldSideSaysSo(t *testing.T) {
+	e, _ := servePR(t)
+	n := noteOnScale(t, e, "was this needed")
+	movedTo(t, e, n, n.Scope, func(n *notes.Note) { n.Side, n.Text = "-", "the old line" })
+	p := e.openPage(t, e.base()+"/pr/7", "")
+
+	p.press("Add this note to the handoff")
+
+	items := e.a.Basket().Items
+	require.Len(t, items, 1)
+	assert.Equal(t, []string{"the old line"}, items[0].Code)
+	assert.Contains(t, items[0].Body, "before the change", "the line number counts the old file")
+}
+
 func TestReading_theInHandoffToggleAddsAndDropsANotesItem(t *testing.T) {
 	e, _ := servePR(t)
 	p := e.openPage(t, e.base()+"/pr/7", "")
@@ -334,6 +480,8 @@ func TestReading_introducedSmellsGoToTheHandoffOneByOneOrAllAtOnce(t *testing.T)
 	assert.Equal(t, "pr:7@"+head, items[0].Scope)
 	assert.Contains(t, items[0].Title, "tangle")
 	assert.Regexp(t, `^calc/calc\.go:\d+$`, items[0].Where)
+	assert.NotEmpty(t, items[0].Code, "the smell's declaration, as a finding's item carries it")
+	assert.NotContains(t, items[0].Check, "analysed again", "an agent cannot run codemesh")
 
 	p.seen("In handoff")
 	p.press("Add every introduced smell to the handoff")
@@ -414,7 +562,7 @@ func TestReading_theHeaderSaysWhichRootItCountsAndLinksTheOthers(t *testing.T) {
 
 	_, body := e.app.Get(e.base() + "/review")
 
-	assert.Regexp(t, `\d+ of \d+ units in calc · \d+ in <a href="`+e.base()+`/review\?root=tools">tools</a> →`, body)
+	assert.Regexp(t, `\d+ of \d+ units in calc · \d+ in <a href="`+e.base()+`/in/tools/review">tools</a> →`, body)
 	assert.Regexp(t, `class="seg on"[^>]*>calc</a>`, body, "the pill names the module, not (root)")
 	assert.NotContains(t, body, "(root)")
 }
@@ -513,4 +661,26 @@ func TestReading_theHeaderKeepsTheKeysBehindAQuestionMark(t *testing.T) {
 	assert.Regexp(t, `<button class="btn small ghost keys-open"[^>]*>\? keys</button>`, body)
 	assert.Regexp(t, `<button class="btn small ghost"[^>]*>Refetch</button>`, body, "a small secondary button")
 	assert.Regexp(t, `<button class="btn small ghost"[^>]*>Hide atlas</button>`, body)
+}
+
+func TestReading_theKeysListIsNotHiddenByTheServer(t *testing.T) {
+	e, _ := servePR(t)
+
+	_, body := e.app.Get(e.base() + "/pr/7")
+
+	assert.Contains(t, body, `class="keys-help"`)
+	assert.NotRegexp(t, `class="keys-help"[^>]*hidden`, body, "a re-render would close the list the reader opened; the page's own class shows it")
+}
+
+func TestReading_theNewCallersChipCountsProductionCallersOnce(t *testing.T) {
+	e := serveRepo(t,
+		map[string]string{"go.mod": "module example.com/nc\n\ngo 1.27\n", "nc.go": "package nc\n\nfunc Target() int { return 1 }\n"},
+		map[string]string{
+			"nc.go":      "package nc\n\nfunc Target() int { return 2 }\n\nfunc A() int { return Target() }\n\nfunc B() int { return Target() + Target() }\n",
+			"nc_test.go": "package nc\n\nimport \"testing\"\n\nfunc TestTarget(t *testing.T) { Target() }\n",
+		})
+
+	_, body := e.app.Get(e.base() + "/review")
+
+	assert.Contains(t, body, `class="chip chip-new">+2 new<`, "A and B; the test and B's second call are not new callers")
 }

@@ -341,3 +341,84 @@ func TestBuild_showsALinkAsItsTargetLikeGit(t *testing.T) {
 	require.Len(t, u.Lines, 1)
 	assert.Equal(t, outside, u.Lines[0].Text, "the target, not what it points to")
 }
+
+// bigFiles has one 2100-line function and one 2100-line text file, each with
+// a single line changed in head: too big for the line diff, one line for git.
+func bigFiles() (base, head map[string]string) {
+	fn := func(edit string) string {
+		return "package big\n\nfunc Run() int {\n\tx := 0\n" + strings.Repeat("\tx++\n", 1000) + edit +
+			strings.Repeat("\tx++\n", 1100) + "\treturn x\n}\n"
+	}
+	txt := func(edit string) string {
+		return strings.Repeat("line\n", 1000) + edit + strings.Repeat("line\n", 1100)
+	}
+	mod := "module example.com/big\n\ngo 1.27\n"
+	return map[string]string{"go.mod": mod, "big.go": fn("\tx++\n"), "big.txt": txt("one\n")},
+		map[string]string{"big.go": fn("\tx += 2\n"), "big.txt": txt("two\n")}
+}
+
+func TestBuild_countsLinesLikeGitWhereTheLineDiffIsTooBig(t *testing.T) {
+	t.Parallel()
+	b, h := bigFiles()
+	f, err := build(b, h)
+	require.NoError(t, err)
+
+	for _, name := range []string{"Run", "big.txt"} {
+		u := unit(t, f.rev, name)
+		assert.Equal(t, 1, u.Added, name)
+		assert.Equal(t, 1, u.Deleted, name)
+	}
+}
+
+func TestBuild_countsOnlyTheHunksInsideTheDeclaration(t *testing.T) {
+	t.Parallel()
+	f, err := build(map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.27\n",
+		"m.go":   "package m\n\nfunc A() int {\n\treturn 1\n}\n\nfunc B() int {\n\treturn 1\n}\n",
+	}, map[string]string{
+		"m.go": "package m\n\nfunc A() int {\n\treturn 0\n}\n\nfunc B() int {\n\tx := 2\n\ty := 3\n\treturn x + y\n}\n",
+	})
+	require.NoError(t, err)
+
+	a, b := unit(t, f.rev, "A"), unit(t, f.rev, "B")
+	assert.Equal(t, [2]int{1, 1}, [2]int{a.Added, a.Deleted})
+	assert.Equal(t, [2]int{3, 1}, [2]int{b.Added, b.Deleted})
+}
+
+func pyProject(a string) map[string]string {
+	return map[string]string{"pyproject.toml": "[project]\nname = \"app\"\n", "app/__init__.py": "", "app/a.py": a}
+}
+
+func TestBuild_aTopLevelStatementOfAScriptingLanguageIsNotNoise(t *testing.T) {
+	t.Parallel()
+	f, err := build(pyProject("import os\n\nsetup(1)\n\n\ndef f():\n    return os.name\n"), map[string]string{"app/a.py": "import os\n\nsetup(2)\n\n\ndef f():\n    return os.name\n"})
+	require.NoError(t, err)
+
+	u := unit(t, f.rev, "a.py (file level)")
+
+	assert.Equal(t, review.Logic, u.Lane, "a changed call at the top of the file is code, not an import")
+}
+
+func TestBuild_anImportOfAScriptingLanguageStaysNoise(t *testing.T) {
+	t.Parallel()
+	f, err := build(pyProject("import os\n\n\ndef f():\n    return os.name\n"), map[string]string{"app/a.py": "import os\nimport sys\n\n\ndef f():\n    return os.name\n"})
+	require.NoError(t, err)
+
+	assert.Equal(t, review.Noise, unit(t, f.rev, "a.py (file level)").Lane)
+}
+
+func TestBuild_aRemovedDeclarationKeepsTheCallersThatStillExist(t *testing.T) {
+	t.Parallel()
+	mod := "module example.com/rm\n\ngo 1.27\n"
+	f, err := build(
+		map[string]string{"go.mod": mod, "rm.go": "package rm\n\nfunc Used() int { return 1 }\n\nfunc Caller() int { return Used() }\n\nfunc Gone() int { return Used() }\n"},
+		map[string]string{"rm.go": "package rm\n\nfunc Caller() int { return 2 }\n"})
+	require.NoError(t, err)
+
+	u := unit(t, f.rev, "Used")
+
+	assert.Equal(t, review.Removed, u.Change)
+	assert.Equal(t, []string{"example.com/rm.Caller"}, u.Callers, "Gone left with it; Caller is still there, now without its call")
+	assert.Contains(t, u.Reasons, "1 caller")
+	assert.Greater(t, u.Risk, 4, "the extra points for the caller")
+}

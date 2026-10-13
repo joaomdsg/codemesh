@@ -23,7 +23,10 @@ func Roots(repoDir string) ([]Root, error) {
 	var out []Root
 	err := filepath.WalkDir(repoDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if p == repoDir {
+				return err
+			}
+			return filepath.SkipDir
 		}
 		if !d.IsDir() {
 			return nil
