@@ -22,12 +22,9 @@ func (p *depsPage) OnInit(ctx *via.Ctx) error {
 
 func (p *depsPage) PageMeta() via.Meta { return via.Meta{Title: "Dependencies · codemesh"} }
 
-func (p *depsPage) View() h.H {
-	a := p.analysis()
-	defer a.Release()
-	if a.Snap == nil {
-		return p.unavailable(tabDeps, a)
-	}
+func (p *depsPage) View() h.H { return p.page(tabDeps, p.body) }
+
+func (p *depsPage) body(a *app.Analysis) h.H {
 	return p.frame(tabDeps, a, h.Div(h.Class("map-layout"),
 		matrix(a, p.mapURL("", "", "")), h.Aside(h.Class("side"), structureFindings(a, p.mapURL("smells", "", "")))))
 }

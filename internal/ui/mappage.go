@@ -83,12 +83,9 @@ func (p *mapPage) Handoff(_ *via.Ctx, key string) {
 
 func (p *mapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }
 
-func (p *mapPage) View() h.H {
-	a := p.analysis()
-	defer a.Release()
-	if a.Snap == nil {
-		return p.unavailable(tabMap, a)
-	}
+func (p *mapPage) View() h.H { return p.page(tabMap, p.body) }
+
+func (p *mapPage) body(a *app.Analysis) h.H {
 	sc := p.scope(a)
 	return p.frame(tabMap, a,
 		basketErrorLine(p.err),

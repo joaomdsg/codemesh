@@ -95,12 +95,9 @@ func (p *diagnosePage) diag(a *app.Analysis, gs []prognosis.Prognosis, lens stri
 	return d
 }
 
-func (p *diagnosePage) View() h.H {
-	a := p.analysis()
-	defer a.Release()
-	if a.Snap == nil {
-		return p.unavailable(tabHealth, a)
-	}
+func (p *diagnosePage) View() h.H { return p.page(tabHealth, p.body) }
+
+func (p *diagnosePage) body(a *app.Analysis) h.H {
 	gs := p.prognoses(a)
 	g := byKey(gs, p.open)
 	if g == nil {

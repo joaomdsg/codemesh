@@ -166,6 +166,16 @@ func (s *shell) stamp() string {
 // analysis is the repo's current root at its default revision.
 func (s *shell) analysis() *app.Analysis { return s.app.Analyse(s.repo.ID, s.root, "") }
 
+// page renders the analysis with body, or says why there is none.
+func (s *shell) page(active tab, body func(*app.Analysis) h.H) h.H {
+	a := s.analysis()
+	defer a.Release()
+	if a.Snap == nil {
+		return s.unavailable(active, a)
+	}
+	return body(a)
+}
+
 // base is the URL prefix of the repo's pages in the root being viewed.
 func (s *shell) base() string { return repoBase(s.repo.ID, s.root) }
 
