@@ -120,7 +120,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		Loaded:      func(k analysis.Key) { a.publish(k.Repo) },
 		Log:         log,
 	})
-	a.watch = live.NewWatcher(ctx, a.eng, cmp.Or(cfg.Poll, time.Second), log)
+	a.watch = live.NewWatcher(ctx, a.eng, cmp.Or(cfg.Poll, time.Second))
 	repos, err := ws.Repos()
 	if err != nil {
 		return nil, err

@@ -2,7 +2,6 @@ package live
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -26,7 +25,6 @@ type Watcher struct {
 	ctx      context.Context
 	eng      *analysis.Engine
 	interval time.Duration
-	log      *slog.Logger
 
 	mu    sync.Mutex
 	repos map[string]*watch
@@ -38,8 +36,8 @@ type watch struct {
 }
 
 // NewWatcher returns a Watcher that polls each repo every interval until ctx ends.
-func NewWatcher(ctx context.Context, eng *analysis.Engine, interval time.Duration, log *slog.Logger) *Watcher {
-	return &Watcher{ctx: ctx, eng: eng, interval: interval, log: log, repos: map[string]*watch{}}
+func NewWatcher(ctx context.Context, eng *analysis.Engine, interval time.Duration) *Watcher {
+	return &Watcher{ctx: ctx, eng: eng, interval: interval, repos: map[string]*watch{}}
 }
 
 // Add starts watching the repo id at dir and returns its topic. A repo
