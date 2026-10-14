@@ -67,18 +67,15 @@ func (p *mapPage) More(_ *via.Ctx) { p.rows += smellsPage }
 
 // Handoff puts the smell with this key in the handoff basket.
 func (p *mapPage) Handoff(_ *via.Ctx, key string) {
-	a := p.analysis()
-	defer a.Release()
-	if a.Snap == nil {
-		return
-	}
-	for _, f := range a.Findings {
-		if findingKey(f) == key {
-			_, err := p.app.BasketAdd(findingItem(a, f))
-			p.err = basketError(err)
-			return
+	p.withSnap(func(a *app.Analysis) {
+		for _, f := range a.Findings {
+			if findingKey(f) == key {
+				_, err := p.app.BasketAdd(findingItem(a, f))
+				p.err = basketError(err)
+				return
+			}
 		}
-	}
+	})
 }
 
 func (p *mapPage) PageMeta() via.Meta { return via.Meta{Title: "Map · codemesh"} }

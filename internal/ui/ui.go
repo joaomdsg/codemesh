@@ -176,6 +176,15 @@ func (s *shell) page(active tab, body func(*app.Analysis) h.H) h.H {
 	return body(a)
 }
 
+// withSnap runs fn on the analysis, if there is one to act on.
+func (s *shell) withSnap(fn func(*app.Analysis)) {
+	a := s.analysis()
+	defer a.Release()
+	if a.Snap != nil {
+		fn(a)
+	}
+}
+
 // base is the URL prefix of the repo's pages in the root being viewed.
 func (s *shell) base() string { return repoBase(s.repo.ID, s.root) }
 

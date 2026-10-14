@@ -51,15 +51,12 @@ func (p *diagnosePage) OnInit(ctx *via.Ctx) error {
 
 // Handoff puts the prognosis with this key in the handoff basket.
 func (p *diagnosePage) Handoff(_ *via.Ctx, key string) {
-	a := p.analysis()
-	defer a.Release()
-	if a.Snap == nil {
-		return
-	}
-	if g := byKey(p.prognoses(a), key); g != nil {
-		_, err := p.app.BasketAdd(prognosisItem(a, *g))
-		p.err = basketError(err)
-	}
+	p.withSnap(func(a *app.Analysis) {
+		if g := byKey(p.prognoses(a), key); g != nil {
+			_, err := p.app.BasketAdd(prognosisItem(a, *g))
+			p.err = basketError(err)
+		}
+	})
 }
 
 // handoff is g's "Add to handoff" control.
