@@ -684,3 +684,39 @@ func TestReading_theNewCallersChipCountsProductionCallersOnce(t *testing.T) {
 
 	assert.Contains(t, body, `class="chip chip-new">+2 new<`, "A and B; the test and B's second call are not new callers")
 }
+
+func TestPRPage_aConnectedTabMovesOnToAPushedHead(t *testing.T) {
+	e, _ := servePR(t)
+	status, _ := e.app.Get(e.base() + "/pr/7")
+	require.Equal(t, http.StatusOK, status)
+	dir := e.repo.Path
+	g := func(args ...string) { require.NoError(t, testrepo.Git(dir, args...)) }
+	git, err := gitx.Open(dir)
+	require.NoError(t, err)
+	g("checkout", "-q", "feat")
+	require.NoError(t, testrepo.Write(dir, map[string]string{"calc/triple.go": "package calc\n\nfunc Triple(x int) int { return 3 * x }\n"}))
+	g("add", "-A")
+	g("commit", "-qm", "triple")
+	head, err := git.ResolveRef("feat")
+	require.NoError(t, err)
+	main, err := git.ResolveRef("main")
+	require.NoError(t, err)
+	g("update-ref", "refs/pull/7/head", head)
+	g("checkout", "-q", "main")
+	script := fmt.Sprintf(`#!/bin/sh
+cat <<'JSON'
+[{"number":7,"title":"Clamp it","author":{"login":"ana"},"headRefName":"feat","baseRefName":"main",
+"headRefOid":%q,"baseRefOid":%q,"url":"https://github.com/o/r/pull/7","isDraft":false,
+"updatedAt":"2026-05-01T10:31:00Z","changedFiles":4,"additions":43,"deletions":5,"reviewDecision":""}]
+JSON
+`, head, main)
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	e.a.RefreshPRs(e.repo.ID)
+	e.a.Wait()
+
+	conn := e.app.ConnectAt(e.base()+"/pr/7", "{}")
+	t.Cleanup(conn.Close)
+	conn.Await("Triple")
+}

@@ -464,3 +464,32 @@ func TestPeekReview_showsNothingUntilTheReviewIsBuiltThenTheReview(t *testing.T)
 	assert.False(t, an.Stale)
 	assert.NotEmpty(t, an.Review.Units)
 }
+
+func TestPeekReview_aReviewOfAnOlderSnapshotCarriesThatSnapshotsTime(t *testing.T) {
+	a := newApp(t)
+	dir := testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead)
+	repo := add(t, a, dir)
+	var first *app.Analysis
+	for range 3 {
+		a.Wait()
+		if first = a.PeekReview(repo.ID, ""); first.Review != nil {
+			break
+		}
+		first.Release()
+	}
+	require.NotNil(t, first.Review)
+	defer first.Release()
+
+	require.NoError(t, testrepo.Write(dir, map[string]string{"calc/triple.go": "package calc\n\nfunc Triple(x int) int { return 3 * x }\n"}))
+	a.Rescan(repo.ID)
+	a.Wait()
+	head := a.Cached(repo.ID, "", "")
+	defer head.Release()
+	require.NotSame(t, first.Snap, head.Snap, "the new snapshot landed")
+
+	an := a.PeekReview(repo.ID, "")
+	defer an.Release()
+	require.Same(t, first.Snap, an.Snap, "the review is still of the old snapshot")
+	assert.True(t, an.Stale)
+	assert.True(t, first.At.Equal(an.At), "shown %v, analysed %v", an.At, first.At)
+}

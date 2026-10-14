@@ -716,3 +716,19 @@ func TestWorkspace_aLocalRepoGetsItsHealthFromTheInboxWithoutBeingOpened(t *test
 	_, body = e.app.Get("/")
 	assert.NotContains(t, body, "Not analysed yet.")
 }
+
+func TestShell_theStampSaysWhenTheShownSnapshotWasAnalysed(t *testing.T) {
+	e := serve(t)
+	cold := vt.Serve(t, ui.New(e.a, "http://example.com"))
+
+	_, body := cold.Get(e.base() + "/")
+	require.Contains(t, body, "skeleton")
+	assert.NotContains(t, body, "analysed ", "nothing is analysed yet")
+
+	e.a.Wait()
+	an := e.a.Cached(e.repo.ID, "", "")
+	defer an.Release()
+	require.NotNil(t, an.Snap)
+	_, body = cold.Get(e.base() + "/")
+	assert.Contains(t, body, "analysed "+an.At.Format("15:04:05"))
+}
