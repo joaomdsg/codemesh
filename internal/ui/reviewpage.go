@@ -192,59 +192,69 @@ func (p *reviewPage) loadPR() (*app.PRReview, func(), error) {
 // the page to render instead.
 func (p *reviewPage) read() (*reading, func(), h.H) {
 	p.files = map[string][]string{}
-	var rd *reading
-	var release func()
+	read := p.readTree
 	if p.pr > 0 {
-		r, rel, err := p.loadPR()
-		release = rel
-		if err != nil {
-			return nil, release, p.frame(tabPRs, nil, p.cannotRead(err))
-		}
-		if r.Head.Snap == nil || r.Base.Snap == nil {
-			bad := r.Head
-			if bad.Snap != nil {
-				bad = r.Base
-			}
-			return nil, release, p.unavailable(tabPRs, bad)
-		}
-		rd = &reading{
-			head: r.Head, base: r.Base, review: r.Review, graph: r.Graph, pr: &r.PR,
-			scope: fmt.Sprintf("pr:%d@%s", p.pr, r.HeadSHA), baseName: r.PR.BaseRef,
-			title: fmt.Sprintf("#%d %s", p.pr, r.PR.Title), baseSHA: r.BaseSHA, headSHA: r.HeadSHA,
-			at: int64(fnv32(r.HeadSHA)),
-		}
-		if len(rd.review.Units) == 0 {
-			return nil, release, p.frame(tabPRs, rd.head, h.P(h.Class("empty"), h.Str("This pull request changes no declarations or files.")))
-		}
-	} else {
-		a := p.app.WorkingReview(p.repo.ID, p.root)
-		release = a.Release
-		switch {
-		case a.Snap == nil:
-			return nil, release, p.unavailable(tabReview, a)
-		case a.Review == nil:
-			return nil, release, p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("Nothing to review: "+a.Note+".")))
-		case len(a.Review.Units) == 0:
-			// Nothing changed: the map, progress and shortcuts would frame nothing.
-			return nil, release, p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("No changes against "+a.Base+". Edits show up here as you make them.")))
-		}
-		rd = &reading{
-			head: a, review: a.Review, scope: "wt", baseName: a.Base, baseSHA: a.BaseSHA,
-			title: "Working tree against " + a.Base, at: a.At.UnixMilli(),
-		}
-		if base := p.app.Analyse(p.repo.ID, p.root, a.BaseSHA); base.Snap != nil {
-			rd.base = base
-			rd.graph = p.graphOf(base, a)
-			release = func() { a.Release(); base.Release() }
-		} else {
-			base.Release()
-		}
+		read = p.readPR
+	}
+	rd, release, page := read()
+	if page != nil {
+		return nil, release, page
 	}
 	rd.keys = map[string]string{}
 	for _, u := range rd.review.Units {
 		if u.Kind != "" {
 			rd.keys[u.ID] = u.Key
 		}
+	}
+	return rd, release, nil
+}
+
+func (p *reviewPage) readPR() (*reading, func(), h.H) {
+	r, release, err := p.loadPR()
+	if err != nil {
+		return nil, release, p.frame(tabPRs, nil, p.cannotRead(err))
+	}
+	if r.Head.Snap == nil || r.Base.Snap == nil {
+		bad := r.Head
+		if bad.Snap != nil {
+			bad = r.Base
+		}
+		return nil, release, p.unavailable(tabPRs, bad)
+	}
+	rd := &reading{
+		head: r.Head, base: r.Base, review: r.Review, graph: r.Graph, pr: &r.PR,
+		scope: fmt.Sprintf("pr:%d@%s", p.pr, r.HeadSHA), baseName: r.PR.BaseRef,
+		title: fmt.Sprintf("#%d %s", p.pr, r.PR.Title), baseSHA: r.BaseSHA, headSHA: r.HeadSHA,
+		at: int64(fnv32(r.HeadSHA)),
+	}
+	if len(rd.review.Units) == 0 {
+		return nil, release, p.frame(tabPRs, rd.head, h.P(h.Class("empty"), h.Str("This pull request changes no declarations or files.")))
+	}
+	return rd, release, nil
+}
+
+func (p *reviewPage) readTree() (*reading, func(), h.H) {
+	a := p.app.WorkingReview(p.repo.ID, p.root)
+	release := a.Release
+	switch {
+	case a.Snap == nil:
+		return nil, release, p.unavailable(tabReview, a)
+	case a.Review == nil:
+		return nil, release, p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("Nothing to review: "+a.Note+".")))
+	case len(a.Review.Units) == 0:
+		// Nothing changed: the map, progress and shortcuts would frame nothing.
+		return nil, release, p.frame(tabReview, a, h.P(h.Class("empty"), h.Str("No changes against "+a.Base+". Edits show up here as you make them.")))
+	}
+	rd := &reading{
+		head: a, review: a.Review, scope: "wt", baseName: a.Base, baseSHA: a.BaseSHA,
+		title: "Working tree against " + a.Base, at: a.At.UnixMilli(),
+	}
+	if base := p.app.Analyse(p.repo.ID, p.root, a.BaseSHA); base.Snap != nil {
+		rd.base = base
+		rd.graph = p.graphOf(base, a)
+		release = func() { a.Release(); base.Release() }
+	} else {
+		base.Release()
 	}
 	return rd, release, nil
 }
