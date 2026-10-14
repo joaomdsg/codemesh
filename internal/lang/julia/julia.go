@@ -126,6 +126,11 @@ func loadJulia(ctx context.Context, abs string) (*code.Snapshot, error) {
 }
 
 func runJulia(ctx context.Context, abs string) (jl, error) {
+	if code.InBulk(ctx) && !strings.Contains(abs, "\n") {
+		if in, ok, err := bulk.run(ctx, abs); ok {
+			return in, err
+		}
+	}
 	var in jl
 	cmd := exec.CommandContext(ctx, "julia", "--startup-file=no", "--history-file=no", "-e", juliaScript, abs)
 	var stderr bytes.Buffer

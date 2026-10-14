@@ -127,6 +127,20 @@ func (s *Snapshot) Decl(id string) *Decl { return s.decls[id] }
 // Package returns the package with the given import path, or nil.
 func (s *Snapshot) Package(path string) *Package { return s.pkgs[path] }
 
+// Reindex rebuilds the lookups behind Decl and Package, which encoders skip,
+// for a Snapshot decoded from its exported fields.
+func (s *Snapshot) Reindex() {
+	s.decls, s.pkgs = map[string]*Decl{}, map[string]*Package{}
+	for _, p := range s.Packages {
+		s.pkgs[p.Path] = p
+		for _, f := range p.Files {
+			for _, d := range f.Decls {
+				s.decls[d.ID] = d
+			}
+		}
+	}
+}
+
 // Decls returns every declaration in package then file order.
 func (s *Snapshot) Decls() []*Decl {
 	var out []*Decl

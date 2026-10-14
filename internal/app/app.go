@@ -111,10 +111,14 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	worktrees := filepath.Join(cacheDir, "worktrees")
 	a.eng = analysis.New(analysis.Config{
-		Worktrees: worktrees,
-		Repo:      a.git,
-		Load:      lang.LoadContext,
-		Log:       log,
+		Worktrees:   worktrees,
+		Repo:        a.git,
+		Load:        lang.LoadContext,
+		Cap:         cacheCap,
+		Store:       analysis.NewDisk(filepath.Join(cacheDir, "snapshots")),
+		Fingerprint: lang.Fingerprint,
+		Loaded:      func(k analysis.Key) { a.publish(k.Repo) },
+		Log:         log,
 	})
 	a.watch = live.NewWatcher(ctx, a.eng, cmp.Or(cfg.Poll, time.Second), log)
 	repos, err := ws.Repos()
@@ -313,10 +317,10 @@ func (a *App) changed(id string) {
 	a.publish(id)
 }
 
-// Rescan drops the working-tree snapshots of a repo, so the next read loads
-// them afresh, without waiting for the watcher.
+// Rescan has the working-tree snapshots of a repo loaded afresh, without
+// waiting for the watcher. Pages show the old ones until then.
 func (a *App) Rescan(id string) {
-	a.eng.Invalidate(id, analysis.Worktree)
+	a.eng.Refresh(id, analysis.Worktree)
 	a.changed(id)
 }
 
@@ -369,6 +373,7 @@ func (a *App) Wait() {
 // Close ends the app's analysis: it cancels the loads in flight, refuses new
 // ones, and waits for them and for the background jobs, or for ctx to end.
 func (a *App) Close(ctx context.Context) error {
+	defer lang.Close()
 	if err := a.eng.Close(ctx); err != nil {
 		return err
 	}
@@ -406,12 +411,20 @@ type repoState struct {
 	tree    map[string]*treeReview // by root
 	prs     *prCache
 	prSum   map[string]*summary // by PR number and head
+	fetched map[int]*fetchedPR  // by PR number
 
 	// What the inbox shows was derived at these generations.
-	treeGen, healthGen   int
-	treeDone, healthDone bool
-	census               [3]int // fix first, fix soon, when convenient
+	treeGen, warmGen int
+	treeDone, warmed bool
+	health           []*code.Snapshot // the snapshots the census counted, by root
+	census           [3]int           // fix first, fix soon, when convenient
+	healthDone       bool
 }
+
+// cacheCap is how many snapshots stay in memory: enough for the roots and
+// review bases of the repos a session moves between. A stored one comes
+// back from disk, but an evicted one would be read again.
+const cacheCap = 32
 
 // repo returns the state of a registered repo, opening it on first use.
 func (a *App) repo(id string) (*repoState, error) {
@@ -451,7 +464,7 @@ func (a *App) repo(id string) (*repoState, error) {
 	}
 	rs = &repoState{
 		info: info, git: git, state: state, notes: ns, thr: ts,
-		updated: time.Now(), tree: map[string]*treeReview{}, prSum: map[string]*summary{},
+		updated: time.Now(), tree: map[string]*treeReview{}, prSum: map[string]*summary{}, fetched: map[int]*fetchedPR{},
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -6,6 +6,7 @@ package analysis
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -14,9 +15,8 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/sync/singleflight"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/gitx"
@@ -54,7 +54,16 @@ type Config struct {
 	// Cap is how many snapshots stay cached. Zero means 8. Snapshots in use
 	// are never evicted, so more can be resident.
 	Cap int
-	Log *slog.Logger
+	// Store keeps snapshots across restarts. Nil keeps them in memory only.
+	Store Store
+	// Fingerprint names the state of the files a load of dir reads, so a
+	// stored snapshot of the working tree is known to be current. Nil means a
+	// stored one is shown while it is analysed again.
+	Fingerprint func(dir string) string
+	// Loaded is told each time a snapshot of key lands, current or not, and
+	// each time a load of it fails.
+	Loaded func(Key)
+	Log    *slog.Logger
 }
 
 // Result is a loaded snapshot with its findings. Err is set instead when the
@@ -65,6 +74,7 @@ type Result struct {
 	Snap     *code.Snapshot
 	Findings []smell.Finding
 	Took     time.Duration // how long the load took, for a cached result the load that made it
+	Stale    bool          // Snap is the last one; a load of newer files is due
 	Err      error
 
 	release func()
@@ -82,8 +92,7 @@ func (r *Result) Release() {
 type Engine struct {
 	cfg   Config
 	cache *cache
-	group singleflight.Group
-	pool  pool
+	pool  *pool
 
 	// wtMu serialises worktree changes; wtRefs counts the entries reading
 	// each worktree, as several roots of one commit share it.
@@ -91,20 +100,28 @@ type Engine struct {
 	wtRefs map[string]int
 
 	// mu guards closed and flights: the loads in progress, which Close and
-	// Forget cancel and wait for. It also guards epochs, which count the
-	// invalidations of a repo's rev, so a load that began before one is not cached.
+	// Forget cancel and wait for, found by key and epoch so one key loads once.
+	// It also guards epochs, which count the invalidations of a repo's rev, so
+	// a load that began before one is not cached, and failed, the error of
+	// each key's last load, so a broken root is not loaded on every Ensure.
 	mu      sync.Mutex
 	ctx     context.Context
 	cancel  context.CancelFunc
 	closed  bool
-	flights map[*flight]struct{}
+	flights map[string]*flight
 	epochs  map[string]int
+	failed  map[Key]error
 }
 
 type flight struct {
 	repo   string
+	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
+	err    error // set before done closes
+	// urgent is set when a page asks for a warm load; the pool reads it when
+	// the load queues, and promote moves it once queued.
+	urgent atomic.Bool
 }
 
 // New returns an Engine.
@@ -122,34 +139,14 @@ func New(cfg Config) *Engine {
 	return &Engine{
 		cfg:     cfg,
 		cache:   newCache(cfg.Cap),
-		pool:    make(pool, cfg.Workers),
+		pool:    newPool(cfg.Workers),
 		wtRefs:  map[string]int{},
 		ctx:     ctx,
 		cancel:  cancel,
-		flights: map[*flight]struct{}{},
+		flights: map[string]*flight{},
 		epochs:  map[string]int{},
+		failed:  map[Key]error{},
 	}
-}
-
-// begin registers a load of repo. Its ctx ends with Close or Forget.
-func (e *Engine) begin(repo string) (*flight, context.Context, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.closed {
-		return nil, nil, ErrClosed
-	}
-	ctx, cancel := context.WithCancel(e.ctx)
-	f := &flight{repo: repo, cancel: cancel, done: make(chan struct{})}
-	e.flights[f] = struct{}{}
-	return f, ctx, nil
-}
-
-func (e *Engine) end(f *flight) {
-	f.cancel()
-	e.mu.Lock()
-	delete(e.flights, f)
-	e.mu.Unlock()
-	close(f.done)
 }
 
 // Close cancels every load in progress, waits for them to end or for ctx to,
@@ -159,7 +156,7 @@ func (e *Engine) Close(ctx context.Context) error {
 	e.mu.Lock()
 	e.closed = true
 	e.cancel()
-	fs := slices.Collect(maps.Keys(e.flights))
+	fs := slices.Collect(maps.Values(e.flights))
 	e.mu.Unlock()
 	for _, f := range fs {
 		select {
@@ -185,10 +182,15 @@ func (e *Engine) Busy() bool {
 func (e *Engine) Forget(repo string) {
 	e.mu.Lock()
 	var fs []*flight
-	for f := range e.flights {
+	for _, f := range e.flights {
 		if f.repo == repo {
 			f.cancel()
 			fs = append(fs, f)
+		}
+	}
+	for k := range e.failed {
+		if k.Repo == repo {
+			delete(e.failed, k)
 		}
 	}
 	e.mu.Unlock()
@@ -196,43 +198,131 @@ func (e *Engine) Forget(repo string) {
 		<-f.done
 	}
 	e.finish(e.cache.drop(func(k Key) bool { return k.Repo == repo }))
+	if e.cfg.Store != nil {
+		if err := e.cfg.Store.Forget(repo); err != nil {
+			e.cfg.Log.Warn("forget stored snapshots", "repo", repo, "err", err)
+		}
+	}
 }
 
-// Get returns the snapshot for key, loading it unless it is cached or being
-// loaded. Callers must Release the result. A cancelled ctx stops the wait,
-// not the load, which other callers or a later Get can use; Close and Forget
-// stop it.
+// Get returns the current snapshot for key, loading it unless it is cached
+// or being loaded. Callers must Release the result. A cancelled ctx stops the
+// wait, not the load, which other callers or a later Get can use; Close and
+// Forget stop it.
 func (e *Engine) Get(ctx context.Context, key Key) *Result {
 	repo, key, err := e.resolve(key)
 	if err != nil {
 		return &Result{Key: key, Err: err}
 	}
 	for {
-		if ent := e.cache.acquire(key); ent != nil {
-			return e.result(ent)
+		if ent, _ := e.cache.acquire(key, true); ent != nil {
+			return e.result(ent, false)
 		}
-		ch := e.start(repo, key)
+		f := e.start(repo, key, false)
+		f.urgent.Store(true)
+		e.pool.promote(key)
 		select {
 		case <-ctx.Done():
 			return &Result{Key: key, Err: ctx.Err()}
-		case r := <-ch:
-			if r.Err != nil {
-				return &Result{Key: key, Err: r.Err}
+		case <-f.done:
+			if f.err != nil {
+				return &Result{Key: key, Err: f.err}
 			}
 		}
 	}
 }
 
-// start loads key unless a load of it at the current epoch is under way, and
-// returns the channel that says when it ends.
-func (e *Engine) start(repo *gitx.Repo, key Key) <-chan singleflight.Result {
-	epoch := e.epoch(key)
-	return e.group.DoChan(key.Repo+"\x00"+key.Rev+"\x00"+key.Root+"\x00"+strconv.Itoa(epoch), func() (any, error) {
-		if e.cache.has(key) {
-			return nil, nil
+// Peek returns what is cached for key without loading or waiting: the
+// snapshot, Stale while newer files are due; else the error of its last load;
+// else neither. A stored snapshot of the working tree counts as cached, as
+// reading it needs no checkout. Callers must Release the result.
+func (e *Engine) Peek(key Key) *Result {
+	repo, key, err := e.resolve(key)
+	if err != nil {
+		return &Result{Key: key, Err: err}
+	}
+	if key.Rev == Worktree && !e.cache.holds(key) {
+		e.mu.Lock()
+		epoch := e.epochs[epochKey(key.Repo, key.Rev)]
+		e.mu.Unlock()
+		if ent := e.restore(repo, key); ent != nil {
+			ent.stale = !e.current(repo, ent)
+			e.add(ent, epoch, true)
 		}
-		return nil, e.load(repo, key, epoch)
-	})
+	}
+	ent, stale := e.cache.acquire(key, false)
+	e.mu.Lock()
+	failed := e.failed[key]
+	e.mu.Unlock()
+	if ent != nil {
+		// A stale snapshot whose reload failed waits for the next change.
+		return e.result(ent, stale && failed == nil)
+	}
+	return &Result{Key: key, Err: failed}
+}
+
+// Ensure starts loading key unless it is current, being loaded or failed
+// last time, ahead of warm-up loads. It does not wait; Config.Loaded hears
+// when the snapshot lands.
+func (e *Engine) Ensure(key Key) { e.ensure(key, false) }
+
+// Warm starts loading keys behind the loads Ensure and Get ask for. Loads
+// started here carry code.Bulk in their context.
+func (e *Engine) Warm(keys ...Key) {
+	for _, k := range keys {
+		e.ensure(k, true)
+	}
+}
+
+func (e *Engine) ensure(key Key, warm bool) {
+	repo, key, err := e.resolve(key)
+	if err != nil || e.cache.current(key) {
+		return
+	}
+	e.mu.Lock()
+	_, failed := e.failed[key]
+	e.mu.Unlock()
+	if failed {
+		return
+	}
+	f := e.start(repo, key, warm)
+	if !warm {
+		f.urgent.Store(true)
+		e.pool.promote(key)
+	}
+}
+
+// start loads key unless a load of it at the current epoch is under way, and
+// returns that load. The load is registered before start returns, so Busy
+// sees it.
+func (e *Engine) start(repo *gitx.Repo, key Key, warm bool) *flight {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	epoch := e.epochs[epochKey(key.Repo, key.Rev)]
+	id := key.Repo + "\x00" + key.Rev + "\x00" + key.Root + "\x00" + strconv.Itoa(epoch)
+	if f := e.flights[id]; f != nil {
+		return f
+	}
+	f := &flight{repo: key.Repo, done: make(chan struct{})}
+	f.urgent.Store(!warm)
+	if e.closed {
+		f.err = ErrClosed
+		close(f.done)
+		return f
+	}
+	f.ctx, f.cancel = context.WithCancel(e.ctx)
+	e.flights[id] = f
+	go func() {
+		if !e.cache.current(key) {
+			f.err = e.load(f.ctx, repo, key, epoch, f, warm)
+		}
+		f.cancel()
+		e.mu.Lock()
+		delete(e.flights, id)
+		e.mu.Unlock()
+		close(f.done)
+	}()
+	return f
 }
 
 // resolve finds key's repo and pins a commit rev to its sha, so a cached
@@ -254,37 +344,77 @@ func (e *Engine) resolve(key Key) (*gitx.Repo, Key, error) {
 // files changed. Holders keep their result; the next Get loads afresh, even if
 // a load of the old files is under way.
 func (e *Engine) Invalidate(repo, rev string) {
-	e.mu.Lock()
-	e.epochs[epochKey(repo, rev)]++
-	e.mu.Unlock()
+	e.bump(repo, rev)
 	e.finish(e.cache.drop(func(k Key) bool { return k.Repo == repo && k.Rev == rev }))
+}
+
+// Refresh is Invalidate that keeps showing the old snapshots: Peek returns
+// each, Stale, until a load of the changed files replaces it. It loads only
+// the roots that were cached.
+func (e *Engine) Refresh(repo, rev string) {
+	e.bump(repo, rev)
+	for _, k := range e.cache.stale(func(k Key) bool { return k.Repo == repo && k.Rev == rev }) {
+		e.Ensure(k)
+	}
+}
+
+// bump starts a new epoch of rev in repo, forgetting its failed loads.
+func (e *Engine) bump(repo, rev string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.epochs[epochKey(repo, rev)]++
+	for k := range e.failed {
+		if k.Repo == repo && k.Rev == rev {
+			delete(e.failed, k)
+		}
+	}
 }
 
 // epochKey names what Invalidate bumps: every root of one rev of a repo.
 func epochKey(repo, rev string) string { return repo + "\x00" + rev }
 
-func (e *Engine) epoch(key Key) int {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.epochs[epochKey(key.Repo, key.Rev)]
-}
-
-func (e *Engine) result(ent *entry) *Result {
+func (e *Engine) result(ent *entry, stale bool) *Result {
 	var once sync.Once
 	return &Result{
-		Key: ent.key, Snap: ent.snap, Findings: ent.findings, Took: ent.took,
+		Key: ent.key, Snap: ent.snap, Findings: ent.findings, Took: ent.took, Stale: stale,
 		release: func() { once.Do(func() { e.finish(e.cache.release(ent)) }) },
 	}
 }
 
-func (e *Engine) load(repo *gitx.Repo, key Key, epoch int) error {
-	fl, ctx, err := e.begin(key.Repo)
-	if err != nil {
-		return err
+// load brings key into the cache: from the store when it holds the key,
+// then from the files unless the stored snapshot is current.
+func (e *Engine) load(ctx context.Context, repo *gitx.Repo, key Key, epoch int, f *flight, warm bool) error {
+	if warm {
+		ctx = code.Bulk(ctx)
 	}
-	defer e.end(fl)
+	err := e.fill(ctx, repo, key, epoch, f)
+	if err != nil && ctx.Err() == nil {
+		e.mu.Lock()
+		e.failed[key] = err
+		e.mu.Unlock()
+		e.loaded(key)
+	}
+	return err
+}
+
+func (e *Engine) fill(ctx context.Context, repo *gitx.Repo, key Key, epoch int, f *flight) error {
+	// Taken before the files are read, so an edit during the load leaves the
+	// snapshot not current.
+	basis := e.basis(repo, key)
+	if !e.cache.holds(key) {
+		if ent := e.restore(repo, key); ent != nil {
+			ent.stale = basis == "" || ent.basis != basis
+			if e.add(ent, epoch, true) {
+				e.loaded(key)
+			}
+			if e.cache.current(key) {
+				return nil
+			}
+		}
+	}
 	var ent *entry
-	if perr := e.pool.run(ctx, func() { ent, err = e.produce(ctx, repo, key) }); perr != nil {
+	var err error
+	if perr := e.pool.run(ctx, key, f.urgent.Load, func() { ent, err = e.produce(ctx, repo, key) }); perr != nil {
 		return perr
 	}
 	if err != nil {
@@ -294,18 +424,96 @@ func (e *Engine) load(repo *gitx.Repo, key Key, epoch int) error {
 		e.dropWorktree(ent)
 		return err
 	}
-	// Under mu, so an Invalidate lands either before this check, which
-	// discards the snapshot, or after the add, which drops it.
-	e.mu.Lock()
-	if e.epochs[epochKey(key.Repo, key.Rev)] != epoch {
-		e.mu.Unlock()
-		e.dropWorktree(ent)
+	ent.basis = basis
+	if !e.add(ent, epoch, false) {
 		return nil
 	}
-	gone := e.cache.add(ent)
+	e.save(ent)
+	e.loaded(key)
+	return nil
+}
+
+// add caches ent unless an Invalidate or Refresh came after its load began,
+// or, with absent set, the key is cached already. It reports whether it did.
+// Under mu, so an Invalidate lands either before the check, which discards
+// ent, or after the add, which drops or marks it.
+func (e *Engine) add(ent *entry, epoch int, absent bool) bool {
+	e.mu.Lock()
+	if e.epochs[epochKey(ent.key.Repo, ent.key.Rev)] != epoch {
+		e.mu.Unlock()
+		e.dropWorktree(ent)
+		return false
+	}
+	added, gone := e.cache.add(ent, absent)
+	if added {
+		delete(e.failed, ent.key)
+	}
 	e.mu.Unlock()
 	e.finish(gone)
-	return nil
+	if !added {
+		e.dropWorktree(ent)
+	}
+	return added
+}
+
+func (e *Engine) loaded(key Key) {
+	if e.cfg.Loaded != nil {
+		e.cfg.Loaded(key)
+	}
+}
+
+// current reports whether a restored entry read the files key names now.
+func (e *Engine) current(repo *gitx.Repo, ent *entry) bool {
+	basis := e.basis(repo, ent.key)
+	return basis != "" && ent.basis == basis
+}
+
+// basis names the files a load of key reads: a commit's sha, or the working
+// tree's fingerprint and HEAD, which churn counts from. "" means unknown.
+func (e *Engine) basis(repo *gitx.Repo, key Key) string {
+	if key.Rev != Worktree {
+		return key.Rev
+	}
+	if e.cfg.Fingerprint == nil {
+		return ""
+	}
+	head, _ := repo.Head()
+	return e.cfg.Fingerprint(filepath.Join(repo.Dir, key.Root)) + " " + head
+}
+
+// restore reads key's stored snapshot, checking out the commit it reads its
+// source from. It returns nil when there is none to use.
+func (e *Engine) restore(repo *gitx.Repo, key Key) *entry {
+	if e.cfg.Store == nil {
+		return nil
+	}
+	s, err := e.cfg.Store.Load(key)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			e.cfg.Log.Warn("read stored snapshot", "repo", key.Repo, "rev", key.Rev, "root", key.Root, "err", err)
+		}
+		return nil
+	}
+	ent := &entry{key: key, repo: repo, snap: s.Snap, findings: s.Findings, took: s.Took, basis: s.Basis}
+	checkout := repo.Dir
+	if key.Rev != Worktree {
+		if checkout, err = e.checkout(repo, key); err != nil {
+			return nil
+		}
+		ent.wt = checkout
+	}
+	ent.snap.Dir = filepath.Join(checkout, key.Root)
+	return ent
+}
+
+func (e *Engine) save(ent *entry) {
+	if e.cfg.Store == nil {
+		return
+	}
+	err := e.cfg.Store.Save(ent.key, &Saved{Basis: ent.basis, Snap: ent.snap, Findings: ent.findings, Took: ent.took})
+	if err != nil {
+		e.cfg.Log.Warn("store snapshot", "repo", ent.key.Repo, "rev", ent.key.Rev, "root", ent.key.Root, "err", err)
+	}
 }
 
 // produce analyses the files key names: its snapshot, churn and smells.

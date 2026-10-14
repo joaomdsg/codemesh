@@ -2,10 +2,12 @@ package code_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestBuilder_buildsIndexedSnapshotWithSortedEdges(t *testing.T) {
@@ -85,3 +87,23 @@ type frontendStub struct{}
 func (frontendStub) Lang() code.Lang                                      { return code.Julia }
 func (frontendStub) Detect(string) bool                                   { return false }
 func (frontendStub) Load(context.Context, string) (*code.Snapshot, error) { return nil, nil }
+
+func TestSnapshot_reindexRestoresLookupsAfterAJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	b := code.NewBuilder(code.Go, "demo", "/demo")
+	p := b.Package(code.Package{Path: "demo/a", Rel: "a", Name: "a"})
+	f := b.File(p, code.File{Path: "a/a.go", Lines: 4})
+	target := b.Decl(f, code.Decl{ID: "demo/a.T", Name: "T", Kind: code.Func})
+	b.Link(b.Decl(f, code.Decl{ID: "demo/a.U", Name: "U", Kind: code.Func}), target, code.Caller)
+	data, err := json.Marshal(b.Finish())
+	require.NoError(t, err)
+
+	var s code.Snapshot
+	require.NoError(t, json.Unmarshal(data, &s))
+	s.Reindex()
+
+	require.NotNil(t, s.Decl("demo/a.T"))
+	assert.Same(t, s.Packages[0].Files[0].Decls[0], s.Decl("demo/a.T"))
+	assert.Same(t, s.Packages[0], s.Package("demo/a"))
+	assert.Equal(t, []string{"demo/a.U"}, s.Decl("demo/a.T").Callers)
+}

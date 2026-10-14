@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/ghx"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/lang"
@@ -288,14 +289,15 @@ type LangInfo struct{ Name, Precision string }
 type Card struct {
 	Repo    workspace.Repo
 	Langs   []LangInfo
-	Ready   bool   // the health census is in
+	Ready   bool   // some root is analysed, so the census counts it
 	Census  [3]int // fix first, fix soon, when convenient
 	Updated time.Time
 	PRs     PRList
 }
 
-// Cards describes each repo. The health census is computed in the
-// background; Ready says it is in.
+// Cards describes each repo. The health census counts only what is already
+// analysed, in memory or, for a working tree, stored; it loads nothing. A
+// repo is analysed once one of its pages opens.
 func (a *App) Cards() []Card {
 	repos, _ := a.ws.Repos()
 	var out []Card
@@ -312,37 +314,39 @@ func (a *App) Cards() []Card {
 				c.Langs = append(c.Langs, l)
 			}
 		}
-		rs.mu.Lock()
-		stale := !rs.healthDone || rs.healthGen != rs.gen
-		c.Ready, c.Census, c.Updated = rs.healthDone, rs.census, rs.updated
-		rs.mu.Unlock()
-		if stale {
-			a.refreshHealth(rs)
-		}
+		c.Ready, c.Census = a.health(rs)
+		c.Updated = a.Updated(r.ID)
 		out = append(out, c)
 	}
 	return out
 }
 
-func (a *App) refreshHealth(rs *repoState) {
-	a.background("health:"+rs.info.ID, rs.info.ID, func() {
-		rs.mu.Lock()
-		gen := rs.gen
-		rs.mu.Unlock()
+// health is the census of the repo's analysed roots, counted again when
+// one of their snapshots changes.
+func (a *App) health(rs *repoState) (bool, [3]int) {
+	var ans []*Analysis
+	var snaps []*code.Snapshot
+	for _, root := range a.Roots(rs.info.ID) {
+		an := a.Cached(rs.info.ID, root.Dir, "")
+		defer an.Release()
+		ans = append(ans, an)
+		snaps = append(snaps, an.Snap)
+	}
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if !rs.healthDone || !slices.Equal(rs.health, snaps) {
 		var census [3]int
-		for _, root := range a.Roots(rs.info.ID) {
-			an := a.Analyse(rs.info.ID, root.Dir, "")
-			if an.Err == nil {
-				for _, p := range an.Prognoses() {
-					if l := int(p.Level); l >= 1 && l <= 3 {
-						census[3-l]++
-					}
+		for _, an := range ans {
+			if an.Snap == nil {
+				continue
+			}
+			for _, p := range an.Prognoses() {
+				if l := int(p.Level); l >= 1 && l <= 3 {
+					census[3-l]++
 				}
 			}
-			an.Release()
 		}
-		rs.mu.Lock()
-		rs.healthGen, rs.healthDone, rs.census = gen, true, census
-		rs.mu.Unlock()
-	})
+		rs.health, rs.census, rs.healthDone = snaps, census, true
+	}
+	return slices.ContainsFunc(snaps, func(s *code.Snapshot) bool { return s != nil }), rs.census
 }

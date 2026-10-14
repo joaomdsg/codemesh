@@ -44,12 +44,24 @@ func newFixture(t *testing.T, cfg analysis.Config) *fixture {
 	require.NoError(t, err)
 	f.base, err = repo.ResolveRef("HEAD~1")
 	require.NoError(t, err)
+	f.start(cfg)
+	return f
+}
+
+// restart is a second engine over f's repo, as after codemesh restarts.
+func (f *fixture) restart(t *testing.T, cfg analysis.Config) *fixture {
+	g := &fixture{repo: f.repo, dir: f.dir, worktrees: t.TempDir(), base: f.base, head: f.head}
+	g.start(cfg)
+	return g
+}
+
+func (f *fixture) start(cfg analysis.Config) {
 	cfg.Worktrees = f.worktrees
 	cfg.Repo = func(id string) (*gitx.Repo, error) {
 		if id != "calc" {
 			return nil, errors.New("unknown repo " + id)
 		}
-		return repo, nil
+		return f.repo, nil
 	}
 	if cfg.Load == nil {
 		cfg.Load = func(_ context.Context, dir string) (*code.Snapshot, error) {
@@ -59,7 +71,6 @@ func newFixture(t *testing.T, cfg analysis.Config) *fixture {
 		}
 	}
 	f.eng = analysis.New(cfg)
-	return f
 }
 
 func (f *fixture) key(rev string) analysis.Key {

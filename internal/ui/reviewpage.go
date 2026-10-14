@@ -164,9 +164,10 @@ func (p *reviewPage) dispose() {
 	}
 }
 
-// loadPR reads the pull request. A tab that stays connected keeps what it
-// loaded, so a keystroke does not fetch it again; a page that is only read
-// once gives its snapshots back when its render ends.
+// loadPR reads the pull request, or nil and no error while it loads. A tab
+// that stays connected keeps what it loaded, so a keystroke does not read it
+// again; a page that is only read once gives its snapshots back when its
+// render ends.
 func (p *reviewPage) loadPR() (*app.PRReview, func(), error) {
 	if p.loaded != nil {
 		return p.loaded, func() {}, nil
@@ -174,8 +175,10 @@ func (p *reviewPage) loadPR() (*app.PRReview, func(), error) {
 	if p.loadErr != nil {
 		return nil, func() {}, p.loadErr
 	}
-	r, err := p.app.PRReview(p.repo.ID, p.root, p.pr)
+	r, err := p.app.PeekPR(p.repo.ID, p.root, p.pr)
 	switch {
+	case r == nil && err == nil:
+		return nil, func() {}, nil
 	case err != nil:
 		if p.live {
 			p.loadErr = err
@@ -211,8 +214,11 @@ func (p *reviewPage) read() (*reading, func(), h.H) {
 
 func (p *reviewPage) readPR() (*reading, func(), h.H) {
 	r, release, err := p.loadPR()
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, release, p.frame(tabPRs, nil, p.cannotRead(err))
+	case r == nil:
+		return nil, release, p.unavailable(tabPRs, &app.Analysis{})
 	}
 	if r.Head.Snap == nil || r.Base.Snap == nil {
 		bad := r.Head
@@ -234,7 +240,7 @@ func (p *reviewPage) readPR() (*reading, func(), h.H) {
 }
 
 func (p *reviewPage) readTree() (*reading, func(), h.H) {
-	a := p.app.WorkingReview(p.repo.ID, p.root)
+	a := p.app.PeekReview(p.repo.ID, p.root)
 	release := a.Release
 	switch {
 	case a.Snap == nil:
@@ -249,7 +255,7 @@ func (p *reviewPage) readTree() (*reading, func(), h.H) {
 		head: a, review: a.Review, scope: "wt", baseName: a.Base, baseSHA: a.BaseSHA,
 		title: "Working tree against " + a.Base, at: a.At.UnixMilli(),
 	}
-	if base := p.app.Analyse(p.repo.ID, p.root, a.BaseSHA); base.Snap != nil {
+	if base := p.app.Peek(p.repo.ID, p.root, a.BaseSHA); base.Snap != nil {
 		rd.base = base
 		rd.graph = p.graphOf(base, a)
 		release = func() { a.Release(); base.Release() }

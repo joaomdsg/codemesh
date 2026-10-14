@@ -44,6 +44,20 @@ func (c *Comparison) fillMissing() bool {
 	return true
 }
 
+// settled is Get that answers a load which failed with its error, as Ensure
+// does, rather than loading again before the files change.
+func (e *Engine) settled(ctx context.Context, key Key) *Result {
+	if _, k, err := e.resolve(key); err == nil {
+		e.mu.Lock()
+		err = e.failed[k]
+		e.mu.Unlock()
+		if err != nil {
+			return &Result{Key: k, Err: err}
+		}
+	}
+	return e.Get(ctx, key)
+}
+
 // Compare loads base and head independently and diffs them. head may be
 // Worktree, which is compared as the working tree, untracked files included.
 func (e *Engine) Compare(ctx context.Context, repoID, root, base, head string) (*Comparison, error) {
@@ -54,11 +68,11 @@ func (e *Engine) Compare(ctx context.Context, repoID, root, base, head string) (
 	c := &Comparison{}
 	var g errgroup.Group
 	g.Go(func() error {
-		c.Base = e.Get(ctx, Key{repoID, base, root})
+		c.Base = e.settled(ctx, Key{repoID, base, root})
 		return c.Base.Err
 	})
 	g.Go(func() error {
-		c.Head = e.Get(ctx, Key{repoID, head, root})
+		c.Head = e.settled(ctx, Key{repoID, head, root})
 		return c.Head.Err
 	})
 	if err := g.Wait(); err != nil && !c.fillMissing() {

@@ -84,7 +84,6 @@ func TestWatcher_editPublishesOnTheReposTopicAndTheEngineReloads(t *testing.T) {
 
 	u := expectUpdate(t, sub)
 	assert.Equal(t, "calc", u.Repo)
-	assert.NoError(t, u.Err)
 	r := eng.Get(t.Context(), worktreeKey("calc"))
 	t.Cleanup(r.Release)
 	require.NoError(t, r.Err)

@@ -6,6 +6,7 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -117,11 +118,35 @@ func serveDirs(t *testing.T, dirs ...string) env {
 	}
 	repos, err := a.Repos()
 	require.NoError(t, err)
-	e := env{app: vt.Serve(t, ui.New(a, "http://example.com")), a: a, repos: repos}
+	e := env{app: vt.Serve(t, settled(a, ui.New(a, "http://example.com"))), a: a, repos: repos}
 	if len(repos) > 0 {
 		e.repo = repos[0]
 	}
 	return e
+}
+
+// settled serves a page once what it shows has loaded: while a GET renders
+// the loading marker, it waits for the app's loads and asks again. Tests of
+// the loading state itself serve ui.New directly.
+func settled(a *app.App, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || strings.Contains(r.URL.Path, "/_via/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		var rec *httptest.ResponseRecorder
+		for range 50 {
+			rec = httptest.NewRecorder()
+			next.ServeHTTP(rec, r.Clone(r.Context()))
+			if !strings.Contains(rec.Body.String(), `class="analysing"`) {
+				break
+			}
+			a.Wait()
+		}
+		maps.Copy(w.Header(), rec.Header())
+		w.WriteHeader(rec.Code)
+		_, _ = w.Write(rec.Body.Bytes())
+	})
 }
 
 // ghExits sets the fake gh's exit code and has every repo list its PRs again:
@@ -374,10 +399,10 @@ func TestMap_offersSixtyMoreSmellsAtATime(t *testing.T) {
 // to 64 KiB: with a handoff button on each row, that is about 70 rows.
 func TestMap_pagesASmellsListPastSixty(t *testing.T) {
 	e := serveRepo(t, testrepo.CalcBase, map[string]string{"calc/many.go": manyParams(70)})
+	_, body := e.app.Get(e.base() + mapView("in", "example.com/calc/calc"))
 	conn := e.app.ConnectAt(e.base()+mapView("in", "example.com/calc/calc"), "{}")
 	t.Cleanup(conn.Close)
-
-	_, body := e.app.Get(e.base() + mapView("in", "example.com/calc/calc"))
+	conn.Await("data-live") // the frame every connect pushes
 	assert.Equal(t, 60, strings.Count(body, `<li class="finding">`))
 	require.Contains(t, body, "Show 11 more smells (11 left)")
 
@@ -651,4 +676,42 @@ func TestWorkspace_putsTheReposBesideTheInbox(t *testing.T) {
 	body := pageWith(t, e, "/", `class="ws-grid"`)
 
 	assert.Regexp(t, `(?s)<div class="ws-grid"><section>.*?Inbox.*?</section><aside[^>]*>.*?Repos.*?</aside></div>`, body)
+}
+
+func TestLoading_aColdPageShowsASkeletonAndPushesTheMapWhenItLands(t *testing.T) {
+	e := serve(t)
+	cold := vt.Serve(t, ui.New(e.a, "http://example.com"))
+
+	_, body := cold.Get(e.base() + "/")
+	assert.Contains(t, body, `class="map-layout skeleton"`)
+	assert.Contains(t, body, "Analysing…")
+	conn := cold.ConnectAt(e.base()+"/", "{}")
+	t.Cleanup(conn.Close)
+	e.a.Wait()
+
+	assert.NotContains(t, conn.Await(`class="map-pane"`), "Analysing…")
+}
+
+func TestLoading_aPageConnectingAfterItsAnalysisLandedGetsTheMap(t *testing.T) {
+	e := serve(t)
+	cold := vt.Serve(t, ui.New(e.a, "http://example.com"))
+
+	_, body := cold.Get(e.base() + "/")
+	require.Contains(t, body, "skeleton")
+	e.a.Wait()
+	conn := cold.ConnectAt(e.base()+"/", "{}")
+	t.Cleanup(conn.Close)
+
+	conn.Await(`class="map-pane"`)
+}
+
+func TestWorkspace_aRepoNotOpenedYetHasNoHealthUntilItIsOpened(t *testing.T) {
+	e := serve(t)
+
+	_, body := e.app.Get("/")
+	assert.Contains(t, body, "Not analysed yet.")
+
+	e.app.Get(e.base() + "/")
+	_, body = e.app.Get("/")
+	assert.NotContains(t, body, "Not analysed yet.")
 }

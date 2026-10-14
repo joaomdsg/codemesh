@@ -16,6 +16,8 @@ type entry struct {
 	repo     *gitx.Repo
 	took     time.Duration
 	wt       string // worktree the snapshot reads from; "" for WORKTREE
+	basis    string // what the load read; see Engine.basis
+	stale    bool   // newer files are due; the entry stays until they land
 	refs     int
 	used     uint64
 	removed  bool
@@ -32,34 +34,67 @@ type cache struct {
 
 func newCache(cap int) *cache { return &cache{m: map[Key]*entry{}, cap: cap} }
 
-// acquire returns the entry for key with one more hold on it, or nil.
-func (c *cache) acquire(k Key) *entry {
+// acquire returns the entry for key with one more hold on it, or nil. With
+// current set, a stale entry counts as none.
+func (c *cache) acquire(k Key, current bool) (e *entry, stale bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e := c.m[k]
-	if e == nil {
-		return nil
+	e = c.m[k]
+	if e == nil || current && e.stale {
+		return nil, false
 	}
 	c.tick++
 	e.refs++
 	e.used = c.tick
-	return e
+	return e, e.stale
 }
 
-func (c *cache) has(k Key) bool {
+// current reports whether key has an entry that is not stale.
+func (c *cache) current(k Key) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.m[k] != nil && !c.m[k].stale
+}
+
+// holds reports whether key has an entry, stale or not.
+func (c *cache) holds(k Key) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.m[k] != nil
 }
 
-// add stores e, unheld, and returns the entries it evicted.
-func (c *cache) add(e *entry) []*entry {
+// add stores e, unheld, in place of any entry of its key, or only when there
+// is none if absent is set. It reports whether it stored e, and returns the
+// entries now out of the cache and unheld.
+func (c *cache) add(e *entry, absent bool) (added bool, gone []*entry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if absent && c.m[e.key] != nil {
+		return false, nil
+	}
+	if old := c.m[e.key]; old != nil {
+		old.removed = true
+		if old.refs == 0 {
+			gone = append(gone, old)
+		}
+	}
 	c.tick++
 	e.used = c.tick
 	c.m[e.key] = e
-	return c.trim(e)
+	return true, append(gone, c.trim(e)...)
+}
+
+// stale marks the entries match selects as stale and returns their keys.
+func (c *cache) stale(match func(Key) bool) (keys []Key) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k, e := range c.m {
+		if match(k) {
+			e.stale = true
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }
 
 // trim evicts unheld entries, least recently used first, until the cache is

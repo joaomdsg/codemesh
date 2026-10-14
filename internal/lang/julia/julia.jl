@@ -1,5 +1,6 @@
 # Extracts a Julia package's modules, files and top-level declarations for
-# codemesh, as JSON on stdout. Run as: julia --startup-file=no julia.jl <root>
+# codemesh, as JSON on stdout. Run as: julia --startup-file=no julia.jl <root>,
+# or with --serve to read many roots from stdin.
 #
 # It uses Julia's own parser (Base.JuliaSyntax), so every span and name is the
 # one Julia sees. Files are reached the way Julia reaches them: from
@@ -326,7 +327,7 @@ function jarr(io, xs)
     print(io, ']')
 end
 
-function main(root)
+function main(root, io=stdout)
     ROOT[] = abspath(root)
     foreach(empty!, (mods, files, code, decls, seen, aliases))
     proj = read(joinpath(ROOT[], "Project.toml"), String)
@@ -356,7 +357,6 @@ function main(root)
             endswith(f, ".jl") && parsefile(joinpath(d, f), name, dir == "test")
         end
     end
-    io = stdout
     print(io, "{\"module\":")
     jstr(io, name)
     print(io, ",\"aliases\":{")
@@ -400,4 +400,19 @@ function main(root)
     println(io, "]}")
 end
 
-main(ARGS[1])
+# serve reads one root per line and answers each with one line: the JSON, or
+# {"error":...} when the root cannot be read.
+function serve()
+    for root in eachline(stdin)
+        buf = IOBuffer()
+        try
+            main(root, buf)
+            write(stdout, take!(buf))
+        catch e
+            print(stdout, "{\"error\":"); jstr(stdout, sprint(showerror, e)); println(stdout, '}')
+        end
+        flush(stdout)
+    end
+end
+
+ARGS[1] == "--serve" ? serve() : main(ARGS[1])

@@ -50,7 +50,7 @@ from a path or a git URL, and lists:
   introduces and reviewing progress.
 - **Repos**: a card each, with its languages and their precision (see
   [Languages](#languages)), the health census (fix first, fix soon, when
-  convenient), the open pull request count and a Remove button.
+  convenient) once the repo has been opened, the open pull request count and a Remove button.
 
 A URL is cloned without file contents (`--filter=blob:none`; git fetches them
 as needed) but with full history, which merge bases and churn need. Remove
@@ -82,7 +82,7 @@ codemesh keeps its files in the XDG directories, under `codemesh/`:
 |---|---|
 | `$XDG_CONFIG_HOME` (`~/.config`) | `workspace.json`, the repo registry |
 | `$XDG_STATE_HOME` (`~/.local/state`) | `basket.json`, and per repo `repos/{id}/` with `reviewed.json` and `notes.json` |
-| `$XDG_CACHE_HOME` (`~/.cache`) | `clones/` and `worktrees/`, both rebuilt on demand |
+| `$XDG_CACHE_HOME` (`~/.cache`) | `clones/`, `worktrees/` and `snapshots/`, all rebuilt on demand |
 
 Review marks and notes stay on disk when a repo is removed.
 

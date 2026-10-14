@@ -9,6 +9,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/joaomdsg/codemesh/internal/analysis"
 	"github.com/joaomdsg/codemesh/internal/ghx"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/graphdiff"
@@ -189,6 +190,57 @@ func (a *App) PRReview(id, root string, n int) (*PRReview, error) {
 		return nil, err
 	}
 	return a.prReview(rs, refs, root)
+}
+
+// fetchedPR is a pull request fetched for its page, or why it could not be.
+type fetchedPR struct {
+	refs prRefs
+	err  error
+	at   time.Time
+}
+
+// PeekPR is PRReview without the wait, for a page. Until the pull request is
+// fetched and both sides are analysed it returns nil and no error, having
+// started what is missing; an Event announces each step.
+func (a *App) PeekPR(id, root string, n int) (*PRReview, error) {
+	rs, err := a.repo(id)
+	if err != nil {
+		return nil, err
+	}
+	rs.mu.Lock()
+	f := rs.fetched[n]
+	listed, inList := rs.prs.find(n)
+	rs.mu.Unlock()
+	moved := f != nil && f.err == nil && inList && listed.HeadOID != f.refs.pr.HeadOID
+	if f == nil || moved || f.err != nil && time.Since(f.at) > prTTL {
+		a.background(fmt.Sprintf("fetch:%s:%d", id, n), id, func() {
+			refs, err := a.fetchPR(rs, n)
+			rs.mu.Lock()
+			rs.fetched[n] = &fetchedPR{refs: refs, err: err, at: time.Now()}
+			rs.mu.Unlock()
+		})
+		if f == nil || f.err != nil {
+			return nil, nil
+		}
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	if root, err = pickRoot(f.refs.roots, root); err != nil {
+		return nil, err
+	}
+	settled := true
+	for _, rev := range []string{f.refs.base, f.refs.head} {
+		k := analysis.Key{Repo: id, Rev: rev, Root: root}
+		a.eng.Ensure(k)
+		r := a.eng.Peek(k)
+		settled = settled && (r.Snap != nil || r.Err != nil)
+		r.Release()
+	}
+	if !settled {
+		return nil, nil
+	}
+	return a.prReview(rs, f.refs, root)
 }
 
 func (a *App) prReview(rs *repoState, refs prRefs, root string) (*PRReview, error) {

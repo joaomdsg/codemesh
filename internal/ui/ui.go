@@ -139,6 +139,8 @@ type shell struct {
 	root  string // the root in the path, "" for the repo's first
 	state *review.State
 	Stamp via.State[string]
+	// Live is set once the page's stream opens.
+	Live via.State[bool]
 }
 
 func (s *shell) start(ctx *via.Ctx) error {
@@ -154,6 +156,11 @@ func (s *shell) start(ctx *via.Ctx) error {
 	s.root = ctx.Request().PathValue("root")
 	s.Stamp.Set(s.stamp())
 	ctx.Listen(s.app.Events, s.onEvent)
+	// An analysis that lands between the page's first render and its
+	// stream's connect is announced to nobody. via pushes at connect only a
+	// render that moved off the connect's own, so the connect moves it.
+	ctx.OnConnect(func() { s.Live.Set(true) })
+	s.app.Open(r.ID)
 	return nil
 }
 
@@ -163,8 +170,9 @@ func (s *shell) stamp() string {
 	return "analysed " + s.app.Updated(s.repo.ID).Format("15:04:05")
 }
 
-// analysis is the repo's current root at its default revision.
-func (s *shell) analysis() *app.Analysis { return s.app.Analyse(s.repo.ID, s.root, "") }
+// analysis is the repo's current root at its default revision, as far as it
+// is loaded: pages never wait for one.
+func (s *shell) analysis() *app.Analysis { return s.app.Peek(s.repo.ID, s.root, "") }
 
 // page renders the analysis with body, or says why there is none.
 func (s *shell) page(active tab, body func(*app.Analysis) h.H) h.H {
@@ -242,7 +250,11 @@ func (s *shell) frame(active tab, a *app.Analysis, main ...h.H) h.H {
 			banner = group([]h.H{banner, nestedModules(a)})
 		}
 	}
-	return h.Div(h.Class("app"),
+	var live h.H
+	if s.Live.Get() {
+		live = h.Data("live", "")
+	}
+	return h.Div(h.Class("app"), live,
 		h.Header(h.Class("top"),
 			h.A(h.Class("brand"), h.Href("/"), h.Str("codemesh")),
 			s.switcher(),
@@ -256,6 +268,7 @@ func (s *shell) frame(active tab, a *app.Analysis, main ...h.H) h.H {
 				link(tabHealth, "health", "Health", nil),
 			),
 			basketLink(s.app),
+			analysing(a),
 			h.Span(h.Class("stamp"), h.Aria("live", "polite"), s.Stamp.Display()),
 		),
 		banner,
@@ -324,7 +337,31 @@ func (s *shell) unavailable(active tab, a *app.Analysis) h.H {
 	if a.Err != nil {
 		return s.frame(active, a, h.P(h.Class("empty"), h.Str("Nothing to show until the code loads.")))
 	}
-	return s.frame(active, a, h.P(h.Class("empty"), h.Str("Analysing the repo…")))
+	return s.frame(active, a, skeleton())
+}
+
+// analysing marks a page whose analysis is loading: it shows nothing yet,
+// or the last one while a newer one loads.
+func analysing(a *app.Analysis) h.H {
+	if a == nil || a.Err != nil || a.Snap != nil && !a.Stale {
+		return nil
+	}
+	return h.Span(h.Class("analysing"), h.Role("status"), h.Span(h.Class("spinner"), h.Aria("hidden", "true")), h.Str("Analysing…"))
+}
+
+// skeleton stands in for a page body until its analysis lands.
+func skeleton() h.H {
+	bars := func(cls h.H, n int) []h.H {
+		out := []h.H{cls}
+		for range n {
+			out = append(out, h.Div(h.Class("skel-bar")))
+		}
+		return out
+	}
+	return h.Div(h.Class("map-layout skeleton"), h.Aria("busy", "true"), h.Aria("label", "Analysing the repo"),
+		h.Div(bars(h.Class("skel-main"), 5)...),
+		h.Aside(bars(h.Class("side"), 3)...),
+	)
 }
 
 // pkgName is a package's directory, or the module's last element for the

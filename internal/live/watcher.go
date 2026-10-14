@@ -9,16 +9,14 @@ import (
 	"github.com/go-via/via/topic"
 	"github.com/joaomdsg/codemesh/internal/analysis"
 	"github.com/joaomdsg/codemesh/internal/gitx"
-	"github.com/joaomdsg/codemesh/internal/lang"
 )
 
-// Update announces that a repo's working tree changed and the engine
-// reloaded it. Err is the first failed reload; read the snapshots from the
-// engine under analysis.Worktree.
+// Update announces that a repo's working tree changed. The engine reloads
+// the snapshots it held of it under analysis.Worktree, showing the old ones
+// until each lands.
 type Update struct {
 	Repo string
 	At   time.Time
-	Err  error
 }
 
 // Watcher watches the working trees of local repos and keeps the engine's
@@ -91,30 +89,14 @@ func (w *Watcher) poll(ctx context.Context, id, dir string, t *topic.Topic[Updat
 		case <-tick.C:
 			if fp := fingerprint(dir, repo); fp != last {
 				last = fp
-				t.Publish(w.reload(ctx, id, dir))
+				t.Publish(w.reload(id))
 			}
 		}
 	}
 }
 
-// reload drops the repo's stale working-tree snapshots and loads each root
-// afresh, so the page that reads next finds them cached.
-func (w *Watcher) reload(ctx context.Context, id, dir string) Update {
-	start := time.Now()
-	u := Update{Repo: id}
-	w.eng.Invalidate(id, analysis.Worktree)
-	roots, err := lang.Roots(dir)
-	if err != nil {
-		u.Err = err
-	}
-	for _, root := range roots {
-		r := w.eng.Get(ctx, analysis.Key{Repo: id, Rev: analysis.Worktree, Root: root.Dir})
-		r.Release()
-		if r.Err != nil && u.Err == nil {
-			u.Err = r.Err
-		}
-	}
-	u.At = time.Now()
-	w.log.Info("analysed", "repo", id, "took", u.At.Sub(start).Round(time.Millisecond), "err", u.Err)
-	return u
+// reload has the engine reload the repo's working-tree snapshots.
+func (w *Watcher) reload(id string) Update {
+	w.eng.Refresh(id, analysis.Worktree)
+	return Update{Repo: id, At: time.Now()}
 }

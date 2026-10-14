@@ -13,15 +13,16 @@ import (
 	"github.com/joaomdsg/codemesh/internal/workspace"
 )
 
-// Analysis is one root of a repo at one revision, loaded. The snapshot reads
+// Analysis is one root of a repo at one revision. The snapshot reads
 // its source from disk, so Release it once the page is rendered.
 type Analysis struct {
 	Repo     workspace.Repo
 	Root     string // directory relative to the repo; "." for the repo itself
 	Rev      string // commit sha, or analysis.Worktree
 	At       time.Time
-	Snap     *code.Snapshot
+	Snap     *code.Snapshot // nil until the first load lands
 	Findings []smell.Finding
+	Stale    bool  // Snap is the last analysis; a newer one is loading
 	Err      error // the load failed; Snap is nil
 
 	// Set by WorkingReview: the working tree against the merge-base of Base
@@ -54,36 +55,99 @@ func defaultRev(r workspace.Repo) string {
 	return "HEAD"
 }
 
-// Analyse loads root of repo id at rev. An empty root means the repo's first
-// root, an empty rev its working tree, or the default branch of a clone. The
-// result is never nil; Err says why a load failed.
+// Analyse loads root of repo id at rev, waiting for it. An empty root means
+// the repo's first root, an empty rev its working tree, or the default branch
+// of a clone. The result is never nil; Err says why a load failed.
 func (a *App) Analyse(id, root, rev string) *Analysis {
-	out := &Analysis{}
+	rs, key, err := a.key(id, root, rev)
+	if err != nil {
+		return &Analysis{Repo: rs.info, Err: err}
+	}
+	return fromResult(rs, key.Root, a.eng.Get(a.ctx, key), a.Updated(id))
+}
+
+// Peek is Analyse without the wait, for a page: it returns what is cached
+// and has what is missing or stale loaded ahead of the warm-up, announcing
+// it with an Event. Snap is nil until there is something to show.
+func (a *App) Peek(id, root, rev string) *Analysis {
+	rs, key, err := a.key(id, root, rev)
+	if err != nil {
+		return &Analysis{Repo: rs.info, Err: err}
+	}
+	a.eng.Ensure(key)
+	return fromResult(rs, key.Root, a.eng.Peek(key), a.Updated(id))
+}
+
+// Cached is Peek that loads nothing: what is in memory or stored, if any.
+func (a *App) Cached(id, root, rev string) *Analysis {
+	rs, key, err := a.key(id, root, rev)
+	if err != nil {
+		return &Analysis{Repo: rs.info, Err: err}
+	}
+	return fromResult(rs, key.Root, a.eng.Peek(key), a.Updated(id))
+}
+
+// key names root of repo id at rev, as Analyse reads its arguments. rs is
+// never nil.
+func (a *App) key(id, root, rev string) (*repoState, analysis.Key, error) {
 	rs, err := a.repo(id)
 	if err != nil {
-		out.Err = err
-		return out
+		return &repoState{}, analysis.Key{}, err
 	}
-	out.Repo = rs.info
-	if out.Root, err = a.root(id, root); err != nil {
-		out.Err = err
-		return out
+	if root, err = a.root(id, root); err != nil {
+		return rs, analysis.Key{}, err
 	}
-	r := a.eng.Get(a.ctx, analysis.Key{Repo: id, Rev: cmp.Or(rev, defaultRev(rs.info)), Root: out.Root})
-	return fromResult(rs, out.Root, r, a.Updated(id))
+	return rs, analysis.Key{Repo: id, Rev: cmp.Or(rev, defaultRev(rs.info)), Root: root}, nil
 }
 
 func fromResult(rs *repoState, root string, r *analysis.Result, at time.Time) *Analysis {
 	return &Analysis{
 		Repo: rs.info, Root: root, Rev: r.Key.Rev, At: at,
-		Snap: r.Snap, Findings: r.Findings, Err: r.Err, release: r.Release,
+		Snap: r.Snap, Findings: r.Findings, Stale: r.Stale, Err: r.Err, release: r.Release,
 	}
+}
+
+// Open warms what a repo's pages read: each root at its default revision
+// and, for a local repo, the base its working-tree review compares with. It
+// loads behind what pages ask for and returns at once.
+func (a *App) Open(id string) {
+	rs, err := a.repo(id)
+	if err != nil {
+		return
+	}
+	rs.mu.Lock()
+	warm := rs.warmGen != rs.gen || !rs.warmed
+	rs.warmGen, rs.warmed = rs.gen, true
+	rs.mu.Unlock()
+	if !warm {
+		return
+	}
+	a.background("warm:"+id, id, func() {
+		var keys []analysis.Key
+		_, sha, err := reviewBase(rs)
+		for _, root := range a.Roots(id) {
+			keys = append(keys, analysis.Key{Repo: id, Rev: defaultRev(rs.info), Root: root.Dir})
+			if rs.info.Path != "" && err == nil {
+				keys = append(keys, analysis.Key{Repo: id, Rev: sha, Root: root.Dir})
+			}
+		}
+		a.eng.Warm(keys...)
+	})
+}
+
+// reviewBase is the branch a working tree is reviewed against and its
+// merge-base with HEAD.
+func reviewBase(rs *repoState) (name, sha string, err error) {
+	name = cmp.Or(rs.info.DefaultBase, rs.git.DefaultBase())
+	sha, err = rs.git.MergeBase(name)
+	return name, sha, err
 }
 
 // treeReview is the review of a working tree, kept while its head snapshot
 // is the engine's current one.
 type treeReview struct {
 	snap          *code.Snapshot
+	findings      []smell.Finding
 	base, baseSHA string
 	note          string
 	review        *review.Review
@@ -112,6 +176,48 @@ func (a *App) WorkingReview(id, root string) *Analysis {
 	return out
 }
 
+// PeekReview is WorkingReview without the wait. Until the review of the
+// current snapshot is built, it shows the last one built, Stale, or nothing.
+func (a *App) PeekReview(id, root string) *Analysis {
+	rs, err := a.repo(id)
+	if err != nil {
+		return &Analysis{Err: err}
+	}
+	if rs.info.Path == "" {
+		out := a.Peek(id, root, "")
+		out.Note = "a cloned repo has no working tree, so there is nothing to review"
+		return out
+	}
+	out := a.Peek(id, root, analysis.Worktree)
+	if out.Snap == nil {
+		return out
+	}
+	rs.mu.Lock()
+	t := rs.tree[out.Root]
+	rs.mu.Unlock()
+	if t == nil || t.snap != out.Snap {
+		// Built from what Peek shows, as WorkingReview would load again a
+		// root whose last load failed.
+		a.background("review:"+id+":"+out.Root, id, func() {
+			head := a.Peek(id, out.Root, analysis.Worktree)
+			defer head.Release()
+			if head.Snap != nil {
+				a.treeFor(rs, head)
+			}
+		})
+	}
+	switch {
+	case t == nil:
+		out.Release()
+		return &Analysis{Repo: out.Repo, Root: out.Root, Rev: out.Rev, At: out.At}
+	case t.snap != out.Snap:
+		// The review is of an older snapshot: show the two together.
+		out.Snap, out.Findings, out.Stale = t.snap, t.findings, true
+	}
+	out.Base, out.BaseSHA, out.Note, out.Review = t.base, t.baseSHA, t.note, t.review
+	return out
+}
+
 // treeFor is the review of head's root, built unless the kept one is of
 // head's snapshot.
 func (a *App) treeFor(rs *repoState, head *Analysis) *treeReview {
@@ -130,10 +236,10 @@ func (a *App) treeFor(rs *repoState, head *Analysis) *treeReview {
 }
 
 func (a *App) buildTree(rs *repoState, head *Analysis) *treeReview {
-	t := &treeReview{snap: head.Snap}
-	t.base = cmp.Or(rs.info.DefaultBase, rs.git.DefaultBase())
-	sha, err := rs.git.MergeBase(t.base)
-	if err != nil {
+	t := &treeReview{snap: head.Snap, findings: head.Findings}
+	var sha string
+	var err error
+	if t.base, sha, err = reviewBase(rs); err != nil {
 		t.note = fmt.Sprintf("no merge-base with %s: %v", t.base, err)
 		return t
 	}
@@ -144,7 +250,7 @@ func (a *App) buildTree(rs *repoState, head *Analysis) *treeReview {
 		return t
 	}
 	defer c.Release()
-	t.snap = c.Head.Snap
+	t.snap, t.findings = c.Head.Snap, c.Head.Findings
 	t.review = review.Build(review.Input{
 		Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, head.Root, a.Roots(rs.info.ID)),
 		BaseFindings: c.Base.Findings, HeadFindings: c.Head.Findings, Graph: c.Diff,

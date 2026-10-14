@@ -300,7 +300,8 @@ local checkout.
 Files go by the XDG rules: the registry in the config directory; in the state
 directory what the user produced, `basket.json` and per repo
 `repos/{id}/reviewed.json` and `notes.json`; in the cache directory what can
-be rebuilt, clones and the worktrees of analysed commits. Worktrees a killed
+be rebuilt, clones, the worktrees of analysed commits and the last snapshot
+of each root. Worktrees a killed
 run left behind are swept at start.
 
 ## Pull requests
@@ -340,6 +341,17 @@ clone has no working tree to watch.
 Snapshots are cached by repo, root and commit (`internal/analysis`), with a
 bounded number of loads running at once, as a load holds a process tree. A
 snapshot's worktree lives as long as its cache entry.
+
+Pages never wait for a load. A page with no snapshot yet shows a skeleton,
+and one whose files changed shows the old snapshot marked "Analysing…"; the
+load that lands re-renders it. Opening a repo loads its roots and the base of
+its working-tree review in the background, and a root a page asks for goes
+ahead of that warm-up. The last snapshot of each root is kept on disk, keyed
+by commit, or for the working tree by a fingerprint of its source files, and
+by the codemesh build that wrote it: after a restart a page shows it at once
+and only what changed loads again. The workspace cards count health only
+from snapshots in memory or, for a working tree, on disk. Julia warm-up loads share one `julia`
+process, which exits after five idle minutes.
 
 ## Stack
 

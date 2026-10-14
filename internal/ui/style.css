@@ -114,6 +114,16 @@ kbd {
   padding: 0 6px;
 }
 .stamp { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.analysing { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.analysing + .stamp { margin-left: 0; }
+.spinner { width: 10px; height: 10px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.skeleton .skel-main, .skeleton .side { display: grid; gap: var(--sp3); }
+.skel-bar { height: 14px; width: 85%; border-radius: 4px; background: var(--line-soft); animation: pulse 1.4s ease-in-out infinite; }
+.skel-bar:nth-child(odd) { width: 60%; }
+.skel-bar:nth-child(3n) { width: 75%; }
+@keyframes pulse { 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) { .spinner, .skel-bar { animation: none; } }
 .main { padding: var(--sp4); flex: 1; }
 
 .banner { padding: var(--sp2) var(--sp4); border-bottom: 1px solid var(--line); }

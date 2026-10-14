@@ -18,11 +18,17 @@ type workspacePage struct {
 	app   *app.App
 	Input via.Signal[string]
 	err   string
+	// Live is set once the page's stream opens.
+	Live via.State[bool]
 }
 
 func (p *workspacePage) OnInit(ctx *via.Ctx) error {
 	// Every event re-renders the page, which is all a listener has to do.
 	ctx.Listen(p.app.Events, func(*via.Ctx, app.Event) {})
+	// An event between the first render and the stream's connect reaches
+	// nobody. via pushes at connect only a render that moved off the
+	// connect's own, so the connect moves it.
+	ctx.OnConnect(func() { p.Live.Set(true) })
 	return nil
 }
 
@@ -63,7 +69,11 @@ func (p *workspacePage) View() h.H {
 	if len(cards) > 0 {
 		grid = h.Div(h.Class("ws-grid"), inbox, p.repos(cards))
 	}
-	return h.Div(h.Class("app"),
+	var live h.H
+	if p.Live.Get() {
+		live = h.Data("live", "")
+	}
+	return h.Div(h.Class("app"), live,
 		h.Header(h.Class("top"),
 			h.A(h.Class("brand"), h.Href("/"), h.Str("codemesh")),
 			h.Span(h.Class("module"), h.Str("workspace")),
@@ -209,7 +219,7 @@ func (p *workspacePage) card(c app.Card) h.H {
 	if r.URL != "" {
 		where = r.URL
 	}
-	var health h.H = h.P(h.Class("hint"), h.Str("Analysing…"))
+	var health h.H = h.P(h.Class("hint"), h.Str("Not analysed yet. Open it to analyse."))
 	if c.Ready {
 		health = census(c.Census)
 	}
