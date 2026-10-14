@@ -9,7 +9,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/joaomdsg/codemesh/internal/analysis"
 	"github.com/joaomdsg/codemesh/internal/ghx"
 	"github.com/joaomdsg/codemesh/internal/gitx"
 	"github.com/joaomdsg/codemesh/internal/graphdiff"
@@ -201,22 +200,16 @@ func (a *App) prReview(rs *repoState, refs prRefs, root string) (*PRReview, erro
 	if err != nil {
 		return nil, err
 	}
+	now := time.Now()
 	return &PRReview{
 		PR: refs.pr, Root: root, BaseSHA: refs.base, HeadSHA: refs.head,
-		Base: a.fromResult(rs, root, c.Base), Head: a.fromResult(rs, root, c.Head),
+		Base: fromResult(rs, root, c.Base, now), Head: fromResult(rs, root, c.Head, now),
 		Files: c.Files, Graph: c.Diff,
 		Review: review.Build(review.Input{
 			Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, root, refs.roots),
 			BaseFindings: c.Base.Findings, HeadFindings: c.Head.Findings, Graph: c.Diff,
 		}),
 	}, nil
-}
-
-func (a *App) fromResult(rs *repoState, root string, r *analysis.Result) *Analysis {
-	return &Analysis{
-		Repo: rs.info, Root: root, Rev: r.Key.Rev, At: time.Now(),
-		Snap: r.Snap, Findings: r.Findings, Err: r.Err, release: r.Release,
-	}
 }
 
 // pr finds an open pull request by number: in the cached list, else in a

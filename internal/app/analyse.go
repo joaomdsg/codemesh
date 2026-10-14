@@ -70,9 +70,14 @@ func (a *App) Analyse(id, root, rev string) *Analysis {
 		return out
 	}
 	r := a.eng.Get(a.ctx, analysis.Key{Repo: id, Rev: cmp.Or(rev, defaultRev(rs.info)), Root: out.Root})
-	out.Rev, out.Snap, out.Findings, out.Err, out.release = r.Key.Rev, r.Snap, r.Findings, r.Err, r.Release
-	out.At = a.Updated(id)
-	return out
+	return fromResult(rs, out.Root, r, a.Updated(id))
+}
+
+func fromResult(rs *repoState, root string, r *analysis.Result, at time.Time) *Analysis {
+	return &Analysis{
+		Repo: rs.info, Root: root, Rev: r.Key.Rev, At: at,
+		Snap: r.Snap, Findings: r.Findings, Err: r.Err, release: r.Release,
+	}
 }
 
 // treeReview is the review of a working tree, kept while its head snapshot
