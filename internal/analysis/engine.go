@@ -283,34 +283,8 @@ func (e *Engine) load(repo *gitx.Repo, key Key, epoch int) error {
 		return err
 	}
 	defer e.end(fl)
-	ent := &entry{key: key, repo: repo}
-	if perr := e.pool.run(ctx, func() {
-		start := time.Now()
-		checkout := repo.Dir
-		if key.Rev != Worktree {
-			if checkout, err = e.checkout(repo, key); err != nil {
-				return
-			}
-			ent.wt = checkout
-		}
-		if ent.snap, err = e.cfg.Load(ctx, filepath.Join(checkout, key.Root)); err != nil {
-			e.dropWorktree(ent)
-			return
-		}
-		var churn map[string]int
-		if key.Rev == Worktree {
-			churn, err = repo.Churn(churnWindow)
-		} else {
-			churn, err = repo.ChurnAt(key.Rev, churnWindow)
-		}
-		if err == nil {
-			applyChurn(ent.snap, checkout, churn)
-		}
-		ent.findings = smell.Find(ent.snap)
-		ent.took = time.Since(start)
-		e.cfg.Log.Debug("analysed", "repo", key.Repo, "rev", key.Rev, "root", key.Root, "took", ent.took.Round(time.Millisecond))
-		err = nil
-	}); perr != nil {
+	var ent *entry
+	if perr := e.pool.run(ctx, func() { ent, err = e.produce(ctx, repo, key) }); perr != nil {
 		return perr
 	}
 	if err != nil {
@@ -332,6 +306,39 @@ func (e *Engine) load(repo *gitx.Repo, key Key, epoch int) error {
 	e.mu.Unlock()
 	e.finish(gone)
 	return nil
+}
+
+// produce analyses the files key names: its snapshot, churn and smells.
+func (e *Engine) produce(ctx context.Context, repo *gitx.Repo, key Key) (*entry, error) {
+	start := time.Now()
+	ent := &entry{key: key, repo: repo}
+	checkout := repo.Dir
+	if key.Rev != Worktree {
+		var err error
+		if checkout, err = e.checkout(repo, key); err != nil {
+			return nil, err
+		}
+		ent.wt = checkout
+	}
+	snap, err := e.cfg.Load(ctx, filepath.Join(checkout, key.Root))
+	if err != nil {
+		e.dropWorktree(ent)
+		return nil, err
+	}
+	ent.snap = snap
+	var churn map[string]int
+	if key.Rev == Worktree {
+		churn, err = repo.Churn(churnWindow)
+	} else {
+		churn, err = repo.ChurnAt(key.Rev, churnWindow)
+	}
+	if err == nil {
+		applyChurn(ent.snap, checkout, churn)
+	}
+	ent.findings = smell.Find(ent.snap)
+	ent.took = time.Since(start)
+	e.cfg.Log.Debug("analysed", "repo", key.Repo, "rev", key.Rev, "root", key.Root, "took", ent.took.Round(time.Millisecond))
+	return ent, nil
 }
 
 func (e *Engine) checkout(repo *gitx.Repo, key Key) (string, error) {
