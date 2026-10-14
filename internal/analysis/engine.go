@@ -219,6 +219,8 @@ func (e *Engine) Get(ctx context.Context, key Key) *Result {
 			return e.result(ent, false)
 		}
 		f := e.start(repo, key, false)
+		f.urgent.Store(true)
+		e.pool.promote(key)
 		select {
 		case <-ctx.Done():
 			return &Result{Key: key, Err: ctx.Err()}
@@ -283,22 +285,22 @@ func (e *Engine) ensure(key Key, warm bool) {
 	if failed {
 		return
 	}
-	e.start(repo, key, warm)
+	f := e.start(repo, key, warm)
+	if !warm {
+		f.urgent.Store(true)
+		e.pool.promote(key)
+	}
 }
 
 // start loads key unless a load of it at the current epoch is under way, and
 // returns that load. The load is registered before start returns, so Busy
-// sees it. A load started or joined by a page goes ahead of the warm-up loads.
+// sees it.
 func (e *Engine) start(repo *gitx.Repo, key Key, warm bool) *flight {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	epoch := e.epochs[epochKey(key.Repo, key.Rev)]
 	id := key.Repo + "\x00" + key.Rev + "\x00" + key.Root + "\x00" + strconv.Itoa(epoch)
 	if f := e.flights[id]; f != nil {
-		if !warm {
-			f.urgent.Store(true)
-			e.pool.promote(key)
-		}
 		return f
 	}
 	f := &flight{repo: key.Repo, done: make(chan struct{})}
