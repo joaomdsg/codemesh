@@ -67,3 +67,17 @@ func TestLoadJulia_matchesTestCallsByNameAndThroughAliases(t *testing.T) {
 	assert.Equal(t, 1, tests("Shapes.area(Circle)"), "by name, a call reaches every method")
 	assert.Equal(t, 1, tests("Shapes.Units.metres(Any)"), "S.Units.metres goes through const S = Shapes")
 }
+
+func TestLoadJulia_readsTopLevelFilesOfAnEnvironment(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("julia"); err != nil {
+		t.Skip("julia is not installed")
+	}
+	s, err := julia.Frontend{}.Load(context.Background(), "testdata/env")
+	require.NoError(t, err)
+
+	require.Len(t, s.Packages, 1)
+	require.Len(t, s.Packages[0].Files, 1, "a benchmark or examples environment keeps its scripts beside Project.toml")
+	assert.Equal(t, "run.jl", s.Packages[0].Files[0].Path)
+	assert.NotNil(t, s.Decl("env.bench(Any)"))
+}

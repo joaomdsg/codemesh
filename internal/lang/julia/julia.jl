@@ -332,6 +332,12 @@ function main()
     name = m === nothing ? basename(ROOT) : m.captures[1]
     entry = joinpath(ROOT, "src", name * ".jl")
     isfile(entry) && parsefile(entry, "", false)
+    # A benchmark, examples or test environment has no package entry; its scripts sit beside Project.toml.
+    if !isfile(entry)
+        for f in sort(readdir(ROOT))
+            endswith(f, ".jl") && parsefile(joinpath(ROOT, f), name, basename(ROOT) == "test")
+        end
+    end
     ext = joinpath(ROOT, "ext")
     if isdir(ext)
         for f in sort(readdir(ext))

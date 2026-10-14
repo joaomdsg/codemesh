@@ -49,7 +49,7 @@ func (t atlasTile) MarshalJSON() ([]byte, error) {
 // tile's page-specific fields; exactly one of pkg, f, d is the tile's own
 // level, the others are its parents.
 func atlasOf(a *app.Analysis, w, h float64, mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)) atlas {
-	b := atlasBuilder{a: a, mark: mark, out: atlas{At: a.At.UnixMilli(), W: w, H: h, Tiles: []atlasTile{}}}
+	b := atlasBuilder{a: a, mark: mark, out: atlas{At: a.At.UnixMilli(), W: w, H: h, Tiles: []atlasTile{}}, onlyTests: onlyTests(a.Snap)}
 	b.packages(treemap.Rect{W: w, H: h})
 	return b.out
 }
@@ -58,6 +58,26 @@ type atlasBuilder struct {
 	a    *app.Analysis
 	mark func(i int, t *atlasTile, pkg *code.Package, f *code.File, d *code.Decl)
 	out  atlas
+	// A test environment has nothing but tests, so they take the area code would.
+	onlyTests bool
+}
+
+func onlyTests(s *code.Snapshot) bool {
+	for _, p := range s.Packages {
+		for _, f := range p.Files {
+			if !f.Test {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func (b *atlasBuilder) lines(f *code.File) int {
+	if f.Test && !b.onlyTests {
+		return 0
+	}
+	return f.Lines
 }
 
 func (b *atlasBuilder) add(t atlasTile, pkg *code.Package, f *code.File, d *code.Decl) {
@@ -66,7 +86,13 @@ func (b *atlasBuilder) add(t atlasTile, pkg *code.Package, f *code.File, d *code
 }
 
 func (b *atlasBuilder) packages(r treemap.Rect) {
-	size := func(p *code.Package) (string, float64) { return p.Path, float64(p.Lines()) }
+	size := func(p *code.Package) (string, float64) {
+		n := 0
+		for _, f := range p.Files {
+			n += b.lines(f)
+		}
+		return p.Path, float64(n)
+	}
 	for _, pt := range treemap.Place(b.a.Snap.Packages, r, size) {
 		b.add(tileAt("p", pkgName(b.a, pt.Val), pt.Rect), pt.Val, nil, nil)
 		b.files(pt.Val, belowLabel(pt.Rect.Inset(2), 14))
@@ -74,12 +100,7 @@ func (b *atlasBuilder) packages(r treemap.Rect) {
 }
 
 func (b *atlasBuilder) files(p *code.Package, r treemap.Rect) {
-	size := func(f *code.File) (string, float64) {
-		if f.Test {
-			return f.Path, 0
-		}
-		return f.Path, float64(f.Lines)
-	}
+	size := func(f *code.File) (string, float64) { return f.Path, float64(b.lines(f)) }
 	for _, ft := range treemap.Place(p.Files, r, size) {
 		b.add(tileAt("f", path.Base(ft.Val.Path), ft.Rect), p, ft.Val, nil)
 		b.decls(p, ft.Val, belowLabel(ft.Rect.Inset(1), 12))
