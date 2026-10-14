@@ -34,7 +34,13 @@ var frontends = []struct {
 func Load(dir string) (*code.Snapshot, error) { return LoadContext(context.Background(), dir) }
 
 // Close stops the processes frontends keep between loads.
-func Close() { julia.Close() }
+func Close() {
+	for _, f := range frontends {
+		if c, ok := f.Frontend.(interface{ Close() }); ok {
+			c.Close()
+		}
+	}
+}
 
 // LoadContext is Load that stops when ctx ends: a frontend that runs child
 // processes kills them.

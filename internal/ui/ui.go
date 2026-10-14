@@ -166,8 +166,15 @@ func (s *shell) start(ctx *via.Ctx) error {
 
 func (s *shell) onEvent(_ *via.Ctx, _ app.Event) { s.Stamp.Set(s.stamp()) }
 
+// stamp is when the shown snapshot was analysed, which a restart or a
+// pending reload leaves earlier than the last change.
 func (s *shell) stamp() string {
-	return "analysed " + s.app.Updated(s.repo.ID).Format("15:04:05")
+	a := s.analysis()
+	defer a.Release()
+	if a.Snap == nil || a.At.IsZero() {
+		return ""
+	}
+	return "analysed " + a.At.Format("15:04:05")
 }
 
 // analysis is the repo's current root at its default revision, as far as it

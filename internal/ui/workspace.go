@@ -219,7 +219,12 @@ func (p *workspacePage) card(c app.Card) h.H {
 	if r.URL != "" {
 		where = r.URL
 	}
-	var health h.H = h.P(h.Class("hint"), h.Str("Not analysed yet. Open it to analyse."))
+	// The inbox analyses a local repo's working tree; a clone waits to be opened.
+	pending := "Not analysed yet."
+	if r.Path == "" {
+		pending += " Open it to analyse."
+	}
+	var health h.H = h.P(h.Class("hint"), h.Str(pending))
 	if c.Ready {
 		health = census(c.Census)
 	}

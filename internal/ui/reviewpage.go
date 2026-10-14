@@ -166,8 +166,8 @@ func (p *reviewPage) dispose() {
 
 // loadPR reads the pull request, or nil and no error while it loads. A tab
 // that stays connected keeps what it loaded, so a keystroke does not read it
-// again; a page that is only read once gives its snapshots back when its
-// render ends.
+// again, unless it is stale and a newer one is coming; a page that is only
+// read once gives its snapshots back when its render ends.
 func (p *reviewPage) loadPR() (*app.PRReview, func(), error) {
 	if p.loaded != nil {
 		return p.loaded, func() {}, nil
@@ -184,7 +184,7 @@ func (p *reviewPage) loadPR() (*app.PRReview, func(), error) {
 			p.loadErr = err
 		}
 		return nil, func() {}, err
-	case p.live:
+	case p.live && !r.Head.Stale:
 		p.loaded = r
 		return r, func() {}, nil
 	}
@@ -363,11 +363,12 @@ func (p *reviewPage) visible(l review.Lane, units []*review.Unit) []*review.Unit
 }
 
 // Refresh analyses again now: the working tree without waiting for the
-// watcher, a pull request from a new fetch.
+// watcher, a pull request from a new fetch. Failed loads are tried again.
 func (p *reviewPage) Refresh(_ *via.Ctx) {
 	if p.pr > 0 {
 		p.dispose()
 		p.loadErr = nil
+		p.app.Retry(p.repo.ID)
 		return
 	}
 	p.app.Rescan(p.repo.ID)

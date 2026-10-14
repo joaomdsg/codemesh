@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"weak"
 
 	"github.com/go-via/via/topic"
 	"github.com/joaomdsg/codemesh/internal/analysis"
@@ -318,10 +319,19 @@ func (a *App) changed(id string) {
 }
 
 // Rescan has the working-tree snapshots of a repo loaded afresh, without
-// waiting for the watcher. Pages show the old ones until then.
+// waiting for the watcher, and its failed loads tried again. Pages show the
+// old ones until then.
 func (a *App) Rescan(id string) {
+	a.eng.Retry(id)
 	a.eng.Refresh(id, analysis.Worktree)
 	a.changed(id)
+}
+
+// Retry has the failed loads of a repo, such as a pull request's commits,
+// tried again when a page next asks for them.
+func (a *App) Retry(id string) {
+	a.eng.Retry(id)
+	a.publish(id)
 }
 
 // Updated is when the repo last changed, or when it was first read.
@@ -416,8 +426,8 @@ type repoState struct {
 	// What the inbox shows was derived at these generations.
 	treeGen, warmGen int
 	treeDone, warmed bool
-	health           []*code.Snapshot // the snapshots the census counted, by root
-	census           [3]int           // fix first, fix soon, when convenient
+	health           []weak.Pointer[code.Snapshot] // the snapshots the census counted, by root; weak, so the cache can evict them
+	census           [3]int                        // fix first, fix soon, when convenient
 	healthDone       bool
 }
 

@@ -17,13 +17,13 @@ import (
 // its source from disk, so Release it once the page is rendered.
 type Analysis struct {
 	Repo     workspace.Repo
-	Root     string // directory relative to the repo; "." for the repo itself
-	Rev      string // commit sha, or analysis.Worktree
-	At       time.Time
+	Root     string         // directory relative to the repo; "." for the repo itself
+	Rev      string         // commit sha, or analysis.Worktree
+	At       time.Time      // when Snap was analysed
 	Snap     *code.Snapshot // nil until the first load lands
 	Findings []smell.Finding
 	Stale    bool  // Snap is the last analysis; a newer one is loading
-	Err      error // the load failed; Snap is nil
+	Err      error // the last load failed; Snap, if set, is the one before it
 
 	// Set by WorkingReview: the working tree against the merge-base of Base
 	// and HEAD. Review is nil, and Note says why, when there is none.
@@ -63,7 +63,7 @@ func (a *App) Analyse(id, root, rev string) *Analysis {
 	if err != nil {
 		return &Analysis{Repo: rs.info, Err: err}
 	}
-	return fromResult(rs, key.Root, a.eng.Get(a.ctx, key), a.Updated(id))
+	return fromResult(rs, key.Root, a.eng.Get(a.ctx, key))
 }
 
 // Peek is Analyse without the wait, for a page: it returns what is cached
@@ -75,7 +75,7 @@ func (a *App) Peek(id, root, rev string) *Analysis {
 		return &Analysis{Repo: rs.info, Err: err}
 	}
 	a.eng.Ensure(key)
-	return fromResult(rs, key.Root, a.eng.Peek(key), a.Updated(id))
+	return fromResult(rs, key.Root, a.eng.Peek(key))
 }
 
 // Cached is Peek that loads nothing: what is in memory or stored, if any.
@@ -84,7 +84,7 @@ func (a *App) Cached(id, root, rev string) *Analysis {
 	if err != nil {
 		return &Analysis{Repo: rs.info, Err: err}
 	}
-	return fromResult(rs, key.Root, a.eng.Peek(key), a.Updated(id))
+	return fromResult(rs, key.Root, a.eng.Peek(key))
 }
 
 // key names root of repo id at rev, as Analyse reads its arguments. rs is
@@ -100,9 +100,9 @@ func (a *App) key(id, root, rev string) (*repoState, analysis.Key, error) {
 	return rs, analysis.Key{Repo: id, Rev: cmp.Or(rev, defaultRev(rs.info)), Root: root}, nil
 }
 
-func fromResult(rs *repoState, root string, r *analysis.Result, at time.Time) *Analysis {
+func fromResult(rs *repoState, root string, r *analysis.Result) *Analysis {
 	return &Analysis{
-		Repo: rs.info, Root: root, Rev: r.Key.Rev, At: at,
+		Repo: rs.info, Root: root, Rev: r.Key.Rev, At: r.At,
 		Snap: r.Snap, Findings: r.Findings, Stale: r.Stale, Err: r.Err, release: r.Release,
 	}
 }
@@ -124,11 +124,16 @@ func (a *App) Open(id string) {
 	}
 	a.background("warm:"+id, id, func() {
 		var keys []analysis.Key
-		_, sha, err := reviewBase(rs)
+		base := ""
+		if rs.info.Path != "" {
+			if _, sha, err := reviewBase(rs); err == nil {
+				base = sha
+			}
+		}
 		for _, root := range a.Roots(id) {
 			keys = append(keys, analysis.Key{Repo: id, Rev: defaultRev(rs.info), Root: root.Dir})
-			if rs.info.Path != "" && err == nil {
-				keys = append(keys, analysis.Key{Repo: id, Rev: sha, Root: root.Dir})
+			if base != "" {
+				keys = append(keys, analysis.Key{Repo: id, Rev: base, Root: root.Dir})
 			}
 		}
 		a.eng.Warm(keys...)
@@ -147,6 +152,7 @@ func reviewBase(rs *repoState) (name, sha string, err error) {
 // is the engine's current one.
 type treeReview struct {
 	snap          *code.Snapshot
+	at            time.Time // when snap was analysed
 	findings      []smell.Finding
 	base, baseSHA string
 	note          string
@@ -212,7 +218,7 @@ func (a *App) PeekReview(id, root string) *Analysis {
 		return &Analysis{Repo: out.Repo, Root: out.Root, Rev: out.Rev, At: out.At}
 	case t.snap != out.Snap:
 		// The review is of an older snapshot: show the two together.
-		out.Snap, out.Findings, out.Stale = t.snap, t.findings, true
+		out.Snap, out.Findings, out.At, out.Stale = t.snap, t.findings, t.at, true
 	}
 	out.Base, out.BaseSHA, out.Note, out.Review = t.base, t.baseSHA, t.note, t.review
 	return out
@@ -236,7 +242,7 @@ func (a *App) treeFor(rs *repoState, head *Analysis) *treeReview {
 }
 
 func (a *App) buildTree(rs *repoState, head *Analysis) *treeReview {
-	t := &treeReview{snap: head.Snap, findings: head.Findings}
+	t := &treeReview{snap: head.Snap, findings: head.Findings, at: head.At}
 	var sha string
 	var err error
 	if t.base, sha, err = reviewBase(rs); err != nil {
@@ -250,7 +256,7 @@ func (a *App) buildTree(rs *repoState, head *Analysis) *treeReview {
 		return t
 	}
 	defer c.Release()
-	t.snap, t.findings = c.Head.Snap, c.Head.Findings
+	t.snap, t.findings, t.at = c.Head.Snap, c.Head.Findings, c.Head.At
 	t.review = review.Build(review.Input{
 		Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, head.Root, a.Roots(rs.info.ID)),
 		BaseFindings: c.Base.Findings, HeadFindings: c.Head.Findings, Graph: c.Diff,

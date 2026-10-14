@@ -34,15 +34,18 @@ type Saved struct {
 	Snap     *code.Snapshot
 	Findings []smell.Finding
 	Took     time.Duration
+	At       time.Time
 }
 
-// keptCommits is how many commit snapshots of one root a Disk keeps: the
-// default branch and the review base, with room for a branch switch.
+// keptCommits is how many commit snapshots of one root a Disk keeps, the
+// ones read or written last: the default branch and the review base, with
+// room for a pull request or a branch switch.
 const keptCommits = 4
 
 // Disk is a Store of one file per repo, root and rev under a directory. A
 // file written by another build of codemesh reads as none, since loaders
-// and smells change what a snapshot holds.
+// and smells change what a snapshot holds; a build that cannot hash its
+// executable reads and writes none.
 type Disk struct {
 	dir     string
 	version string
@@ -57,6 +60,9 @@ type savedFile struct {
 }
 
 func (d *Disk) Load(key Key) (*Saved, error) {
+	if d.version == "" {
+		return nil, fmt.Errorf("unknown build: %w", fs.ErrNotExist)
+	}
 	var f savedFile
 	if err := store.ReadJSON(d.path(key), &f); err != nil {
 		return nil, err
@@ -64,11 +70,17 @@ func (d *Disk) Load(key Key) (*Saved, error) {
 	if f.Version != d.version || f.Snap == nil {
 		return nil, fmt.Errorf("snapshot of another build: %w", fs.ErrNotExist)
 	}
+	// prune keeps what was used last.
+	now := time.Now()
+	_ = os.Chtimes(d.path(key), now, now)
 	f.Snap.Reindex()
 	return &f.Saved, nil
 }
 
 func (d *Disk) Save(key Key, s *Saved) error {
+	if d.version == "" {
+		return nil
+	}
 	if err := store.WriteJSON(d.path(key), savedFile{Version: d.version, Saved: *s}); err != nil {
 		return err
 	}
@@ -90,7 +102,8 @@ func (d *Disk) path(key Key) string {
 	return filepath.Join(d.dir, key.Repo, root+"@"+key.Rev+".json")
 }
 
-// prune removes all but the newest keptCommits commit snapshots of key's root.
+// prune removes all but the keptCommits commit snapshots of key's root read
+// or written last.
 func (d *Disk) prune(key Key) {
 	worktree := filepath.Base(d.path(Key{Repo: key.Repo, Rev: Worktree, Root: key.Root}))
 	prefix := strings.TrimSuffix(worktree, Worktree+".json")

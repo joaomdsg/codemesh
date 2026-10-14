@@ -705,13 +705,14 @@ func TestLoading_aPageConnectingAfterItsAnalysisLandedGetsTheMap(t *testing.T) {
 	conn.Await(`class="map-pane"`)
 }
 
-func TestWorkspace_aRepoNotOpenedYetHasNoHealthUntilItIsOpened(t *testing.T) {
+func TestWorkspace_aLocalRepoGetsItsHealthFromTheInboxWithoutBeingOpened(t *testing.T) {
 	e := serve(t)
 
 	_, body := e.app.Get("/")
 	assert.Contains(t, body, "Not analysed yet.")
+	assert.NotContains(t, body, "Open it to analyse.", "the inbox analyses a local repo's working tree")
 
-	e.app.Get(e.base() + "/")
+	e.a.Wait()
 	_, body = e.app.Get("/")
 	assert.NotContains(t, body, "Not analysed yet.")
 }

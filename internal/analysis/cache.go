@@ -15,9 +15,10 @@ type entry struct {
 	findings []smell.Finding
 	repo     *gitx.Repo
 	took     time.Duration
-	wt       string // worktree the snapshot reads from; "" for WORKTREE
-	basis    string // what the load read; see Engine.basis
-	stale    bool   // newer files are due; the entry stays until they land
+	at       time.Time // when the snapshot was analysed
+	wt       string    // worktree the snapshot reads from; "" for WORKTREE
+	basis    string    // what the load read; see Engine.basis
+	stale    bool      // newer files are due; the entry stays until they land
 	refs     int
 	used     uint64
 	removed  bool

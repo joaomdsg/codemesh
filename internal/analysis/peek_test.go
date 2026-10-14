@@ -112,7 +112,7 @@ func TestEnsure_doesNotRetryAFailedLoadUntilTheFilesChange(t *testing.T) {
 	f.eng.Ensure(k)
 	assert.EqualValues(t, 1, calls.Load())
 
-	f.eng.Invalidate("calc", analysis.Worktree)
+	f.eng.Refresh("calc", analysis.Worktree)
 	f.eng.Ensure(k)
 	l.wait(t, k)
 	r = f.eng.Peek(k)
@@ -245,7 +245,7 @@ func TestPeek_readsAStoredWorkingTreeWithoutLoading(t *testing.T) {
 	assert.Zero(t, second.loads.Load())
 }
 
-func TestRefresh_aFailedReloadShowsTheOldSnapshotAsItIs(t *testing.T) {
+func TestRefresh_aFailedReloadShowsTheOldSnapshotWithItsError(t *testing.T) {
 	t.Parallel()
 	l := make(landed, 8)
 	var calls atomic.Int32
@@ -266,6 +266,77 @@ func TestRefresh_aFailedReloadShowsTheOldSnapshotAsItIs(t *testing.T) {
 	require.NotNil(t, r.Snap)
 	assert.EqualValues(t, 2, calls.Load())
 	assert.False(t, r.Stale, "no newer snapshot is coming until the files change again")
+	assert.EqualError(t, r.Err, "boom")
+}
+
+func TestRefresh_aLoadOfTheOldFilesThatFailsDoesNotBlockTheNewOnes(t *testing.T) {
+	t.Parallel()
+	l := make(landed, 8)
+	started, proceed := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	f := newFixture(t, analysis.Config{Loaded: l.hook, Load: func(_ context.Context, dir string) (*code.Snapshot, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-proceed
+			return nil, errors.New("old files")
+		}
+		return code.NewBuilder(code.Go, "calc", dir).Finish(), nil
+	}})
+	k := f.key(analysis.Worktree)
+	f.eng.Ensure(k)
+	<-started
+
+	f.eng.Refresh("calc", analysis.Worktree)
+	close(proceed)
+	require.Eventually(t, func() bool { return !f.eng.Busy() }, 5*time.Second, time.Millisecond)
+	f.eng.Ensure(k)
+	l.wait(t, k)
+
+	r := f.eng.Peek(k)
+	defer r.Release()
+	assert.NoError(t, r.Err)
+	assert.NotNil(t, r.Snap)
+}
+
+func TestRetry_loadsAFailedCommitAgain(t *testing.T) {
+	t.Parallel()
+	l := make(landed, 8)
+	var calls atomic.Int32
+	f := newFixture(t, analysis.Config{Loaded: l.hook, Load: func(_ context.Context, dir string) (*code.Snapshot, error) {
+		if calls.Add(1) == 1 {
+			return nil, errors.New("boom")
+		}
+		return code.NewBuilder(code.Go, "calc", dir).Finish(), nil
+	}})
+	k := f.key(f.base)
+	f.eng.Ensure(k)
+	l.wait(t, k)
+
+	f.eng.Retry("calc")
+	f.eng.Ensure(k)
+	l.wait(t, k)
+	r := f.eng.Peek(k)
+	defer r.Release()
+	assert.NoError(t, r.Err)
+	assert.NotNil(t, r.Snap)
+}
+
+func TestStore_aRestoredSnapshotKeepsWhenItWasAnalysed(t *testing.T) {
+	t.Parallel()
+	disk := analysis.NewDisk(t.TempDir())
+	fp := func(string) string { return "same" }
+	first := newFixture(t, analysis.Config{Store: disk, Fingerprint: fp})
+	k := first.key(analysis.Worktree)
+	before := time.Now()
+	r := first.eng.Get(context.Background(), k)
+	at := r.At
+	r.Release()
+	assert.False(t, at.Before(before))
+
+	second := first.restart(t, analysis.Config{Store: disk, Fingerprint: fp})
+	r = second.eng.Peek(k)
+	defer r.Release()
+	assert.True(t, at.Equal(r.At), "restored %v, analysed %v", r.At, at)
 }
 
 func TestCompare_answersAFailedLoadWithoutLoadingAgain(t *testing.T) {

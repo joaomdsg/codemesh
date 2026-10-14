@@ -15,7 +15,7 @@ import (
 )
 
 // idle is how long the worker waits for the next root before it exits.
-const idle = 5 * time.Minute
+var idle = 5 * time.Minute
 
 // worker is one julia process reading roots in serve mode. Starting julia
 // costs about a second, which a warm-up of many roots pays once this way.
@@ -55,7 +55,7 @@ func (b *lockedBuffer) Reset() {
 var bulk worker
 
 // Close stops the warm-up worker, if it runs.
-func Close() {
+func (Frontend) Close() {
 	bulk.mu.Lock()
 	defer bulk.mu.Unlock()
 	bulk.stop()
@@ -111,13 +111,16 @@ func (w *worker) read(ctx context.Context, abs string) (jl, error) {
 		}
 		return jl{}, fmt.Errorf("julia: %w: %s", err, msg)
 	}
-	w.timer = time.AfterFunc(idle, func() {
+	// A timer that fired while this read held mu finds a newer one set.
+	var t *time.Timer
+	t = time.AfterFunc(idle, func() {
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		if w.cmd == cmd {
+		if w.timer == t {
 			w.stop()
 		}
 	})
+	w.timer = t
 	if resp.Error != nil {
 		return jl{}, errors.New("julia: " + *resp.Error)
 	}

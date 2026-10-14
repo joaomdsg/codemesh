@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"weak"
 
 	"github.com/joaomdsg/codemesh/internal/code"
 	"github.com/joaomdsg/codemesh/internal/ghx"
@@ -296,8 +297,9 @@ type Card struct {
 }
 
 // Cards describes each repo. The health census counts only what is already
-// analysed, in memory or, for a working tree, stored; it loads nothing. A
-// repo is analysed once one of its pages opens.
+// analysed, in memory or, for a working tree, stored; it loads nothing. The
+// inbox analyses a local repo's working tree, and a clone is analysed once
+// one of its pages opens.
 func (a *App) Cards() []Card {
 	repos, _ := a.ws.Repos()
 	var out []Card
@@ -325,17 +327,20 @@ func (a *App) Cards() []Card {
 // one of their snapshots changes.
 func (a *App) health(rs *repoState) (bool, [3]int) {
 	var ans []*Analysis
-	var snaps []*code.Snapshot
+	var snaps []weak.Pointer[code.Snapshot]
+	ready := false
 	for _, root := range a.Roots(rs.info.ID) {
 		an := a.Cached(rs.info.ID, root.Dir, "")
 		defer an.Release()
 		ans = append(ans, an)
-		snaps = append(snaps, an.Snap)
+		snaps = append(snaps, weak.Make(an.Snap))
+		ready = ready || an.Snap != nil
 	}
 	rs.mu.Lock()
-	defer rs.mu.Unlock()
-	if !rs.healthDone || !slices.Equal(rs.health, snaps) {
-		var census [3]int
+	census, same := rs.census, rs.healthDone && slices.Equal(rs.health, snaps)
+	rs.mu.Unlock()
+	if !same {
+		census = [3]int{}
 		for _, an := range ans {
 			if an.Snap == nil {
 				continue
@@ -346,7 +351,9 @@ func (a *App) health(rs *repoState) (bool, [3]int) {
 				}
 			}
 		}
+		rs.mu.Lock()
 		rs.health, rs.census, rs.healthDone = snaps, census, true
+		rs.mu.Unlock()
 	}
-	return slices.ContainsFunc(snaps, func(s *code.Snapshot) bool { return s != nil }), rs.census
+	return ready, census
 }

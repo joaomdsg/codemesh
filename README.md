@@ -8,8 +8,9 @@ does three jobs:
   being the bottleneck.
 - **Diagnose**: mark the places that need attention and say what to do.
 
-It watches the repos you add and re-analyses their working trees within a
-second of every save, so you can keep it open while you code. It also reads
+It watches the repos you add and starts re-analysing their working trees
+within a second of every save, showing the last analysis until the new one
+lands, so you can keep it open while you code. It also reads
 the open pull requests of a repo through the `gh` CLI.
 
 ## Install
@@ -50,7 +51,8 @@ from a path or a git URL, and lists:
   introduces and reviewing progress.
 - **Repos**: a card each, with its languages and their precision (see
   [Languages](#languages)), the health census (fix first, fix soon, when
-  convenient) once the repo has been opened, the open pull request count and a Remove button.
+  convenient) once the repo is analysed, the open pull request count and a
+  Remove button.
 
 A URL is cloned without file contents (`--filter=blob:none`; git fetches them
 as needed) but with full history, which merge bases and churn need. Remove

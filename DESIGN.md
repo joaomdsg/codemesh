@@ -333,7 +333,7 @@ request summaries one at a time, as each loads two snapshots.
 
 codemesh watches the working tree of each local repo (`internal/live`): it
 polls at `-poll`, hashes the sizes and modification times of source files and
-project files, and on a change re-analyses and announces it on a topic. The
+project files, and on a change queues a reload and announces it on a topic. The
 app turns that into an event, and open pages re-render over via's SSE stream.
 Keep it open while you code: the map and the review follow your edits. A
 clone has no working tree to watch.
@@ -344,14 +344,19 @@ snapshot's worktree lives as long as its cache entry.
 
 Pages never wait for a load. A page with no snapshot yet shows a skeleton,
 and one whose files changed shows the old snapshot marked "Analysing…"; the
-load that lands re-renders it. Opening a repo loads its roots and the base of
-its working-tree review in the background, and a root a page asks for goes
-ahead of that warm-up. The last snapshot of each root is kept on disk, keyed
-by commit, or for the working tree by a fingerprint of its source files, and
-by the codemesh build that wrote it: after a restart a page shows it at once
-and only what changed loads again. The workspace cards count health only
-from snapshots in memory or, for a working tree, on disk. Julia warm-up loads share one `julia`
-process, which exits after five idle minutes.
+load that lands re-renders it. A reload that fails leaves the old snapshot
+under a "Load failed" banner until the files change again; a commit whose
+load failed is tried again on the review page's Refresh. Opening a repo loads
+its roots and the base of its working-tree review in the background, and a
+root a page asks for goes ahead of that warm-up. Snapshots are kept on disk
+per root and codemesh build: the working tree's, with a fingerprint of its
+source files and HEAD, and the four commits read last. After a restart a
+page shows them at once and only what changed loads again; the page stamp
+says when the shown snapshot was analysed. The workspace cards count health
+only from snapshots in memory or, for a working tree, on disk; the inbox
+analyses each local repo's working tree, and a clone is analysed once it is
+opened. Julia warm-up loads share one `julia` process, which exits after
+five idle minutes; a warm-up load that finds it busy runs its own.
 
 ## Stack
 

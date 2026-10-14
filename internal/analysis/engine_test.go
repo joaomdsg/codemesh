@@ -177,7 +177,7 @@ func TestGet_roots_ofOneShaShareAWorktreeUntilTheLastLeavesTheCache(t *testing.T
 	assert.NoDirExists(t, wt)
 }
 
-func TestGet_worktreeKeyReloadsAfterInvalidate(t *testing.T) {
+func TestGet_worktreeKeyReloadsAfterRefresh(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, analysis.Config{})
 	ctx := context.Background()
@@ -189,7 +189,7 @@ func TestGet_worktreeKeyReloadsAfterInvalidate(t *testing.T) {
 	f.eng.Get(ctx, k).Release()
 	assert.EqualValues(t, 1, f.loads.Load())
 
-	f.eng.Invalidate("calc", analysis.Worktree)
+	f.eng.Refresh("calc", analysis.Worktree)
 	r2 := f.eng.Get(ctx, k)
 	assert.EqualValues(t, 2, f.loads.Load())
 	assert.NotSame(t, r.Snap, r2.Snap)
@@ -199,7 +199,7 @@ func TestGet_worktreeKeyReloadsAfterInvalidate(t *testing.T) {
 	assert.DirExists(t, f.dir)
 }
 
-func TestGet_invalidateDuringALoadDiscardsItsSnapshot(t *testing.T) {
+func TestGet_refreshDuringALoadDiscardsItsSnapshot(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{}, 2)
 	proceed := make(chan struct{})
@@ -217,7 +217,7 @@ func TestGet_invalidateDuringALoadDiscardsItsSnapshot(t *testing.T) {
 	go func() { first <- f.eng.Get(context.Background(), k) }()
 	<-started
 
-	f.eng.Invalidate("calc", analysis.Worktree)
+	f.eng.Refresh("calc", analysis.Worktree)
 	second := make(chan *analysis.Result)
 	go func() { second <- f.eng.Get(context.Background(), k) }()
 	close(proceed)
@@ -225,7 +225,7 @@ func TestGet_invalidateDuringALoadDiscardsItsSnapshot(t *testing.T) {
 	for _, ch := range []chan *analysis.Result{first, second} {
 		r := <-ch
 		require.NoError(t, r.Err)
-		assert.Equal(t, "v2", r.Snap.Module, "a load that began before the invalidate is not the current tree")
+		assert.Equal(t, "v2", r.Snap.Module, "a load that began before the refresh is not the current tree")
 		r.Release()
 	}
 	r := f.eng.Get(context.Background(), k)
@@ -234,13 +234,13 @@ func TestGet_invalidateDuringALoadDiscardsItsSnapshot(t *testing.T) {
 	assert.EqualValues(t, 2, calls.Load())
 }
 
-func TestGet_invalidateLeavesShaEntriesAlone(t *testing.T) {
+func TestGet_refreshLeavesShaEntriesAlone(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t, analysis.Config{})
 	ctx := context.Background()
 
 	f.eng.Get(ctx, f.key(f.base)).Release()
-	f.eng.Invalidate("calc", analysis.Worktree)
+	f.eng.Refresh("calc", analysis.Worktree)
 	f.eng.Get(ctx, f.key(f.base)).Release()
 
 	assert.EqualValues(t, 1, f.loads.Load())

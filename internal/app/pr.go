@@ -193,8 +193,10 @@ func (a *App) PRReview(id, root string, n int) (*PRReview, error) {
 }
 
 // fetchedPR is a pull request fetched for its page, or why it could not be.
+// prev is the head fetched before, shown until this one is analysed.
 type fetchedPR struct {
 	refs prRefs
+	prev *prRefs
 	err  error
 	at   time.Time
 }
@@ -207,16 +209,21 @@ func (a *App) PeekPR(id, root string, n int) (*PRReview, error) {
 	if err != nil {
 		return nil, err
 	}
+	// PRs lists again once the list is old, which is how a push is seen.
+	listed, inList := (&prCache{prs: a.PRs(id).PRs}).find(n)
 	rs.mu.Lock()
 	f := rs.fetched[n]
-	listed, inList := rs.prs.find(n)
 	rs.mu.Unlock()
 	moved := f != nil && f.err == nil && inList && listed.HeadOID != f.refs.pr.HeadOID
 	if f == nil || moved || f.err != nil && time.Since(f.at) > prTTL {
 		a.background(fmt.Sprintf("fetch:%s:%d", id, n), id, func() {
 			refs, err := a.fetchPR(rs, n)
+			next := &fetchedPR{refs: refs, err: err, at: time.Now()}
+			if f != nil && f.err == nil {
+				next.prev = &f.refs
+			}
 			rs.mu.Lock()
-			rs.fetched[n] = &fetchedPR{refs: refs, err: err, at: time.Now()}
+			rs.fetched[n] = next
 			rs.mu.Unlock()
 		})
 		if f == nil || f.err != nil {
@@ -226,21 +233,39 @@ func (a *App) PeekPR(id, root string, n int) (*PRReview, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	if root, err = pickRoot(f.refs.roots, root); err != nil {
-		return nil, err
+	refs, stale := f.refs, moved
+	if !a.prSettled(id, f.refs, root, true) {
+		if f.prev == nil || !a.prSettled(id, *f.prev, root, false) {
+			return nil, nil
+		}
+		refs, stale = *f.prev, true
+	}
+	out, err := a.prReview(rs, refs, root)
+	if err == nil && stale {
+		// The review is of the old head until the new one is fetched and loaded.
+		out.Base.Stale, out.Head.Stale = true, true
+	}
+	return out, err
+}
+
+// prSettled reports whether both sides of refs in root are loaded or failed,
+// having the missing ones loaded when load is set.
+func (a *App) prSettled(id string, refs prRefs, root string, load bool) bool {
+	root, err := pickRoot(refs.roots, root)
+	if err != nil {
+		return true
 	}
 	settled := true
-	for _, rev := range []string{f.refs.base, f.refs.head} {
+	for _, rev := range []string{refs.base, refs.head} {
 		k := analysis.Key{Repo: id, Rev: rev, Root: root}
-		a.eng.Ensure(k)
+		if load {
+			a.eng.Ensure(k)
+		}
 		r := a.eng.Peek(k)
 		settled = settled && (r.Snap != nil || r.Err != nil)
 		r.Release()
 	}
-	if !settled {
-		return nil, nil
-	}
-	return a.prReview(rs, f.refs, root)
+	return settled
 }
 
 func (a *App) prReview(rs *repoState, refs prRefs, root string) (*PRReview, error) {
@@ -252,10 +277,9 @@ func (a *App) prReview(rs *repoState, refs prRefs, root string) (*PRReview, erro
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
 	return &PRReview{
 		PR: refs.pr, Root: root, BaseSHA: refs.base, HeadSHA: refs.head,
-		Base: fromResult(rs, root, c.Base, now), Head: fromResult(rs, root, c.Head, now),
+		Base: fromResult(rs, root, c.Base), Head: fromResult(rs, root, c.Head),
 		Files: c.Files, Graph: c.Diff,
 		Review: review.Build(review.Input{
 			Base: c.Base.Snap, Head: c.Head.Snap, Diffs: scopeFiles(c.Files, root, refs.roots),

@@ -107,6 +107,72 @@ func TestPRReview_comparesThePRHeadWithItsMergeBase(t *testing.T) {
 	assert.Nil(t, pr.Base.Snap.Decl("example.com/calc/calc.Clamp"))
 }
 
+func TestPeekPR_aMovedHeadShowsTheOldReviewStaleUntilTheNewOneLands(t *testing.T) {
+	a := newApp(t)
+	dir := testrepo.New(t, testrepo.CalcBase, nil)
+	g := func(args ...string) { require.NoError(t, testrepo.Git(dir, args...)) }
+	repoAt, err := gitx.Open(dir)
+	require.NoError(t, err)
+	sha := func(rev string) string {
+		s, err := repoAt.ResolveRef(rev)
+		require.NoError(t, err)
+		return s
+	}
+	main := sha("main")
+	g("checkout", "-q", "-b", "feat")
+	require.NoError(t, testrepo.Write(dir, testrepo.CalcHead))
+	g("add", "-A")
+	g("commit", "-qm", "feat")
+	old := sha("feat")
+	g("update-ref", "refs/pull/7/head", old)
+	g("remote", "add", "origin", dir)
+	gh(t, 7, old, main)
+	repo := add(t, a, dir)
+	peek := func() *app.PRReview {
+		t.Helper()
+		pr, err := a.PeekPR(repo.ID, "", 7)
+		require.NoError(t, err)
+		return pr
+	}
+	for range 3 {
+		a.Wait()
+		if pr := peek(); pr != nil {
+			pr.Release()
+		}
+	}
+
+	require.NoError(t, testrepo.Write(dir, map[string]string{"NOTES.md": "more\n"}))
+	g("add", "-A")
+	g("commit", "-qm", "more")
+	moved := sha("feat")
+	g("update-ref", "refs/pull/7/head", moved)
+	gh(t, 7, moved, main)
+	a.AgePRs(repo.ID, 2*time.Minute)
+	if pr := peek(); pr != nil {
+		pr.Release()
+	}
+	a.Wait()
+
+	pr := peek()
+	require.NotNil(t, pr)
+	assert.Equal(t, old, pr.HeadSHA)
+	assert.True(t, pr.Head.Stale, "the page marks the old head as being analysed again")
+	pr.Release()
+	for range 3 {
+		a.Wait()
+		pr = peek()
+		require.NotNil(t, pr, "the old review stays up while the new head loads")
+		if pr.HeadSHA == moved {
+			break
+		}
+		assert.True(t, pr.Head.Stale)
+		pr.Release()
+	}
+	defer pr.Release()
+	assert.Equal(t, moved, pr.HeadSHA)
+	assert.False(t, pr.Head.Stale)
+}
+
 func TestPRReview_aStaleListedBaseIsRefreshedBeforeTheMergeBase(t *testing.T) {
 	a := newApp(t)
 	dir := testrepo.New(t, testrepo.CalcBase, nil)
@@ -357,4 +423,44 @@ func TestPRList_hintForAFailureOfGHIsOneQuietLineWithoutItsMessage(t *testing.T)
 	hint := app.PRList{Err: err}.Hint()
 
 	assert.Equal(t, "Pull requests are not available for this repo.", hint)
+}
+
+func TestOpen_warmsEachRootAndTheBaseOfTheWorkingTreeReview(t *testing.T) {
+	a := newApp(t)
+	dir := testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead)
+	repo := add(t, a, dir)
+	repoAt, err := gitx.Open(dir)
+	require.NoError(t, err)
+	base, err := repoAt.ResolveRef("HEAD")
+	require.NoError(t, err)
+
+	a.Open(repo.ID)
+	a.Wait()
+
+	for _, rev := range []string{"", base} {
+		an := a.Cached(repo.ID, "", rev)
+		assert.NotNil(t, an.Snap, "rev %q", rev)
+		an.Release()
+	}
+}
+
+func TestPeekReview_showsNothingUntilTheReviewIsBuiltThenTheReview(t *testing.T) {
+	a := newApp(t)
+	repo := add(t, a, testrepo.New(t, testrepo.CalcBase, testrepo.CalcHead))
+
+	an := a.PeekReview(repo.ID, "")
+	assert.Nil(t, an.Snap)
+	an.Release()
+	for range 3 {
+		a.Wait()
+		an = a.PeekReview(repo.ID, "")
+		if an.Review != nil {
+			break
+		}
+		an.Release()
+	}
+	defer an.Release()
+	require.NotNil(t, an.Review)
+	assert.False(t, an.Stale)
+	assert.NotEmpty(t, an.Review.Units)
 }
