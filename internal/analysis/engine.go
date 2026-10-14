@@ -249,15 +249,18 @@ func (e *Engine) resolve(key Key) (*gitx.Repo, Key, error) {
 // a load of the old files is under way.
 func (e *Engine) Invalidate(repo, rev string) {
 	e.mu.Lock()
-	e.epochs[repo+"\x00"+rev]++
+	e.epochs[epochKey(repo, rev)]++
 	e.mu.Unlock()
 	e.finish(e.cache.drop(func(k Key) bool { return k.Repo == repo && k.Rev == rev }))
 }
 
+// epochKey names what Invalidate bumps: every root of one rev of a repo.
+func epochKey(repo, rev string) string { return repo + "\x00" + rev }
+
 func (e *Engine) epoch(key Key) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.epochs[key.Repo+"\x00"+key.Rev]
+	return e.epochs[epochKey(key.Repo, key.Rev)]
 }
 
 func (e *Engine) result(ent *entry) *Result {
@@ -314,7 +317,7 @@ func (e *Engine) load(repo *gitx.Repo, key Key, epoch int) error {
 	// Under mu, so an Invalidate lands either before this check, which
 	// discards the snapshot, or after the add, which drops it.
 	e.mu.Lock()
-	if e.epochs[key.Repo+"\x00"+key.Rev] != epoch {
+	if e.epochs[epochKey(key.Repo, key.Rev)] != epoch {
 		e.mu.Unlock()
 		e.dropWorktree(ent)
 		return nil
