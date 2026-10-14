@@ -32,7 +32,7 @@ mutable struct Mod
     errors::Vector{String}
 end
 
-const ROOT = abspath(ARGS[1])
+const ROOT = Ref("")
 const mods = Dict{String,Mod}()
 const files = Dict{String,Tuple{String,Bool}}()   # rel path → (module, test)
 const code = Dict{String,Set{Int}}()              # rel path → lines holding code
@@ -40,7 +40,7 @@ const decls = Decl[]
 const seen = Set{String}()
 const aliases = Dict{String,String}()              # const M = SomeModule, or an extension
 
-rel(p) = replace(relpath(p, ROOT), '\\' => '/')
+rel(p) = replace(relpath(p, ROOT[]), '\\' => '/')
 modof(path) = get!(() -> Mod(path, Set{String}(), Set{String}(), String[]), mods, path)
 line(n) = JS.source_line(n)
 lastline(n) = JS.source_line(n.source, JS.last_byte(n))
@@ -326,19 +326,21 @@ function jarr(io, xs)
     print(io, ']')
 end
 
-function main()
-    proj = read(joinpath(ROOT, "Project.toml"), String)
+function main(root)
+    ROOT[] = abspath(root)
+    foreach(empty!, (mods, files, code, decls, seen, aliases))
+    proj = read(joinpath(ROOT[], "Project.toml"), String)
     m = match(r"^name\s*=\s*\"([^\"]+)\""m, proj)
-    name = m === nothing ? basename(ROOT) : m.captures[1]
-    entry = joinpath(ROOT, "src", name * ".jl")
+    name = m === nothing ? basename(ROOT[]) : m.captures[1]
+    entry = joinpath(ROOT[], "src", name * ".jl")
     isfile(entry) && parsefile(entry, "", false)
     # A benchmark, examples or test environment has no package entry; its scripts sit beside Project.toml.
     if !isfile(entry)
-        for f in sort(readdir(ROOT))
-            endswith(f, ".jl") && parsefile(joinpath(ROOT, f), name, basename(ROOT) == "test")
+        for f in sort(readdir(ROOT[]))
+            endswith(f, ".jl") && parsefile(joinpath(ROOT[], f), name, basename(ROOT[]) == "test")
         end
     end
-    ext = joinpath(ROOT, "ext")
+    ext = joinpath(ROOT[], "ext")
     if isdir(ext)
         for f in sort(readdir(ext))
             p = joinpath(ext, f)
@@ -346,10 +348,10 @@ function main()
             isdir(p) && parsefile(joinpath(p, f * ".jl"), "", false)
         end
     end
-    tests = joinpath(ROOT, "test")
+    tests = joinpath(ROOT[], "test")
     isfile(joinpath(tests, "runtests.jl")) && parsefile(joinpath(tests, "runtests.jl"), name, true)
     # Files nothing includes still belong to the package's root module.
-    for dir in ("src", "ext", "test"), (d, _, fs) in walkdir(joinpath(ROOT, dir))
+    for dir in ("src", "ext", "test"), (d, _, fs) in walkdir(joinpath(ROOT[], dir))
         for f in sort(fs)
             endswith(f, ".jl") && parsefile(joinpath(d, f), name, dir == "test")
         end
@@ -398,4 +400,4 @@ function main()
     println(io, "]}")
 end
 
-main()
+main(ARGS[1])
