@@ -203,14 +203,9 @@ func (e *Engine) Forget(repo string) {
 // not the load, which other callers or a later Get can use; Close and Forget
 // stop it.
 func (e *Engine) Get(ctx context.Context, key Key) *Result {
-	repo, err := e.cfg.Repo(key.Repo)
+	repo, key, err := e.resolve(key)
 	if err != nil {
 		return &Result{Key: key, Err: err}
-	}
-	if key.Rev != Worktree {
-		if key.Rev, err = repo.ResolveRef(key.Rev); err != nil {
-			return &Result{Key: key, Err: err}
-		}
 	}
 	for {
 		if ent := e.cache.acquire(key); ent != nil {
@@ -232,6 +227,21 @@ func (e *Engine) Get(ctx context.Context, key Key) *Result {
 			}
 		}
 	}
+}
+
+// resolve finds key's repo and pins its rev to a sha, so a key names one
+// tree of files.
+func (e *Engine) resolve(key Key) (*gitx.Repo, Key, error) {
+	repo, err := e.cfg.Repo(key.Repo)
+	if err != nil {
+		return nil, key, err
+	}
+	if key.Rev != Worktree {
+		if key.Rev, err = repo.ResolveRef(key.Rev); err != nil {
+			return nil, key, err
+		}
+	}
+	return repo, key, nil
 }
 
 // Invalidate drops the cached snapshot of rev in repo, for a Worktree whose
