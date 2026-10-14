@@ -107,19 +107,26 @@ func (a *App) WorkingReview(id, root string) *Analysis {
 	if out.Err != nil {
 		return out
 	}
+	t := a.treeFor(rs, out)
+	out.Base, out.BaseSHA, out.Note, out.Review = t.base, t.baseSHA, t.note, t.review
+	return out
+}
+
+// treeFor is the review of head's root, built unless the kept one is of
+// head's snapshot.
+func (a *App) treeFor(rs *repoState, head *Analysis) *treeReview {
 	rs.wt.Lock()
 	defer rs.wt.Unlock()
 	rs.mu.Lock()
-	t := rs.tree[out.Root]
+	t := rs.tree[head.Root]
 	rs.mu.Unlock()
-	if t == nil || t.snap != out.Snap {
-		t = a.buildTree(rs, out)
+	if t == nil || t.snap != head.Snap {
+		t = a.buildTree(rs, head)
 		rs.mu.Lock()
-		rs.tree[out.Root] = t
+		rs.tree[head.Root] = t
 		rs.mu.Unlock()
 	}
-	out.Base, out.BaseSHA, out.Note, out.Review = t.base, t.baseSHA, t.note, t.review
-	return out
+	return t
 }
 
 func (a *App) buildTree(rs *repoState, head *Analysis) *treeReview {
