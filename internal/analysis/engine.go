@@ -235,8 +235,8 @@ func (e *Engine) start(repo *gitx.Repo, key Key) <-chan singleflight.Result {
 	})
 }
 
-// resolve finds key's repo and pins its rev to a sha, so a key names one
-// tree of files.
+// resolve finds key's repo and pins a commit rev to its sha, so a cached
+// key keeps naming the same files.
 func (e *Engine) resolve(key Key) (*gitx.Repo, Key, error) {
 	repo, err := e.cfg.Repo(key.Repo)
 	if err != nil {
