@@ -211,13 +211,7 @@ func (e *Engine) Get(ctx context.Context, key Key) *Result {
 		if ent := e.cache.acquire(key); ent != nil {
 			return e.result(ent)
 		}
-		epoch := e.epoch(key)
-		ch := e.group.DoChan(key.Repo+"\x00"+key.Rev+"\x00"+key.Root+"\x00"+strconv.Itoa(epoch), func() (any, error) {
-			if e.cache.has(key) {
-				return nil, nil
-			}
-			return nil, e.load(repo, key, epoch)
-		})
+		ch := e.start(repo, key)
 		select {
 		case <-ctx.Done():
 			return &Result{Key: key, Err: ctx.Err()}
@@ -227,6 +221,18 @@ func (e *Engine) Get(ctx context.Context, key Key) *Result {
 			}
 		}
 	}
+}
+
+// start loads key unless a load of it at the current epoch is under way, and
+// returns the channel that says when it ends.
+func (e *Engine) start(repo *gitx.Repo, key Key) <-chan singleflight.Result {
+	epoch := e.epoch(key)
+	return e.group.DoChan(key.Repo+"\x00"+key.Rev+"\x00"+key.Root+"\x00"+strconv.Itoa(epoch), func() (any, error) {
+		if e.cache.has(key) {
+			return nil, nil
+		}
+		return nil, e.load(repo, key, epoch)
+	})
 }
 
 // resolve finds key's repo and pins its rev to a sha, so a key names one
