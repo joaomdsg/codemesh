@@ -1,6 +1,7 @@
 package ui_test
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"html"
@@ -18,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/go-via/via/vt"
 	"github.com/joaomdsg/codemesh/internal/app"
 	"github.com/joaomdsg/codemesh/internal/handoff"
@@ -74,6 +76,40 @@ func TestHost_aNameThatIsNotTheOriginsIsRefused(t *testing.T) {
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func TestPage_isBrotliCompressedWhenAccepted(t *testing.T) {
+	h := ui.New(newApp(t), "http://localhost:7777")
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = "localhost:7777"
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "br", rec.Header().Get("Content-Encoding"))
+	body, err := io.ReadAll(brotli.NewReader(rec.Body))
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(string(body), "<!doctype html>"))
+}
+
+func TestStream_isBrotliCompressedFrameByFrame(t *testing.T) {
+	e := serve(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.app.URL()+"/_via/sse", strings.NewReader("{}"))
+	require.NoError(t, err)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Accept-Encoding", "br")
+	resp, err := e.app.Client().Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { resp.Body.Close() })
+
+	require.Equal(t, "br", resp.Header.Get("Content-Encoding"))
+	// The stream stays open, so the first frame must decode before it ends.
+	line, err := bufio.NewReader(brotli.NewReader(resp.Body)).ReadString('\n')
+	require.NoError(t, err)
+	assert.Equal(t, "event: datastar-patch-signals\n", line)
+}
 
 // newApp is an app in its own XDG directories, with a gh that fails.
 // t.Setenv rules out t.Parallel, so tests that use it run one at a time.
@@ -134,10 +170,13 @@ func settled(a *app.App, next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// The loop reads the body for the marker, so it must come back plain.
+		plain := r.Clone(r.Context())
+		plain.Header.Del("Accept-Encoding")
 		var rec *httptest.ResponseRecorder
 		for range 50 {
 			rec = httptest.NewRecorder()
-			next.ServeHTTP(rec, r.Clone(r.Context()))
+			next.ServeHTTP(rec, plain.Clone(plain.Context()))
 			if !strings.Contains(rec.Body.String(), `class="analysing"`) {
 				break
 			}

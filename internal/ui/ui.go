@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/andybalholm/brotli"
 	"github.com/go-via/via"
 	"github.com/go-via/via/h"
 	"github.com/joaomdsg/codemesh/internal/app"
@@ -65,6 +67,11 @@ var assetsRoot = func() fs.FS {
 	return sub
 }()
 
+// LGWin 18 keeps each live tab's SSE encoder window at 256 KiB.
+var brotliEncoder = via.Encoder{Token: "br", NewWriter: func(w io.Writer) via.Compressor {
+	return brotli.NewWriterOptions(w, brotli.WriterOptions{Quality: 5, LGWin: 18})
+}}
+
 // New returns the app's handler. origin is the URL the browser uses, such as
 // http://localhost:7777; actions from any other origin are refused.
 func New(a *app.App, origin string) http.Handler {
@@ -79,6 +86,8 @@ func New(a *app.App, origin string) http.Handler {
 			},
 		}),
 		via.WithTrustedOrigin(origin),
+		via.WithPageCompression(brotliEncoder, via.Gzip(6)),
+		via.WithSSECompression(brotliEncoder, via.Gzip(6)),
 	)
 	sh := shell{app: a}
 	via.Mount(r, "/", workspacePage{app: a})
